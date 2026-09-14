@@ -40,6 +40,13 @@ interface SelectedMonitor {
   fingerprint: Fingerprint;
   maxResolution?: MonitorResolution | null;
   resolutionSource?: ResolutionSource | null;
+  localInput: number | null;
+  supportedInputs: number[] | null;
+}
+
+interface MonitorInputAssignment {
+  monitor: Fingerprint;
+  input: number;
 }
 
 interface HostRoute {
@@ -49,14 +56,12 @@ interface HostRoute {
   address: string;
   port: number;
   macAddress: string;
-  input: number | null;
+  inputs: MonitorInputAssignment[];
 }
 
 interface AppSettings {
   localHost: Platform;
-  sharedMonitor: SelectedMonitor | null;
-  localInput: number | null;
-  supportedInputs: number[] | null;
+  sharedMonitors: SelectedMonitor[];
   peers: HostRoute[];
   broadcastIp: string;
   wakePort: number;
@@ -69,14 +74,21 @@ interface AppSettings {
   hostSwitcherShortcut: string;
 }
 
+interface SharedMonitorStatus {
+  monitorKey: string;
+  fingerprint: Fingerprint;
+  name: string;
+  ddcAvailable: boolean;
+  statusText: string;
+}
+
 interface DashboardState {
   platform: string;
   localHost: Platform;
   agentConfigured: boolean;
-  ddcAvailable: boolean;
-  monitorStatus: string;
-  selectionNotice: string | null;
   monitors: MonitorDescriptor[];
+  shared: SharedMonitorStatus[];
+  selectionNotices: string[];
 }
 
 interface DiscoveredPeer {
@@ -116,19 +128,19 @@ const standardInputs: InputOption[] = [
 ].map(([value, name]) => ({ value: value as number, name: name as string }));
 
 const previewSettings: AppSettings = {
-  localHost: "windows", sharedMonitor: null, localInput: null, supportedInputs: null, peers: [],
+  localHost: "windows", sharedMonitors: [], peers: [],
   broadcastIp: "255.255.255.255", wakePort: 9, sharedKey: "", waitSeconds: 45, autostart: true, checkUpdates: true,
   onboardingCompleted: false, hostSwitcherEnabled: false, hostSwitcherShortcut: "CommandOrControl+Alt+Space",
 };
 const previewDashboard: DashboardState = {
-  platform: "windows", localHost: "windows", agentConfigured: false, ddcAvailable: false,
-  monitorStatus: t("preview.monitorStatus"), selectionNotice: null, monitors: [],
+  platform: "windows", localHost: "windows", agentConfigured: false,
+  monitors: [], shared: [], selectionNotices: [],
 };
 
 let settings = previewSettings;
 let dashboard = previewDashboard;
 let discoveredPeers: DiscoveredPeer[] = [];
-let inputOptions = standardInputs;
+let inputOptionsByMonitor: Record<string, InputOption[]> = {};
 let isPreview = false;
 let pendingUpdate: UpdateInfo | null = null;
 let isRecordingShortcut = false;
@@ -231,22 +243,7 @@ app.innerHTML = `
       </header>
 
       <section class="page is-active" id="dashboard-page">
-        <div class="showcase-monitor-card">
-          <div class="showcase-header">
-            <span class="showcase-title">${t("dashboard.sharedDisplay")}</span>
-            <div class="showcase-badges">
-              <span class="status-badge subtle" id="screen-ratio">16:9</span>
-              <span class="status-badge" id="screen-input">${t("dashboard.ddcReady")}</span>
-            </div>
-          </div>
-          <div class="flat-monitor-wrap" id="flat-monitor-wrap"></div>
-          <div class="showcase-info">
-            <strong class="showcase-monitor-name" id="shared-monitor-name">${t("dashboard.notSelected")}</strong>
-            <p class="showcase-monitor-desc" id="monitor-status">${t("dashboard.identityHint")}</p>
-          </div>
-        </div>
-
-        <div class="host-route-grid" id="host-route-grid"></div>
+        <div class="showcase-grid" id="showcase-grid"></div>
 
         <section class="status-summary-bar">
           <div class="summary-item"><span>${t("dashboard.sharedLabel")}</span><strong id="monitor-health" class="text-accent">${t("dashboard.detecting")}</strong></div>
@@ -270,7 +267,13 @@ app.innerHTML = `
 
               <div class="form-section two-columns">
                 <label class="field"><span>${t("settings.localComputer")}</span><input id="local-host-name" disabled /></label>
-                <label class="field"><span>${t("settings.localInput")}</span><select id="local-input" disabled></select><small id="local-input-name">${t("input.unset")}</small></label>
+              </div>
+
+              <div class="form-section">
+                <div class="pairing-heading">
+                  <strong>${t("settings.localInput")}</strong>
+                </div>
+                <div class="local-input-summary" id="local-input-summary"></div>
               </div>
 
               <div class="form-section pairing-section">
@@ -475,10 +478,11 @@ document.querySelector<HTMLInputElement>("#host-switcher-enabled")?.addEventList
 });
 document.querySelector<HTMLButtonElement>("#shortcut-recorder")?.addEventListener("click", beginShortcutRecording);
 document.addEventListener("keydown", captureShortcut, true);
-document.querySelector<HTMLSelectElement>("#local-input")?.addEventListener("input", renderInputHints);
 document.querySelector("#monitor-picker")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-monitor-id]");
-  if (button?.dataset.monitorId) void selectMonitor(button.dataset.monitorId);
+  if (!button?.dataset.monitorId) return;
+  if (button.dataset.monitorSelected === "true") void removeSharedMonitor(button.dataset.monitorId);
+  else void addSharedMonitor(button.dataset.monitorId);
 });
 document.querySelector("#peer-list")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-add-peer]");
@@ -491,9 +495,11 @@ document.querySelector("#paired-routes")?.addEventListener("click", (event) => {
   if (button?.dataset.wakeId) void peerCommand("wake_peer", button.dataset.wakeId);
 });
 document.querySelector("#paired-routes")?.addEventListener("input", renderInputHints);
-document.querySelector("#host-route-grid")?.addEventListener("click", (event) => {
+document.querySelector("#showcase-grid")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-id]");
-  if (button?.dataset.switchId) void switchHost(button.dataset.switchId);
+  if (!button?.dataset.switchId) return;
+  const card = button.closest<HTMLElement>("[data-monitor-key]");
+  if (card?.dataset.monitorKey) void switchHost(card.dataset.monitorKey, button.dataset.switchId);
 });
 
 function showPage(page: string): void {
@@ -570,21 +576,29 @@ async function openExternalUrl(value: string): Promise<void> {
   }
 }
 
+async function loadInputOptionsByMonitor(monitorKeys: string[]): Promise<Record<string, InputOption[]>> {
+  const entries = await Promise.all(monitorKeys.map(async (monitorKey) =>
+    [monitorKey, await invoke<InputOption[]>("get_input_options", { monitorId: monitorKey })] as const,
+  ));
+  return Object.fromEntries(entries);
+}
+
 async function refresh(): Promise<void> {
   document.querySelector("#refresh-button svg")?.classList.add("is-spinning");
   try {
     dashboard = await invoke<DashboardState>("get_dashboard_state");
-    [settings, inputOptions] = await Promise.all([
-      invoke<AppSettings>("get_settings"), invoke<InputOption[]>("get_input_options"),
+    [settings, inputOptionsByMonitor] = await Promise.all([
+      invoke<AppSettings>("get_settings"),
+      loadInputOptionsByMonitor(dashboard.shared.map((shared) => shared.monitorKey)),
     ]);
     try { discoveredPeers = await invoke<DiscoveredPeer[]>("discover_peers"); } catch { discoveredPeers = []; }
     isPreview = false;
   } catch {
-    dashboard = previewDashboard; settings = previewSettings; inputOptions = standardInputs; discoveredPeers = []; isPreview = true;
+    dashboard = previewDashboard; settings = previewSettings; inputOptionsByMonitor = {}; discoveredPeers = []; isPreview = true;
   } finally { document.querySelector("#refresh-button svg")?.classList.remove("is-spinning"); }
   renderState();
-  if (!isPreview && dashboard.selectionNotice) {
-    showToast(t("toast.selectionUpdated"), dashboard.selectionNotice);
+  if (!isPreview && dashboard.selectionNotices.length) {
+    showToast(t("toast.selectionUpdated"), dashboard.selectionNotices.join(" "));
   }
 }
 
@@ -653,63 +667,80 @@ function getFlatMonitorSvg(isUltrawide: boolean): string {
   </svg>`;
 }
 
+function selectedMonitorFor(shared: SharedMonitorStatus): SelectedMonitor | undefined {
+  return settings.sharedMonitors.find((sm) => sameFingerprint(sm.fingerprint, shared.fingerprint));
+}
+
+function resolutionFor(shared: SharedMonitorStatus): { resolution: MonitorResolution | null; source: ResolutionSource | null } {
+  const selectedMonitor = selectedMonitorFor(shared);
+  let resolution = selectedMonitor?.maxResolution ?? null;
+  let source = selectedMonitor?.resolutionSource ?? null;
+  if (!resolution) {
+    const match = dashboard.monitors.find((m) => sameFingerprint(m.fingerprint, shared.fingerprint));
+    if (match?.maxResolution) {
+      resolution = match.maxResolution;
+      source = match.resolutionSource ?? null;
+    }
+  }
+  return { resolution, source };
+}
+
+function ratioText(resolution: MonitorResolution | null, source: ResolutionSource | null, isUltrawide: boolean): string {
+  const ratio = isUltrawide ? "21:9" : "16:9";
+  return resolution ? `${ratio} · ${resolution.width}×${resolution.height} · ${resolutionSourceName(source)}` : ratio;
+}
+
+function renderShowcaseCards(): void {
+  const container = document.querySelector("#showcase-grid");
+  if (!container) return;
+  if (!dashboard.shared.length) {
+    const isUltrawide = Boolean(dashboard.monitors[0]?.maxResolution && isUltrawideResolution(dashboard.monitors[0].maxResolution));
+    container.innerHTML = `
+      <div class="showcase-monitor-card">
+        <div class="showcase-header">
+          <span class="showcase-title">${t("dashboard.sharedDisplay")}</span>
+          <div class="showcase-badges"><span class="status-badge subtle">${ratioText(dashboard.monitors[0]?.maxResolution ?? null, dashboard.monitors[0]?.resolutionSource ?? null, isUltrawide)}</span></div>
+        </div>
+        <div class="flat-monitor-wrap">${getFlatMonitorSvg(isUltrawide)}</div>
+        <div class="showcase-info">
+          <strong class="showcase-monitor-name">${t("dashboard.notSelected")}</strong>
+          <p class="showcase-monitor-desc">${isPreview ? t("preview.monitorStatus") : t("dashboard.identityHint")}</p>
+        </div>
+      </div>`;
+    return;
+  }
+  container.innerHTML = dashboard.shared.map((shared) => {
+    const { resolution, source } = resolutionFor(shared);
+    const isUltrawide = Boolean(resolution && isUltrawideResolution(resolution));
+    return `
+      <div class="showcase-monitor-card" data-monitor-key="${escapeHtml(shared.monitorKey)}">
+        <div class="showcase-header">
+          <span class="showcase-title">${escapeHtml(shared.name)}</span>
+          <div class="showcase-badges">
+            <span class="status-badge subtle">${ratioText(resolution, source, isUltrawide)}</span>
+            <span class="status-badge">${shared.ddcAvailable ? t("dashboard.ddcReady") : t("dashboard.notReady")}</span>
+          </div>
+        </div>
+        <div class="flat-monitor-wrap">${getFlatMonitorSvg(isUltrawide)}</div>
+        <div class="showcase-info">
+          <strong class="showcase-monitor-name">${escapeHtml(shared.name)}</strong>
+          <p class="showcase-monitor-desc">${escapeHtml(shared.statusText)}</p>
+        </div>
+        <div class="host-route-grid" data-host-route-grid="${escapeHtml(shared.monitorKey)}"></div>
+      </div>`;
+  }).join("");
+  for (const shared of dashboard.shared) renderHostRoutes(shared);
+}
+
 function renderState(): void {
-  let currentResolution: MonitorResolution | null = null;
-  let currentResolutionSource: ResolutionSource | null = null;
-  if (settings.sharedMonitor) {
-    setText("#shared-monitor-name", settings.sharedMonitor.name);
-    setText("#monitor-status", dashboard.monitorStatus);
-    currentResolution = settings.sharedMonitor.maxResolution ?? null;
-    currentResolutionSource = settings.sharedMonitor.resolutionSource ?? null;
-    if (!currentResolution) {
-      const match = dashboard.monitors.find((m) =>
-        sameFingerprint(m.fingerprint, settings.sharedMonitor!.fingerprint)
-      );
-      if (match?.maxResolution) {
-        currentResolution = match.maxResolution;
-        currentResolutionSource = match.resolutionSource ?? null;
-      }
-    }
-  } else {
-    setText("#shared-monitor-name", t("dashboard.notSelected"));
-    setText("#monitor-status", dashboard.monitorStatus || t("preview.monitorStatus"));
-    if (dashboard.monitors.length > 0 && dashboard.monitors[0].maxResolution) {
-      currentResolution = dashboard.monitors[0].maxResolution;
-      currentResolutionSource = dashboard.monitors[0].resolutionSource ?? null;
-    }
-  }
-
-  const isUltrawide = Boolean(currentResolution && isUltrawideResolution(currentResolution));
-
-  const monitorWrap = document.querySelector("#flat-monitor-wrap");
-  if (monitorWrap) {
-    monitorWrap.innerHTML = getFlatMonitorSvg(isUltrawide);
-  }
-
-  const ratioBadge = document.querySelector("#screen-ratio");
-  if (ratioBadge) {
-    if (currentResolution) {
-      ratioBadge.textContent = isUltrawide
-        ? `21:9 · ${currentResolution.width}×${currentResolution.height} · ${resolutionSourceName(currentResolutionSource)}`
-        : `16:9 · ${currentResolution.width}×${currentResolution.height} · ${resolutionSourceName(currentResolutionSource)}`;
-    } else {
-      ratioBadge.textContent = isUltrawide ? "21:9" : "16:9";
-    }
-  }
-
-  setText("#screen-input", dashboard.ddcAvailable ? t("dashboard.ddcReady") : t("dashboard.notReady"));
-  setText("#monitor-health", dashboard.ddcAvailable ? t("dashboard.locked") : t("dashboard.notReady"));
+  const ddcAvailable = dashboard.shared.some((shared) => shared.ddcAvailable);
+  setText("#monitor-health", dashboard.shared.length === 0 ? t("dashboard.notSelected") : ddcAvailable ? t("dashboard.locked") : t("dashboard.notReady"));
   setText("#peer-health", t("dashboard.hostCount", { count: settings.peers.length }));
   setText("#wake-health", settings.peers.some((peer) => peer.macAddress) ? t("dashboard.wakeNormal") : (settings.peers.length ? t("dashboard.noMac") : t("dashboard.noHosts")));
   const pill = document.querySelector("#agent-pill");
   pill?.classList.toggle("is-ready", dashboard.agentConfigured);
   if (pill) pill.querySelector("span:last-child")!.textContent = isPreview ? t("dashboard.preview") : dashboard.agentConfigured ? t("dashboard.agentReady") : t("dashboard.agentMissing");
   setInput("#local-host-name", dashboard.localHost === "windows" ? t("dashboard.localWindowsPc") : t("dashboard.localMac"));
-  const localInput = document.querySelector<HTMLSelectElement>("#local-input");
-  if (localInput) {
-    localInput.innerHTML = renderInputOptions("local", settings.localInput);
-    localInput.value = settings.localInput == null ? "" : String(settings.localInput);
-  }
   setInput("#shared-key", settings.sharedKey);
   setInput("#wait-seconds", String(settings.waitSeconds));
   const autostart = document.querySelector<HTMLInputElement>("#autostart");
@@ -719,7 +750,7 @@ function renderState(): void {
   const hostSwitcherEnabled = document.querySelector<HTMLInputElement>("#host-switcher-enabled");
   if (hostSwitcherEnabled) hostSwitcherEnabled.checked = settings.hostSwitcherEnabled;
   renderShortcutSetting();
-  renderMonitors(); renderPeerList(); renderPairedRoutes(); renderHostRoutes(); renderInputHints(); refreshIcons();
+  renderShowcaseCards(); renderMonitors(); renderPeerList(); renderPairedRoutes(); renderLocalInputSummary(); renderInputHints(); refreshIcons();
 }
 
 function shortcutDisplay(value: string): string {
@@ -834,8 +865,7 @@ function renderMonitors(): void {
     container.innerHTML = `<p class="peer-empty">${t("settings.noMonitors")}</p>`; return;
   }
   container.innerHTML = dashboard.monitors.map((monitor) => {
-    const selected = settings.sharedMonitor?.fingerprint;
-    const isSelected = selected && sameFingerprint(selected, monitor.fingerprint);
+    const isSelected = settings.sharedMonitors.some((sm) => sameFingerprint(sm.fingerprint, monitor.fingerprint));
     const fp = monitor.fingerprint;
     const res = monitor.maxResolution;
     const resText = res
@@ -849,10 +879,23 @@ function renderMonitors(): void {
           <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? t("settings.noSerial"))} ${resText} (${t("settings.ddcControllable")})</span>
         </div>
       </div>
-      <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""}" data-monitor-id="${escapeHtml(monitor.id)}" ${isSelected ? "disabled" : ""}>
-        ${isSelected ? t("action.selected") : t("action.selectShared")}
+      <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""}" data-monitor-id="${escapeHtml(monitor.id)}" data-monitor-selected="${isSelected}">
+        ${isSelected ? t("action.removeShared") : t("action.selectShared")}
       </button>
     </article>`;
+  }).join("");
+}
+
+function renderLocalInputSummary(): void {
+  const container = document.querySelector("#local-input-summary");
+  if (!container) return;
+  if (!dashboard.shared.length) {
+    container.innerHTML = `<p class="peer-empty">${t("settings.noMonitors")}</p>`;
+    return;
+  }
+  container.innerHTML = dashboard.shared.map((shared) => {
+    const value = selectedMonitorFor(shared)?.localInput ?? null;
+    return `<div class="local-input-row"><span>${escapeHtml(shared.name)}</span><strong>${value == null ? t("input.unset") : escapeHtml(inputName(value, shared.monitorKey))}</strong></div>`;
   }).join("");
 }
 
@@ -869,10 +912,22 @@ function renderPeerList(): void {
   </article>`).join("") : `<p class="peer-empty">${t("settings.noAvailableHosts")}</p>`;
 }
 
+function peerInputValue(peerId: string, monitorKey: string): number | null {
+  return inputValueFromElement(`[data-route-input="${cssEscape(peerId)}"][data-route-monitor="${cssEscape(monitorKey)}"]`, null);
+}
+
 function renderPairedRoutes(): void {
   const container = document.querySelector("#paired-routes");
   if (!container) return;
-  const discoveryNote = `<p class="input-discovery-note">${settings.supportedInputs?.length ? t("settings.capabilitiesDetected", { count: inputOptions.length }) : t("settings.capabilitiesFallback")}</p>`;
+  if (!dashboard.shared.length) {
+    container.innerHTML = `<p class="peer-empty">${t("settings.noMonitors")}</p>`;
+    return;
+  }
+  const discoveryNote = dashboard.shared.map((shared) => {
+    const monitorOptions = inputOptionsByMonitor[shared.monitorKey] ?? standardInputs;
+    const selectedMonitor = selectedMonitorFor(shared);
+    return `<p class="input-discovery-note">${escapeHtml(shared.name)}: ${selectedMonitor?.supportedInputs?.length ? t("settings.capabilitiesDetected", { count: monitorOptions.length }) : t("settings.capabilitiesFallback")}</p>`;
+  }).join("");
   container.innerHTML = discoveryNote + (settings.peers.length ? `<p class="field-title">${t("settings.addedHosts")}</p>` + settings.peers.map((peer) => `<article class="paired-route-card">
     <div class="peer-identity">
       <strong>${escapeHtml(peer.name)}</strong>
@@ -884,24 +939,27 @@ function renderPairedRoutes(): void {
       </div>
     </div>
     <div class="paired-route-right">
-      <label class="paired-input-wrap">
-        <span>${t("settings.inputValue")}</span>
-        <select class="paired-input-field" data-route-input="${escapeHtml(peer.id)}">${renderInputOptions(peer.id, peer.input)}</select>
-      </label>
+      ${dashboard.shared.map((shared) => `<label class="paired-input-wrap">
+        <span>${escapeHtml(shared.name)} ${t("settings.inputValue")}</span>
+        <select class="paired-input-field" data-route-input="${escapeHtml(peer.id)}" data-route-monitor="${escapeHtml(shared.monitorKey)}">${renderInputOptions(peer.id, shared.monitorKey, peer.inputs.find((assignment) => sameFingerprint(assignment.monitor, shared.fingerprint))?.input ?? null)}</select>
+      </label>`).join("")}
       <button class="delete-button" type="button" data-remove-peer="${escapeHtml(peer.id)}" title="${t("action.remove")}"><i data-lucide="trash-2"></i></button>
     </div>
   </article>`).join("") : `<p class="peer-empty">${t("settings.noAddedHosts")}</p>`);
 }
 
-function renderInputOptions(routeId: string, current: number | null): string {
+function renderInputOptions(routeId: string, monitorKey: string, current: number | null): string {
   const assignedElsewhere = new Set<number>();
-  const localValue = inputValueFromElement("#local-input", settings.localInput);
-  if (routeId !== "local" && localValue != null) assignedElsewhere.add(localValue);
+  const shared = dashboard.shared.find((item) => item.monitorKey === monitorKey);
+  const selectedMonitor = shared ? selectedMonitorFor(shared) : undefined;
+  if (routeId !== "local" && selectedMonitor?.localInput != null) assignedElsewhere.add(selectedMonitor.localInput);
   for (const peer of settings.peers) {
-    const peerValue = inputValueFromElement(`[data-route-input="${cssEscape(peer.id)}"]`, peer.input);
-    if (peer.id !== routeId && peerValue != null) assignedElsewhere.add(peerValue);
+    if (peer.id === routeId) continue;
+    const peerValue = peerInputValue(peer.id, monitorKey);
+    if (peerValue != null) assignedElsewhere.add(peerValue);
   }
-  const options = inputOptions
+  const monitorOptions = inputOptionsByMonitor[monitorKey] ?? standardInputs;
+  const options = monitorOptions
     .filter((item) => !assignedElsewhere.has(item.value) || item.value === current)
     .map((item) => `<option value="${item.value}" ${item.value === current ? "selected" : ""}>${escapeHtml(localizedInputOptionName(item))}</option>`)
     .join("");
@@ -914,12 +972,17 @@ function inputValueFromElement(selector: string, fallback: number | null): numbe
   try { return parseInput(value); } catch { return null; }
 }
 
-function renderHostRoutes(): void {
-  const container = document.querySelector("#host-route-grid");
+function renderHostRoutes(shared: SharedMonitorStatus): void {
+  const container = document.querySelector(`[data-host-route-grid="${cssEscape(shared.monitorKey)}"]`);
   if (!container) return;
+  const selectedMonitor = selectedMonitorFor(shared);
   const routes = [
-    { id: "local", name: dashboard.localHost === "windows" ? t("dashboard.localWindows") : t("dashboard.localMac"), platform: dashboard.localHost, input: settings.localInput, local: true },
-    ...settings.peers.map((peer) => ({ ...peer, local: false })),
+    { id: "local", name: dashboard.localHost === "windows" ? t("dashboard.localWindows") : t("dashboard.localMac"), platform: dashboard.localHost, input: selectedMonitor?.localInput ?? null, local: true },
+    ...settings.peers.map((peer) => ({
+      id: peer.id, name: peer.name, platform: peer.platform,
+      input: peer.inputs.find((assignment) => sameFingerprint(assignment.monitor, shared.fingerprint))?.input ?? null,
+      local: false,
+    })),
   ];
   container.innerHTML = routes.map((route) => {
     const badgeText = route.local
@@ -927,7 +990,7 @@ function renderHostRoutes(): void {
       : (route.platform === "mac" ? t("dashboard.connectedMacOs") : t("dashboard.connectedWindows"));
     const inputDesc = route.input == null
       ? t("dashboard.inputUnset")
-      : (route.local ? t("dashboard.currentInput", { input: escapeHtml(inputName(route.input)) }) : t("dashboard.assignedInput", { input: escapeHtml(inputName(route.input)) }));
+      : (route.local ? t("dashboard.currentInput", { input: escapeHtml(inputName(route.input, shared.monitorKey)) }) : t("dashboard.assignedInput", { input: escapeHtml(inputName(route.input, shared.monitorKey)) }));
     const iconName = route.platform === "mac" ? "laptop" : "computer";
 
     return `
@@ -948,7 +1011,7 @@ function renderHostRoutes(): void {
             <span class="active-toggle-indicator"></span>
           </div>
         ` : `
-          <button class="switch-button primary" data-switch-id="${escapeHtml(route.id)}" ${route.input == null || (!dashboard.ddcAvailable && !dashboard.agentConfigured) ? "disabled" : ""}>
+          <button class="switch-button primary" data-switch-id="${escapeHtml(route.id)}" ${route.input == null || (!shared.ddcAvailable && !dashboard.agentConfigured) ? "disabled" : ""}>
             <i data-lucide="arrow-left-right"></i>
             <span>${t("action.switchHost")}</span>
           </button>
@@ -959,12 +1022,11 @@ function renderHostRoutes(): void {
 }
 
 function renderInputHints(): void {
-  const local = document.querySelector<HTMLSelectElement>("#local-input");
-  setText("#local-input-name", labelForCode(local?.value ?? ""));
   document.querySelectorAll<HTMLSelectElement>("[data-route-input]").forEach((input) => {
     const routeId = input.dataset.routeInput ?? "";
-    const current = inputValueFromElement(`[data-route-input="${cssEscape(routeId)}"]`, null);
-    input.innerHTML = renderInputOptions(routeId, current);
+    const monitorKey = input.dataset.routeMonitor ?? "";
+    const current = peerInputValue(routeId, monitorKey);
+    input.innerHTML = renderInputOptions(routeId, monitorKey, current);
     input.value = current == null ? "" : String(current);
   });
 }
@@ -980,10 +1042,19 @@ async function scanPeers(): Promise<void> {
   finally { if (button) { button.disabled = false; button.textContent = t("action.searchAgain"); } }
 }
 
-async function selectMonitor(monitorId: string): Promise<void> {
+async function addSharedMonitor(monitorId: string): Promise<void> {
+  const monitor = dashboard.monitors.find((item) => item.id === monitorId);
   try {
-    settings = await invoke<AppSettings>("select_monitor", { monitorId });
-    await refresh(); showToast(t("toast.monitorSelected"), t("toast.monitorSelectedBody", { name: settings.sharedMonitor?.name ?? t("dashboard.sharedDisplay") }));
+    settings = await invoke<AppSettings>("add_shared_monitor", { monitorId });
+    await refresh();
+    showToast(t("toast.monitorSelected"), t("toast.monitorSelectedBody", { name: monitor?.name ?? t("dashboard.sharedDisplay") }));
+  } catch (error) { showToast(t("toast.monitorSelectFailed"), String(error), true); }
+}
+
+async function removeSharedMonitor(monitorId: string): Promise<void> {
+  try {
+    settings = await invoke<AppSettings>("remove_shared_monitor", { monitorId });
+    await refresh();
   } catch (error) { showToast(t("toast.monitorSelectFailed"), String(error), true); }
 }
 
@@ -993,7 +1064,11 @@ async function addPeer(peerId: string): Promise<void> {
     settings = await invoke<AppSettings>("select_peer", { peerId, sharedKey });
     const added = settings.peers.find((peer) => peer.id === peerId);
     renderState();
-    showToast(t("toast.peerAdded"), added?.input == null ? t("toast.peerAddedBody") : t("toast.peerPortDetected", { port: inputName(added.input) }));
+    const detectedPorts = (added?.inputs ?? []).map((assignment) => {
+      const shared = dashboard.shared.find((item) => sameFingerprint(item.fingerprint, assignment.monitor));
+      return shared ? `${shared.name}: ${inputName(assignment.input, shared.monitorKey)}` : String(assignment.input);
+    });
+    showToast(t("toast.peerAdded"), detectedPorts.length ? t("toast.peerPortDetected", { port: detectedPorts.join(", ") }) : t("toast.peerAddedBody"));
   }
   catch (error) { showToast(t("toast.peerAddFailed"), String(error), true); }
 }
@@ -1006,10 +1081,16 @@ async function removePeer(peerId: string): Promise<void> {
 async function saveSettings(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   try {
-    const localInput = parseInput(document.querySelector<HTMLSelectElement>("#local-input")?.value ?? "");
     settings = {
-      ...settings, localInput,
-      peers: settings.peers.map((peer) => ({ ...peer, input: parseInput(document.querySelector<HTMLSelectElement>(`[data-route-input="${cssEscape(peer.id)}"]`)?.value ?? "") })),
+      ...settings,
+      peers: settings.peers.map((peer) => ({
+        ...peer,
+        inputs: dashboard.shared.flatMap((shared) => {
+          const value = document.querySelector<HTMLSelectElement>(`[data-route-input="${cssEscape(peer.id)}"][data-route-monitor="${cssEscape(shared.monitorKey)}"]`)?.value ?? "";
+          const input = parseInput(value);
+          return input == null ? [] : [{ monitor: shared.fingerprint, input }];
+        }),
+      })),
       sharedKey: document.querySelector<HTMLInputElement>("#shared-key")?.value ?? "",
       waitSeconds: Number(document.querySelector<HTMLInputElement>("#wait-seconds")?.value ?? 45),
       autostart: document.querySelector<HTMLInputElement>("#autostart")?.checked ?? true,
@@ -1022,7 +1103,7 @@ async function saveSettings(event: SubmitEvent): Promise<void> {
   } catch (error) { showToast(t("toast.settingsFailed"), String(error), true); }
 }
 
-async function switchHost(targetId: string): Promise<void> {
+async function switchHost(monitorKey: string, targetId: string): Promise<void> {
   showOperation(t("operation.preparingTitle"), t("operation.preparingBody"));
   const onEvent = new Channel<SwitchProgressEvent>();
   onEvent.onmessage = (event) => {
@@ -1039,7 +1120,7 @@ async function switchHost(targetId: string): Promise<void> {
     }
   };
   try {
-    const result = await invoke<OperationResult>("switch_host", { targetId, onEvent });
+    const result = await invoke<OperationResult>("switch_host", { monitorId: monitorKey, targetId, onEvent });
     showToast(result.title, result.detail, result.warning);
   } catch (error) {
     showToast(t("toast.switchFailed"), String(error), true);
@@ -1135,8 +1216,8 @@ function showOnboarding(step: number): void {
 
 function onboardingStatus(step: number): { ready: boolean; title: string; detail: string } | null {
   if (step === 2) {
-    if (settings.sharedMonitor) {
-      return { ready: true, title: t("onboarding.displaySelected"), detail: settings.sharedMonitor.name };
+    if (settings.sharedMonitors.length > 0) {
+      return { ready: true, title: t("onboarding.displaySelected"), detail: settings.sharedMonitors.map((sm) => sm.name).join(", ") };
     }
     if (dashboard.monitors.length > 0) {
       return { ready: true, title: t("onboarding.displaysDetected", { count: dashboard.monitors.length }), detail: t("onboarding.displaysDetectedDetail") };
@@ -1348,8 +1429,8 @@ function parseInput(value: string): number | null {
   return parsed;
 }
 
-function inputName(value: number): string {
-  const known = inputOptions.find((item) => item.value === value);
+function inputName(value: number, monitorKey: string): string {
+  const known = (inputOptionsByMonitor[monitorKey] ?? standardInputs).find((item) => item.value === value);
   return known ? localizedInputOptionName(known) : t("input.other");
 }
 function localizedInputOptionName(input: InputOption): string {
@@ -1359,10 +1440,6 @@ function localizedInputOptionName(input: InputOption): string {
     [0x0c, t("input.component1")], [0x0d, t("input.component2")], [0x0e, t("input.component3")],
   ]);
   return localized.get(input.value) ?? input.name;
-}
-function labelForCode(value: string): string {
-  try { const parsed = parseInput(value); return parsed == null ? t("input.unset") : inputName(parsed); }
-  catch { return t("input.invalid"); }
 }
 function platformName(value: Platform): string { return value === "mac" ? "macOS" : "Windows"; }
 function isUltrawideResolution(value: MonitorResolution): boolean { return value.height > 0 && value.width >= value.height * 2; }

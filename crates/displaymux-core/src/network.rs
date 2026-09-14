@@ -27,6 +27,10 @@ use crate::{
 
 pub const DEFAULT_AGENT_PORT: u16 = 47_653;
 pub const DISPLAYMUX_SERVICE_TYPE: &str = "_displaymux._tcp.local.";
+/// Bumped whenever the agent wire protocol gains a field that changes how a
+/// request must be interpreted (not just an additive/ignorable one). A peer
+/// reporting a version below this may not understand per-monitor requests.
+pub const AGENT_PROTOCOL_VERSION: u32 = 2;
 const MAX_CLOCK_SKEW: Duration = Duration::from_secs(30);
 const MAX_PACKET_BYTES: usize = 8 * 1024;
 
@@ -319,7 +323,14 @@ impl PeerEndpoint {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentAction {
     Ping,
-    SwitchInput { input: DisplayInput },
+    SwitchInput {
+        /// Which shared monitor to switch. `None` is the pre-v2 shape: the
+        /// receiving agent must have exactly one shared monitor selected to
+        /// accept it unambiguously (see `AGENT_PROTOCOL_VERSION`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        monitor: Option<MonitorFingerprint>,
+        input: DisplayInput,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -368,8 +379,22 @@ impl AgentRequest {
 pub struct AgentResponse {
     pub ready: bool,
     pub message: String,
+    /// Kept for compatibility with pre-v2 clients that only read this field
+    /// for their one implicit shared monitor; populated as
+    /// `display_routes.first().cloned()` by v2+ responders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_route: Option<AgentDisplayRoute>,
+    /// One entry per shared monitor the responder currently knows an input
+    /// for. Absent on a pre-v2 peer's response, which deserializes to an
+    /// empty vec via `#[serde(default)]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub display_routes: Vec<AgentDisplayRoute>,
+    /// The responder's `AGENT_PROTOCOL_VERSION`. Absent on a pre-v2 peer's
+    /// response, which deserializes to `0` via `#[serde(default)]` — treat
+    /// any value less than `AGENT_PROTOCOL_VERSION` as "does not understand
+    /// per-monitor switch requests".
+    #[serde(default)]
+    pub protocol_version: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -540,6 +565,8 @@ fn rejection_response(error: &DisplayMuxError) -> AgentResponse {
         ready: false,
         message: message.to_owned(),
         display_route: None,
+        display_routes: Vec::new(),
+        protocol_version: AGENT_PROTOCOL_VERSION,
     }
 }
 
@@ -629,6 +656,7 @@ mod tests {
         let key = b"a test key that is never persisted";
         let mut request = AgentRequest::signed(AgentAction::Ping, "nonce-1", key).unwrap();
         request.action = AgentAction::SwitchInput {
+            monitor: None,
             input: DisplayInput::new(0x11).unwrap(),
         };
         assert_eq!(
@@ -658,6 +686,31 @@ mod tests {
             serde_json::from_str(r#"{"ready":true,"message":"ready"}"#).unwrap();
         assert!(response.ready);
         assert!(response.display_route.is_none());
+        assert!(response.display_routes.is_empty());
+        assert_eq!(response.protocol_version, 0);
+    }
+
+    #[test]
+    fn pre_v2_switch_input_request_without_monitor_field_still_deserializes() {
+        let action: AgentAction =
+            serde_json::from_str(r#"{"type":"switch_input","input":17}"#).unwrap();
+        assert_eq!(
+            action,
+            AgentAction::SwitchInput {
+                monitor: None,
+                input: DisplayInput::new(0x11).unwrap(),
+            }
+        );
+    }
+
+    #[test]
+    fn switch_input_with_monitor_serializes_the_monitor_field() {
+        let action = AgentAction::SwitchInput {
+            monitor: Some(MonitorFingerprint::new("ACM", "1234", Some("SERIAL-1"))),
+            input: DisplayInput::new(0x11).unwrap(),
+        };
+        let serialized = serde_json::to_value(&action).unwrap();
+        assert!(serialized.get("monitor").is_some());
     }
 
     #[tokio::test]

@@ -20,9 +20,14 @@ interface HostOption {
   available: boolean;
 }
 
-interface HostSwitcherState {
-  sharedMonitorName: string | null;
+interface HostSwitcherMonitor {
+  monitorKey: string;
+  name: string;
   hosts: HostOption[];
+}
+
+interface HostSwitcherState {
+  monitors: HostSwitcherMonitor[];
 }
 
 interface OperationResult {
@@ -30,10 +35,13 @@ interface OperationResult {
   detail: string;
 }
 
+type Row = { kind: "header"; monitorName: string } | { kind: "host"; monitorKey: string; host: HostOption };
+
 const root = document.querySelector<HTMLElement>("#host-switcher-app")!;
 if (!root) throw new Error("DisplayMux host switcher root was not found");
 
-let state: HostSwitcherState = { sharedMonitorName: null, hosts: [] };
+let state: HostSwitcherState = { monitors: [] };
+let rows: Row[] = [];
 let selectedIndex = 0;
 let switching = false;
 
@@ -47,29 +55,44 @@ function platformLabel(platform: Platform): string {
   return platform === "mac" ? "macOS" : "Windows";
 }
 
+function computeRows(): Row[] {
+  const showHeaders = state.monitors.length > 1;
+  return state.monitors.flatMap((monitor) => [
+    ...(showHeaders ? [{ kind: "header" as const, monitorName: monitor.name }] : []),
+    ...monitor.hosts.map((host) => ({ kind: "host" as const, monitorKey: monitor.monitorKey, host })),
+  ]);
+}
+
+function isSelectableRow(row: Row | undefined): row is Extract<Row, { kind: "host" }> {
+  return row?.kind === "host" && row.host.available;
+}
+
 function render(message?: { title: string; detail: string; error?: boolean }): void {
+  const headerLine = state.monitors.length
+    ? state.monitors.map((monitor) => monitor.name).join(" · ")
+    : t("switcher.noDisplay");
   root.innerHTML = `
     <main class="switcher-shell" aria-labelledby="switcher-title">
       <header class="switcher-header">
         <div>
           <p class="eyebrow">DISPLAYMUX</p>
           <h1 id="switcher-title">${t("switcher.title")}</h1>
-          <p>${escapeHtml(state.sharedMonitorName ?? t("switcher.noDisplay"))}</p>
+          <p>${escapeHtml(headerLine)}</p>
         </div>
       </header>
       <section class="host-list" role="listbox" aria-label="${t("switcher.hostListAria")}">
-        ${state.hosts.map((host, index) => `
-          <button type="button" class="host-option ${index === selectedIndex ? "is-selected" : ""}"
-            data-host-index="${index}" role="option" aria-selected="${index === selectedIndex}"
-            ${host.available && !switching ? "" : "disabled"}>
-            <span class="platform-mark ${host.platform}">${host.platform === "mac" ? "M" : "W"}</span>
+        ${rows.map((row, index) => row.kind === "header"
+          ? `<div class="host-group-header">${escapeHtml(row.monitorName)}</div>`
+          : `<button type="button" class="host-option ${index === selectedIndex ? "is-selected" : ""}"
+            data-row-index="${index}" role="option" aria-selected="${index === selectedIndex}"
+            ${row.host.available && !switching ? "" : "disabled"}>
+            <span class="platform-mark ${row.host.platform}">${row.host.platform === "mac" ? "M" : "W"}</span>
             <span class="host-copy">
-              <strong>${escapeHtml(host.name)}</strong>
-              <small>${platformLabel(host.platform)} · ${escapeHtml(host.inputName ?? t("switcher.inputUnset"))}</small>
+              <strong>${escapeHtml(row.host.name)}</strong>
+              <small>${platformLabel(row.host.platform)} · ${escapeHtml(row.host.inputName ?? t("switcher.inputUnset"))}</small>
             </span>
-            <span class="host-status">${host.isLocal ? t("switcher.local") : t("switcher.select")}</span>
-          </button>
-        `).join("") || `<p class="empty-state">${t("switcher.noHosts")}</p>`}
+            <span class="host-status">${row.host.isLocal ? t("switcher.local") : t("switcher.select")}</span>
+          </button>`).join("") || `<p class="empty-state">${t("switcher.noHosts")}</p>`}
       </section>
       ${message ? `<div class="switch-message ${message.error ? "is-error" : ""}" role="status"><strong>${escapeHtml(message.title)}</strong><span>${escapeHtml(message.detail)}</span></div>` : ""}
       <footer>
@@ -80,19 +103,19 @@ function render(message?: { title: string; detail: string; error?: boolean }): v
 }
 
 function nextAvailableIndex(direction: 1 | -1): number {
-  if (!state.hosts.some((host) => host.available)) return selectedIndex;
+  if (!rows.some((row) => isSelectableRow(row))) return selectedIndex;
   let candidate = selectedIndex;
   do {
-    candidate = (candidate + direction + state.hosts.length) % state.hosts.length;
-  } while (!state.hosts[candidate].available);
+    candidate = (candidate + direction + rows.length) % rows.length;
+  } while (!isSelectableRow(rows[candidate]));
   return candidate;
 }
 
 function selectIndex(index: number): void {
-  if (!state.hosts[index]?.available || switching) return;
+  if (!isSelectableRow(rows[index]) || switching) return;
   selectedIndex = index;
   render();
-  document.querySelector<HTMLElement>(`[data-host-index="${index}"]`)?.focus();
+  document.querySelector<HTMLElement>(`[data-row-index="${index}"]`)?.focus();
 }
 
 async function hideSwitcher(): Promise<void> {
@@ -100,8 +123,8 @@ async function hideSwitcher(): Promise<void> {
 }
 
 async function switchToSelected(): Promise<void> {
-  const host = state.hosts[selectedIndex];
-  if (!host?.available || switching) return;
+  const row = rows[selectedIndex];
+  if (!isSelectableRow(row) || switching) return;
   switching = true;
   render({ title: t("switcher.preparing"), detail: t("switcher.preparingDetail") });
   const onEvent = new Channel<SwitchProgressEvent>();
@@ -116,7 +139,7 @@ async function switchToSelected(): Promise<void> {
     render({ title: t("switcher.preparing"), detail });
   };
   try {
-    const result = await invoke<OperationResult>("switch_host", { targetId: host.id, onEvent });
+    const result = await invoke<OperationResult>("switch_host", { monitorId: row.monitorKey, targetId: row.host.id, onEvent });
     render({ title: result.title, detail: result.detail });
     window.setTimeout(() => void hideSwitcher(), 450);
   } catch (error) {
@@ -126,9 +149,9 @@ async function switchToSelected(): Promise<void> {
 }
 
 root.addEventListener("click", (event) => {
-  const option = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-host-index]");
+  const option = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-row-index]");
   if (!option) return;
-  const index = Number(option.dataset.hostIndex);
+  const index = Number(option.dataset.rowIndex);
   if (Number.isInteger(index)) {
     selectedIndex = index;
     void switchToSelected();
@@ -158,14 +181,18 @@ async function initialize(): Promise<void> {
     state = await invoke<HostSwitcherState>("get_host_switcher_state");
   } catch {
     state = {
-      sharedMonitorName: t("switcher.previewDisplay"),
-      hosts: [
-        { id: "local", name: t("switcher.previewWindows"), platform: "windows", inputName: "HDMI 1", isLocal: true, available: true },
-        { id: "peer", name: t("switcher.previewMac"), platform: "mac", inputName: "DisplayPort", isLocal: false, available: true },
-      ],
+      monitors: [{
+        monitorKey: "preview",
+        name: t("switcher.previewDisplay"),
+        hosts: [
+          { id: "local", name: t("switcher.previewWindows"), platform: "windows", inputName: "HDMI 1", isLocal: true, available: true },
+          { id: "peer", name: t("switcher.previewMac"), platform: "mac", inputName: "DisplayPort", isLocal: false, available: true },
+        ],
+      }],
     };
   }
-  selectedIndex = Math.max(0, state.hosts.findIndex((host) => host.available));
+  rows = computeRows();
+  selectedIndex = Math.max(0, rows.findIndex((row) => isSelectableRow(row)));
   render();
 }
 

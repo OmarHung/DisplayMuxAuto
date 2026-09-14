@@ -26,6 +26,7 @@ button { font: inherit; color: inherit; }
 h1 { margin: 0; font-size: 25px; line-height: 1.2; letter-spacing: -0.035em; }
 .switcher-header p:last-child { margin: 7px 0 0; color: #64716c; font-size: 13px; }
 .host-list { display: grid; gap: 10px; padding: 20px 0; overflow: auto; }
+.host-group-header { padding: 4px 4px 0; color: #68746f; font-size: 11.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; }
 .host-option { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 14px; width: 100%; min-height: 76px; padding: 13px 15px; border: 1px solid #d7dedb; border-radius: 10px; background: #fff; text-align: left; cursor: pointer; transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease; }
 .host-option:hover:not(:disabled), .host-option.is-selected { border-color: #137356; box-shadow: 0 0 0 3px rgba(19, 115, 86, 0.11); transform: translateY(-1px); }
 .host-option:focus { outline: none; }

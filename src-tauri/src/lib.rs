@@ -15,7 +15,7 @@ use displaymux_core::{
     DiscoveredPeer, DisplayInput, DisplayMuxError, DisplayMuxProfile, DisplayMuxService,
     MacAddress, MdnsPeerDiscovery, MonitorControl, MonitorDescriptor, MonitorFingerprint,
     PeerDiscovery, PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome, WakeTarget,
-    DEFAULT_AGENT_PORT,
+    AGENT_PROTOCOL_VERSION, DEFAULT_AGENT_PORT,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Manager, State};
@@ -123,6 +123,12 @@ struct SelectedMonitor {
     max_resolution: Option<displaymux_core::MonitorResolution>,
     #[serde(default)]
     resolution_source: Option<ResolutionSource>,
+    // Formerly top-level fields on `AppSettings`; each selected monitor now
+    // carries its own live input state so N monitors can be tracked at once.
+    #[serde(default)]
+    local_input: Option<DisplayInput>,
+    #[serde(default)]
+    supported_inputs: Option<Vec<DisplayInput>>,
 }
 
 impl From<&MonitorDescriptor> for SelectedMonitor {
@@ -132,8 +138,17 @@ impl From<&MonitorDescriptor> for SelectedMonitor {
             fingerprint: monitor.fingerprint.clone(),
             max_resolution: monitor.max_resolution,
             resolution_source: monitor.resolution_source,
+            local_input: None,
+            supported_inputs: None,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MonitorInputAssignment {
+    monitor: MonitorFingerprint,
+    input: DisplayInput,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,17 +160,35 @@ struct HostRoute {
     address: String,
     port: u16,
     mac_address: String,
-    input: Option<DisplayInput>,
+    #[serde(default)]
+    inputs: Vec<MonitorInputAssignment>,
+}
+
+impl HostRoute {
+    fn input_for(&self, fingerprint: &MonitorFingerprint) -> Option<DisplayInput> {
+        self.inputs
+            .iter()
+            .find(|assignment| assignment.monitor.matches_exactly(fingerprint))
+            .map(|assignment| assignment.input)
+    }
+
+    fn set_input_for(&mut self, fingerprint: &MonitorFingerprint, input: Option<DisplayInput>) {
+        self.inputs
+            .retain(|assignment| !assignment.monitor.matches_exactly(fingerprint));
+        if let Some(input) = input {
+            self.inputs.push(MonitorInputAssignment {
+                monitor: fingerprint.clone(),
+                input,
+            });
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct AppSettings {
     local_host: DestinationHost,
-    shared_monitor: Option<SelectedMonitor>,
-    local_input: Option<DisplayInput>,
-    #[serde(default)]
-    supported_inputs: Option<Vec<DisplayInput>>,
+    shared_monitors: Vec<SelectedMonitor>,
     peers: Vec<HostRoute>,
     broadcast_ip: String,
     wake_port: u16,
@@ -172,9 +205,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             local_host: local_host(),
-            shared_monitor: None,
-            local_input: None,
-            supported_inputs: None,
+            shared_monitors: Vec::new(),
             peers: Vec::new(),
             broadcast_ip: "255.255.255.255".to_owned(),
             wake_port: 9,
@@ -187,6 +218,19 @@ impl Default for AppSettings {
             host_switcher_shortcut: DEFAULT_HOST_SWITCHER_SHORTCUT.to_owned(),
         }
     }
+}
+
+/// A stable, opaque, frontend-facing id for a monitor identity. Not
+/// persisted — recomputed from the fingerprint on every call. Kept local to
+/// this crate because `MonitorFingerprint::stable_key()` in `displaymux-core`
+/// is `pub(crate)` there and not visible here.
+fn monitor_key(fingerprint: &MonitorFingerprint) -> String {
+    format!(
+        "{}:{}:{}",
+        fingerprint.manufacturer_id,
+        fingerprint.product_code,
+        fingerprint.serial_number.as_deref().unwrap_or("")
+    )
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -202,9 +246,16 @@ struct HostSwitcherOption {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct HostSwitcherState {
-    shared_monitor_name: Option<String>,
+struct HostSwitcherMonitor {
+    monitor_key: String,
+    name: String,
     hosts: Vec<HostSwitcherOption>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSwitcherState {
+    monitors: Vec<HostSwitcherMonitor>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -259,14 +310,23 @@ struct AppRuntime {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SharedMonitorStatus {
+    monitor_key: String,
+    fingerprint: MonitorFingerprint,
+    name: String,
+    ddc_available: bool,
+    status_text: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DashboardState {
     platform: &'static str,
     local_host: DestinationHost,
     agent_configured: bool,
-    ddc_available: bool,
-    monitor_status: String,
-    selection_notice: Option<String>,
     monitors: Vec<MonitorDescriptor>,
+    shared: Vec<SharedMonitorStatus>,
+    selection_notices: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -274,11 +334,13 @@ enum MonitorSelectionChange {
     SelectedOnlyMonitor {
         name: String,
     },
-    ReplacedMissingMonitor {
-        previous: String,
-        replacement: String,
+    RemovedMissingMonitor {
+        name: String,
+        fingerprint: MonitorFingerprint,
     },
-    RefreshedMetadata,
+    RefreshedMetadata {
+        name: String,
+    },
 }
 
 struct MonitorInventory {
@@ -421,7 +483,7 @@ async fn select_peer(
         let mut query_settings = settings.clone();
         query_settings.shared_key = query_key;
         if let Ok(response) = request_peer(&query_settings, &route, AgentAction::Ping).await {
-            if let Some(display_route) = response.display_route {
+            for display_route in agent_display_routes(&response) {
                 apply_verified_peer_route(&mut settings, &route.id, display_route);
             }
         }
@@ -436,8 +498,9 @@ fn remove_peer(peer_id: String, state: State<'_, AppRuntime>) -> Result<AppSetti
     store_settings(&state, settings)
 }
 
-#[tauri::command]
-fn select_monitor(monitor_id: String, state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
+fn resolve_controllable_monitor(
+    monitor_id: &str,
+) -> Result<(impl MonitorControl, MonitorDescriptor), String> {
     let controller = platform_controller().map_err(core_user_error)?;
     let monitor = monitor_inventory(&controller)
         .map_err(core_user_error)?
@@ -451,16 +514,48 @@ fn select_monitor(monitor_id: String, state: State<'_, AppRuntime>) -> Result<Ap
             )
             .to_owned()
         })?;
+    Ok((controller, monitor))
+}
+
+#[tauri::command]
+fn add_shared_monitor(
+    monitor_id: String,
+    state: State<'_, AppRuntime>,
+) -> Result<AppSettings, String> {
+    let (controller, monitor) = resolve_controllable_monitor(&monitor_id)?;
     let mut settings = read_settings(&state)?;
-    let monitor_changed = settings
-        .shared_monitor
-        .as_ref()
-        .is_none_or(|selected| !selected.fingerprint.matches_exactly(&monitor.fingerprint));
-    settings.shared_monitor = Some(SelectedMonitor::from(&monitor));
-    if monitor_changed {
-        settings.peers.iter_mut().for_each(|peer| peer.input = None);
+    let already_selected = settings
+        .shared_monitors
+        .iter()
+        .any(|selected| selected.fingerprint.matches_exactly(&monitor.fingerprint));
+    if !already_selected {
+        settings
+            .shared_monitors
+            .push(SelectedMonitor::from(&monitor));
     }
-    refresh_selected_input_data(&controller, &monitor, &mut settings).map_err(core_user_error)?;
+    if let Some(selected) = settings
+        .shared_monitors
+        .iter_mut()
+        .find(|selected| selected.fingerprint.matches_exactly(&monitor.fingerprint))
+    {
+        refresh_selected_input_data(&controller, &monitor, selected).map_err(core_user_error)?;
+    }
+    store_settings(&state, settings)
+}
+
+#[tauri::command]
+fn remove_shared_monitor(
+    monitor_id: String,
+    state: State<'_, AppRuntime>,
+) -> Result<AppSettings, String> {
+    let (_controller, monitor) = resolve_controllable_monitor(&monitor_id)?;
+    let mut settings = read_settings(&state)?;
+    settings
+        .shared_monitors
+        .retain(|selected| !selected.fingerprint.matches_exactly(&monitor.fingerprint));
+    for peer in &mut settings.peers {
+        peer.set_input_for(&monitor.fingerprint, None);
+    }
     store_settings(&state, settings)
 }
 
@@ -472,27 +567,38 @@ fn get_settings(state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
 #[tauri::command]
 fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherState, String> {
     let settings = read_settings(&state)?;
-    let mut hosts = Vec::with_capacity(settings.peers.len() + 1);
-    hosts.push(HostSwitcherOption {
-        id: "local".to_owned(),
-        name: ui_text("這台電腦", "This computer").to_owned(),
-        platform: settings.local_host,
-        input_name: settings.local_input.map(localized_input_name),
-        is_local: true,
-        available: settings.local_input.is_some(),
-    });
-    hosts.extend(settings.peers.iter().map(|peer| HostSwitcherOption {
-        id: peer.id.clone(),
-        name: peer.name.clone(),
-        platform: peer.platform,
-        input_name: peer.input.map(localized_input_name),
-        is_local: false,
-        available: peer.input.is_some(),
-    }));
-    Ok(HostSwitcherState {
-        shared_monitor_name: settings.shared_monitor.map(|monitor| monitor.name),
-        hosts,
-    })
+    let monitors = settings
+        .shared_monitors
+        .iter()
+        .map(|selected| {
+            let mut hosts = Vec::with_capacity(settings.peers.len() + 1);
+            hosts.push(HostSwitcherOption {
+                id: "local".to_owned(),
+                name: ui_text("這台電腦", "This computer").to_owned(),
+                platform: settings.local_host,
+                input_name: selected.local_input.map(localized_input_name),
+                is_local: true,
+                available: selected.local_input.is_some(),
+            });
+            hosts.extend(settings.peers.iter().map(|peer| {
+                let input = peer.input_for(&selected.fingerprint);
+                HostSwitcherOption {
+                    id: peer.id.clone(),
+                    name: peer.name.clone(),
+                    platform: peer.platform,
+                    input_name: input.map(localized_input_name),
+                    is_local: false,
+                    available: input.is_some(),
+                }
+            }));
+            HostSwitcherMonitor {
+                monitor_key: monitor_key(&selected.fingerprint),
+                name: selected.name.clone(),
+                hosts,
+            }
+        })
+        .collect();
+    Ok(HostSwitcherState { monitors })
 }
 
 #[tauri::command]
@@ -562,10 +668,15 @@ fn complete_onboarding(state: State<'_, AppRuntime>) -> Result<AppSettings, Stri
 }
 
 #[tauri::command]
-fn get_input_options(state: State<'_, AppRuntime>) -> Result<Vec<InputOption>, String> {
+fn get_input_options(
+    monitor_id: String,
+    state: State<'_, AppRuntime>,
+) -> Result<Vec<InputOption>, String> {
     let settings = read_settings(&state)?;
-    let inputs = settings
+    let selected = find_shared_monitor(&settings, &monitor_id)?;
+    let inputs = selected
         .supported_inputs
+        .clone()
         .filter(|inputs| !inputs.is_empty())
         .unwrap_or_else(common_input_sources);
     Ok(inputs
@@ -575,6 +686,23 @@ fn get_input_options(state: State<'_, AppRuntime>) -> Result<Vec<InputOption>, S
             name: localized_input_name(input),
         })
         .collect())
+}
+
+fn find_shared_monitor<'a>(
+    settings: &'a AppSettings,
+    monitor_id: &str,
+) -> Result<&'a SelectedMonitor, String> {
+    settings
+        .shared_monitors
+        .iter()
+        .find(|selected| monitor_key(&selected.fingerprint) == monitor_id)
+        .ok_or_else(|| {
+            ui_text(
+                "找不到這台共用螢幕，請重新整理後再試一次",
+                "This shared display was not found. Refresh and try again.",
+            )
+            .to_owned()
+        })
 }
 
 #[tauri::command]
@@ -588,9 +716,7 @@ async fn save_settings(
     // Monitor identity and discovered input data are backend-owned. The webview may only
     // assign a filtered input to remote hosts; it cannot forge DDC discovery results.
     settings.local_host = protected.local_host;
-    settings.shared_monitor = protected.shared_monitor.clone();
-    settings.local_input = protected.local_input;
-    settings.supported_inputs = protected.supported_inputs.clone();
+    settings.shared_monitors = protected.shared_monitors.clone();
     settings.onboarding_completed = protected.onboarding_completed;
     validate_settings(&settings).map_err(core_user_error)?;
     let enable_autostart = settings.autostart;
@@ -698,126 +824,143 @@ async fn install_update(
 #[tauri::command]
 fn get_dashboard_state(state: State<'_, AppRuntime>) -> Result<DashboardState, String> {
     let mut settings = read_settings(&state)?;
-    let mut selection_notice = None;
-    let (monitors, monitor_status) = match enumerate_monitor_inventory() {
+    let (monitors, shared, selection_notices) = match enumerate_monitor_inventory() {
         Ok(inventory) => {
-            if let Some(change) = reconcile_monitor_selection(
+            let changes = reconcile_monitor_selection(
                 &mut settings,
                 &inventory.detected,
                 &inventory.controllable,
-            ) {
-                if matches!(
-                    &change,
-                    MonitorSelectionChange::SelectedOnlyMonitor { .. }
-                        | MonitorSelectionChange::ReplacedMissingMonitor { .. }
-                ) {
-                    settings.peers.iter_mut().for_each(|peer| peer.input = None);
+            );
+            if !changes.is_empty() {
+                for change in &changes {
+                    if let MonitorSelectionChange::RemovedMissingMonitor { fingerprint, .. } =
+                        change
+                    {
+                        for peer in &mut settings.peers {
+                            peer.set_input_for(fingerprint, None);
+                        }
+                    }
                 }
-                if let Some(selected) = settings.shared_monitor.as_ref().and_then(|selected| {
-                    inventory
-                        .controllable
-                        .iter()
-                        .find(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
-                }) {
-                    match platform_controller().and_then(|controller| {
-                        refresh_selected_input_data(&controller, selected, &mut settings)
-                    }) {
-                        Ok(()) => {}
-                        Err(error) => tracing::warn!(
-                            monitor_id = selected.id.as_str(),
-                            error = %error,
-                            "unable to record input data for automatically selected display"
-                        ),
+                if let Ok(controller) = platform_controller() {
+                    for selected in &mut settings.shared_monitors {
+                        if let Some(current) = inventory.controllable.iter().find(|monitor| {
+                            selected.fingerprint.matches_exactly(&monitor.fingerprint)
+                        }) {
+                            if let Err(error) =
+                                refresh_selected_input_data(&controller, current, selected)
+                            {
+                                tracing::warn!(
+                                    monitor_id = current.id.as_str(),
+                                    error = %error,
+                                    "unable to record input data for automatically selected display"
+                                );
+                            }
+                        }
                     }
                 }
                 store_settings(&state, settings.clone())?;
-                selection_notice = match change {
-                    MonitorSelectionChange::SelectedOnlyMonitor { name } => {
-                        Some(match UiLocale::current() {
-                            UiLocale::TraditionalChinese => format!("已自動選取唯一可控制的 DDC/CI 螢幕：{name}"),
-                            UiLocale::English => format!("Automatically selected the only controllable DDC/CI display: {name}"),
-                        })
-                    }
-                    MonitorSelectionChange::ReplacedMissingMonitor {
-                        previous,
-                        replacement,
-                    } => Some(match UiLocale::current() {
-                        UiLocale::TraditionalChinese => format!("先前選取的 {previous} 已消失；已安全更新為唯一可控制的 {replacement}"),
-                        UiLocale::English => format!("Previously selected {previous} disappeared; safely selected the only controllable display, {replacement}"),
-                    }),
-                    MonitorSelectionChange::RefreshedMetadata => None,
-                };
             }
-            let selected = settings.shared_monitor.as_ref();
-            let target_found = selected.is_some_and(|selected| {
-                inventory
-                    .controllable
+            let selection_notices = changes
+                .into_iter()
+                .filter_map(selection_notice_text)
+                .collect();
+            let shared =
+                settings
+                    .shared_monitors
                     .iter()
-                    .any(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
-            });
-            let target_detected = selected.is_some_and(|selected| {
-                inventory
-                    .detected
-                    .iter()
-                    .any(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
-            });
-            let status = match (
-                selected,
-                target_found,
-                target_detected,
-                inventory.controllable.is_empty(),
-            ) {
-                (None, _, _, _) => ui_text(
-                    "尚未選擇共用螢幕；目前不會控制任何螢幕",
-                    "No shared display is selected; no display will be controlled",
-                )
-                .to_owned(),
-                (Some(selected), true, _, _) => match UiLocale::current() {
-                    UiLocale::TraditionalChinese => format!("已鎖定共用螢幕：{}", selected.name),
-                    UiLocale::English => format!("Shared display locked: {}", selected.name),
-                },
-                (Some(selected), false, true, _) => match UiLocale::current() {
-                    UiLocale::TraditionalChinese => {
-                        format!("已偵測到 {}，但目前無法讀取 DDC/CI 輸入", selected.name)
-                    }
-                    UiLocale::English => format!(
-                        "{} was detected, but its DDC/CI input cannot be read",
-                        selected.name
-                    ),
-                },
-                (Some(_), false, false, true) => ui_text(
-                    "目前沒有可用的 DDC/CI 顯示器",
-                    "No DDC/CI display is currently available",
-                )
-                .to_owned(),
-                (Some(selected), false, false, false) => match UiLocale::current() {
-                    UiLocale::TraditionalChinese => {
-                        format!("找不到先前選擇的共用螢幕：{}", selected.name)
-                    }
-                    UiLocale::English => format!(
-                        "Previously selected shared display was not found: {}",
-                        selected.name
-                    ),
-                },
-            };
-            (inventory.controllable, status)
+                    .map(|selected| {
+                        let target_found = inventory.controllable.iter().any(|monitor| {
+                            selected.fingerprint.matches_exactly(&monitor.fingerprint)
+                        });
+                        let target_detected = inventory.detected.iter().any(|monitor| {
+                            selected.fingerprint.matches_exactly(&monitor.fingerprint)
+                        });
+                        SharedMonitorStatus {
+                            monitor_key: monitor_key(&selected.fingerprint),
+                            fingerprint: selected.fingerprint.clone(),
+                            name: selected.name.clone(),
+                            ddc_available: target_found,
+                            status_text: shared_monitor_status_text(
+                                &selected.name,
+                                target_found,
+                                target_detected,
+                            ),
+                        }
+                    })
+                    .collect();
+            (inventory.controllable, shared, selection_notices)
         }
-        Err(error) => (Vec::new(), core_user_error(error)),
+        Err(error) => {
+            let message = core_user_error(error);
+            let shared = settings
+                .shared_monitors
+                .iter()
+                .map(|selected| SharedMonitorStatus {
+                    monitor_key: monitor_key(&selected.fingerprint),
+                    fingerprint: selected.fingerprint.clone(),
+                    name: selected.name.clone(),
+                    ddc_available: false,
+                    status_text: message.clone(),
+                })
+                .collect();
+            (Vec::new(), shared, Vec::new())
+        }
     };
-    let ddc_available = settings.shared_monitor.as_ref().is_some_and(|selected| {
-        monitors
-            .iter()
-            .any(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
-    });
     Ok(DashboardState {
         platform: std::env::consts::OS,
         local_host: settings.local_host,
         agent_configured: has_valid_shared_key(&settings.shared_key),
-        ddc_available,
-        monitor_status,
-        selection_notice,
         monitors,
+        shared,
+        selection_notices,
     })
+}
+
+fn selection_notice_text(change: MonitorSelectionChange) -> Option<String> {
+    match change {
+        MonitorSelectionChange::SelectedOnlyMonitor { name } => Some(match UiLocale::current() {
+            UiLocale::TraditionalChinese => {
+                format!("已自動選取唯一可控制的 DDC/CI 螢幕：{name}")
+            }
+            UiLocale::English => {
+                format!("Automatically selected the only controllable DDC/CI display: {name}")
+            }
+        }),
+        MonitorSelectionChange::RemovedMissingMonitor { name, .. } => {
+            Some(match UiLocale::current() {
+                UiLocale::TraditionalChinese => {
+                    format!("先前選取的 {name} 已消失，已自動移出共用螢幕清單")
+                }
+                UiLocale::English => format!(
+                    "Previously selected {name} disappeared and was automatically removed from the shared display list"
+                ),
+            })
+        }
+        MonitorSelectionChange::RefreshedMetadata { .. } => None,
+    }
+}
+
+fn shared_monitor_status_text(name: &str, target_found: bool, target_detected: bool) -> String {
+    if target_found {
+        return match UiLocale::current() {
+            UiLocale::TraditionalChinese => format!("已鎖定共用螢幕：{name}"),
+            UiLocale::English => format!("Shared display locked: {name}"),
+        };
+    }
+    if target_detected {
+        return match UiLocale::current() {
+            UiLocale::TraditionalChinese => {
+                format!("已偵測到 {name}，但目前無法讀取 DDC/CI 輸入")
+            }
+            UiLocale::English => {
+                format!("{name} was detected, but its DDC/CI input cannot be read")
+            }
+        };
+    }
+    match UiLocale::current() {
+        UiLocale::TraditionalChinese => format!("找不到先前選擇的共用螢幕：{name}"),
+        UiLocale::English => format!("Previously selected shared display was not found: {name}"),
+    }
 }
 
 #[tauri::command]
@@ -868,18 +1011,20 @@ async fn wake_peer(
 
 #[tauri::command]
 async fn switch_host(
+    monitor_id: String,
     target_id: String,
     on_event: Channel<SwitchProgress>,
     state: State<'_, AppRuntime>,
 ) -> Result<OperationResult, String> {
     let settings = read_settings(&state)?;
+    let selected = find_shared_monitor(&settings, &monitor_id)?.clone();
     let target = if target_id == "local" {
         None
     } else {
         Some(find_peer(&settings, &target_id)?)
     };
     let input = if let Some(peer) = target {
-        peer.input.ok_or_else(|| {
+        peer.input_for(&selected.fingerprint).ok_or_else(|| {
             ui_text(
                 "尚未設定這台主機使用的螢幕輸入",
                 "The display input for this host is not configured",
@@ -887,7 +1032,7 @@ async fn switch_host(
             .to_owned()
         })?
     } else {
-        settings.local_input.ok_or_else(|| {
+        selected.local_input.ok_or_else(|| {
             ui_text(
                 "尚未設定這台主機使用的螢幕輸入",
                 "The display input for this host is not configured",
@@ -900,7 +1045,7 @@ async fn switch_host(
         None => NetworkPreparation::NotRequired,
     };
     let _ = on_event.send(SwitchProgress::Switching);
-    match run_local_switch(&settings, input) {
+    match run_switch(selected.fingerprint.clone(), input) {
         Ok(outcome) => Ok(outcome_result(outcome, &preparation)),
         Err(local_error) => {
             let local_error = core_user_error(local_error);
@@ -920,18 +1065,31 @@ async fn switch_host(
             let _ = on_event.send(SwitchProgress::RemoteFallback {
                 peer_name: executor.name.clone(),
             });
-            request_peer(&settings, executor, AgentAction::SwitchInput { input })
+            let remote_result: Result<AgentResponse, String> = async {
+                let monitor_field =
+                    resolve_switch_monitor_field(&settings, executor, &selected.fingerprint)
+                        .await?;
+                request_peer(
+                    &settings,
+                    executor,
+                    AgentAction::SwitchInput {
+                        monitor: monitor_field,
+                        input,
+                    },
+                )
                 .await
-                .map_err(|remote_error| match UiLocale::current() {
-                    UiLocale::TraditionalChinese => format!(
-                        "本機與 {} 都無法切換。本機：{}；遠端：{}",
-                        executor.name, local_error, remote_error
-                    ),
-                    UiLocale::English => format!(
-                        "Neither this computer nor {} could switch. Local: {}; remote: {}",
-                        executor.name, local_error, remote_error
-                    ),
-                })?;
+            }
+            .await;
+            remote_result.map_err(|remote_error| match UiLocale::current() {
+                UiLocale::TraditionalChinese => format!(
+                    "本機與 {} 都無法切換。本機：{}；遠端：{}",
+                    executor.name, local_error, remote_error
+                ),
+                UiLocale::English => format!(
+                    "Neither this computer nor {} could switch. Local: {}; remote: {}",
+                    executor.name, local_error, remote_error
+                ),
+            })?;
             Ok(OperationResult {
                 title: match UiLocale::current() {
                     UiLocale::TraditionalChinese => format!("已由 {} 執行切換", executor.name),
@@ -953,6 +1111,42 @@ async fn switch_host(
             })
         }
     }
+}
+
+/// Decides whether an outbound `AgentAction::SwitchInput` may name a target
+/// monitor, based on the receiving peer's advertised protocol version. Never
+/// guesses: a pre-v2 peer is only used when there is exactly one shared
+/// monitor selected locally (unambiguous under the old, monitor-less wire
+/// shape); otherwise the peer must be updated first.
+async fn resolve_switch_monitor_field(
+    settings: &AppSettings,
+    peer: &HostRoute,
+    target_fingerprint: &MonitorFingerprint,
+) -> Result<Option<MonitorFingerprint>, String> {
+    let ping = request_peer(settings, peer, AgentAction::Ping).await?;
+    plan_switch_input(
+        ping.protocol_version,
+        settings.shared_monitors.len(),
+        target_fingerprint,
+    )
+}
+
+fn plan_switch_input(
+    protocol_version: u32,
+    shared_monitor_count: usize,
+    target: &MonitorFingerprint,
+) -> Result<Option<MonitorFingerprint>, String> {
+    if protocol_version >= AGENT_PROTOCOL_VERSION {
+        return Ok(Some(target.clone()));
+    }
+    if shared_monitor_count <= 1 {
+        return Ok(None);
+    }
+    Err(ui_text(
+        "此配對主機使用舊版 DisplayMux，僅支援單一共用螢幕；請將該主機更新到最新版本以切換多台螢幕",
+        "This paired host is running an older DisplayMux version that only supports a single shared display; update it to switch multiple displays.",
+    )
+    .to_owned())
 }
 
 fn outcome_result(outcome: SwitchOutcome, preparation: &NetworkPreparation) -> OperationResult {
@@ -1184,14 +1378,17 @@ fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
     if settings.host_switcher_enabled {
         validate_host_switcher_shortcut(&settings.host_switcher_shortcut)?;
     }
-    if settings
-        .local_input
-        .is_some_and(|input| DisplayInput::new(input.value()).is_err())
+    let invalid_input = |input: DisplayInput| DisplayInput::new(input.value()).is_err();
+    let has_invalid_input = settings
+        .shared_monitors
+        .iter()
+        .any(|selected| selected.local_input.is_some_and(invalid_input))
         || settings.peers.iter().any(|peer| {
-            peer.input
-                .is_some_and(|input| DisplayInput::new(input.value()).is_err())
-        })
-    {
+            peer.inputs
+                .iter()
+                .any(|assignment| invalid_input(assignment.input))
+        });
+    if has_invalid_input {
         return Err(DisplayMuxError::Backend(
             ui_text(
                 "請選擇有效的螢幕輸入 Port",
@@ -1200,38 +1397,62 @@ fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
             .to_owned(),
         ));
     }
-    let assigned_inputs = settings
-        .local_input
-        .into_iter()
-        .chain(settings.peers.iter().filter_map(|peer| peer.input))
-        .collect::<Vec<_>>();
-    let unique_inputs = assigned_inputs
-        .iter()
-        .map(|input| input.value())
-        .collect::<std::collections::HashSet<_>>();
-    if unique_inputs.len() != assigned_inputs.len() {
-        return Err(DisplayMuxError::Backend(
-            ui_text(
-                "每個主機必須使用不同的螢幕輸入 Port",
-                "Each host must use a different display input port",
-            )
-            .to_owned(),
-        ));
+    for peer in &settings.peers {
+        for assignment in &peer.inputs {
+            let known_monitor = settings
+                .shared_monitors
+                .iter()
+                .any(|selected| selected.fingerprint.matches_exactly(&assignment.monitor));
+            if !known_monitor {
+                return Err(DisplayMuxError::Backend(
+                    ui_text(
+                        "輸入設定對應到不存在的共用螢幕",
+                        "The input assignment refers to a shared display that is not selected",
+                    )
+                    .to_owned(),
+                ));
+            }
+        }
     }
-    if let Some(supported) = &settings.supported_inputs {
-        if settings
-            .peers
+    for selected in &settings.shared_monitors {
+        let assigned_inputs = selected
+            .local_input
+            .into_iter()
+            .chain(
+                settings
+                    .peers
+                    .iter()
+                    .filter_map(|peer| peer.input_for(&selected.fingerprint)),
+            )
+            .collect::<Vec<_>>();
+        let unique_inputs = assigned_inputs
             .iter()
-            .filter_map(|peer| peer.input)
-            .any(|assigned| !supported.contains(&assigned))
-        {
+            .map(|input| input.value())
+            .collect::<std::collections::HashSet<_>>();
+        if unique_inputs.len() != assigned_inputs.len() {
             return Err(DisplayMuxError::Backend(
                 ui_text(
-                    "輸入值不在這台螢幕的 MCCS capabilities 清單中",
-                    "The input is not listed in this display's MCCS capabilities",
+                    "每個主機必須使用不同的螢幕輸入 Port",
+                    "Each host must use a different display input port",
                 )
                 .to_owned(),
             ));
+        }
+        if let Some(supported) = &selected.supported_inputs {
+            if settings
+                .peers
+                .iter()
+                .filter_map(|peer| peer.input_for(&selected.fingerprint))
+                .any(|assigned| !supported.contains(&assigned))
+            {
+                return Err(DisplayMuxError::Backend(
+                    ui_text(
+                        "輸入值不在這台螢幕的 MCCS capabilities 清單中",
+                        "The input is not listed in this display's MCCS capabilities",
+                    )
+                    .to_owned(),
+                ));
+            }
         }
     }
     for peer in &settings.peers {
@@ -1424,8 +1645,18 @@ fn upsert_discovered_peer(settings: &mut AppSettings, peer: &DiscoveredPeer) {
         address: peer.address.to_string(),
         port: peer.port,
         mac_address: peer.mac_address.clone().unwrap_or_default(),
-        input: None,
+        inputs: Vec::new(),
     });
+}
+
+/// A peer's `Ping` response may report one route (pre-v2) or several
+/// (v2+); this always yields the full set to apply.
+fn agent_display_routes(response: &AgentResponse) -> Vec<AgentDisplayRoute> {
+    if !response.display_routes.is_empty() {
+        response.display_routes.clone()
+    } else {
+        response.display_route.clone().into_iter().collect()
+    }
 }
 
 fn apply_verified_peer_route(
@@ -1433,29 +1664,36 @@ fn apply_verified_peer_route(
     peer_id: &str,
     route: AgentDisplayRoute,
 ) -> bool {
-    let same_monitor = settings
-        .shared_monitor
-        .as_ref()
-        .is_some_and(|selected| selected.fingerprint.matches_exactly(&route.monitor));
-    if !same_monitor {
+    let Some((fingerprint, local_input, supported_inputs)) = settings
+        .shared_monitors
+        .iter()
+        .find(|selected| selected.fingerprint.matches_exactly(&route.monitor))
+        .map(|selected| {
+            (
+                selected.fingerprint.clone(),
+                selected.local_input,
+                selected.supported_inputs.clone(),
+            )
+        })
+    else {
         return false;
-    }
-    let supported = settings.supported_inputs.as_ref().map_or_else(
+    };
+    let supported = supported_inputs.as_ref().map_or_else(
         || common_input_sources().contains(&route.input),
         |inputs| inputs.contains(&route.input),
     );
-    let already_assigned = settings.local_input == Some(route.input)
+    let already_assigned = local_input == Some(route.input)
         || settings
             .peers
             .iter()
-            .any(|peer| peer.id != peer_id && peer.input == Some(route.input));
+            .any(|peer| peer.id != peer_id && peer.input_for(&fingerprint) == Some(route.input));
     if !supported || already_assigned {
         return false;
     }
     let Some(peer) = settings.peers.iter_mut().find(|peer| peer.id == peer_id) else {
         return false;
     };
-    peer.input = Some(route.input);
+    peer.set_input_for(&fingerprint, Some(route.input));
     true
 }
 
@@ -1494,12 +1732,22 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                 async move {
                     match action {
                         AgentAction::Ping => {
-                            let display_route = live_settings.read().ok().and_then(|settings| {
-                                Some(AgentDisplayRoute {
-                                    monitor: settings.shared_monitor.as_ref()?.fingerprint.clone(),
-                                    input: settings.local_input?,
+                            let display_routes = live_settings
+                                .read()
+                                .ok()
+                                .map(|settings| {
+                                    settings
+                                        .shared_monitors
+                                        .iter()
+                                        .filter_map(|selected| {
+                                            Some(AgentDisplayRoute {
+                                                monitor: selected.fingerprint.clone(),
+                                                input: selected.local_input?,
+                                            })
+                                        })
+                                        .collect::<Vec<_>>()
                                 })
-                            });
+                                .unwrap_or_default();
                             AgentResponse {
                                 ready: true,
                                 message: ui_text(
@@ -1507,26 +1755,64 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                     "DisplayMux Agent is ready",
                                 )
                                 .to_owned(),
-                                display_route,
+                                display_route: display_routes.first().cloned(),
+                                display_routes,
+                                protocol_version: AGENT_PROTOCOL_VERSION,
                             }
                         }
-                        AgentAction::SwitchInput { input } => {
-                            let fingerprint = live_settings.read().ok().and_then(|settings| {
-                                settings
-                                    .shared_monitor
-                                    .as_ref()
-                                    .map(|monitor| monitor.fingerprint.clone())
+                        AgentAction::SwitchInput { monitor, input } => {
+                            let resolved = live_settings.read().ok().map(|settings| {
+                                match &monitor {
+                                    Some(requested) => settings
+                                        .shared_monitors
+                                        .iter()
+                                        .find(|selected| {
+                                            selected.fingerprint.matches_exactly(requested)
+                                        })
+                                        .map(|selected| selected.fingerprint.clone())
+                                        .ok_or_else(|| ui_text(
+                                            "找不到指定的共用螢幕，請確認雙方設定一致",
+                                            "The requested shared display was not found; confirm both hosts' selections match",
+                                        ).to_owned()),
+                                    None => match settings.shared_monitors.as_slice() {
+                                        [] => Err(ui_text(
+                                            "這台主機尚未選擇共用螢幕",
+                                            "No shared display is selected on this host",
+                                        )
+                                        .to_owned()),
+                                        [only] => Ok(only.fingerprint.clone()),
+                                        _ => Err(ui_text(
+                                            "配對主機切換到了多台共用螢幕，請將這台電腦更新到最新版本",
+                                            "The paired host is now managing multiple shared displays; update this computer to the latest version.",
+                                        )
+                                        .to_owned()),
+                                    },
+                                }
                             });
-                            let Some(fingerprint) = fingerprint else {
-                                return AgentResponse {
-                                    ready: false,
-                                    message: ui_text(
-                                        "這台主機尚未選擇共用螢幕",
-                                        "No shared display is selected on this host",
-                                    )
-                                    .to_owned(),
-                                    display_route: None,
-                                };
+                            let fingerprint = match resolved {
+                                Some(Ok(fingerprint)) => fingerprint,
+                                Some(Err(message)) => {
+                                    return AgentResponse {
+                                        ready: false,
+                                        message,
+                                        display_route: None,
+                                        display_routes: Vec::new(),
+                                        protocol_version: AGENT_PROTOCOL_VERSION,
+                                    };
+                                }
+                                None => {
+                                    return AgentResponse {
+                                        ready: false,
+                                        message: ui_text(
+                                            "無法讀取這台主機的設定",
+                                            "Unable to read this host's settings",
+                                        )
+                                        .to_owned(),
+                                        display_route: None,
+                                        display_routes: Vec::new(),
+                                        protocol_version: AGENT_PROTOCOL_VERSION,
+                                    };
+                                }
                             };
                             match tauri::async_runtime::spawn_blocking(move || {
                                 run_switch(fingerprint, input)
@@ -1546,11 +1832,15 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                         ),
                                     },
                                     display_route: None,
+                                    display_routes: Vec::new(),
+                                    protocol_version: AGENT_PROTOCOL_VERSION,
                                 },
                                 Ok(Err(error)) => AgentResponse {
                                     ready: false,
                                     message: core_user_error(error),
                                     display_route: None,
+                                    display_routes: Vec::new(),
+                                    protocol_version: AGENT_PROTOCOL_VERSION,
                                 },
                                 Err(error) => AgentResponse {
                                     ready: false,
@@ -1563,6 +1853,8 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                         }
                                     },
                                     display_route: None,
+                                    display_routes: Vec::new(),
+                                    protocol_version: AGENT_PROTOCOL_VERSION,
                                 },
                             }
                         }
@@ -1618,14 +1910,88 @@ fn load_settings(path: &Path) -> AppSettings {
     settings_from_value(value)
 }
 
+/// The `AppSettings`/`HostRoute` shape shipped before multi-monitor support:
+/// a single optional `sharedMonitor` plus top-level `localInput`/
+/// `supportedInputs`, and one `input` value per peer. Frozen here purely to
+/// migrate existing users' `settings.json` without data loss — the live
+/// `AppSettings`/`HostRoute` types have since moved to `sharedMonitors`/
+/// `inputs`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct SingleMonitorHostRoute {
+    id: String,
+    name: String,
+    platform: DestinationHost,
+    address: String,
+    port: u16,
+    mac_address: String,
+    input: Option<DisplayInput>,
+}
+
+impl Default for SingleMonitorHostRoute {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            platform: local_host(),
+            address: String::new(),
+            port: DEFAULT_AGENT_PORT,
+            mac_address: String::new(),
+            input: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct SingleMonitorSettings {
+    local_host: DestinationHost,
+    shared_monitor: Option<SelectedMonitor>,
+    local_input: Option<DisplayInput>,
+    supported_inputs: Option<Vec<DisplayInput>>,
+    peers: Vec<SingleMonitorHostRoute>,
+    broadcast_ip: String,
+    wake_port: u16,
+    shared_key: String,
+    wait_seconds: u64,
+    autostart: bool,
+    check_updates: bool,
+    onboarding_completed: bool,
+    host_switcher_enabled: bool,
+    host_switcher_shortcut: String,
+}
+
+impl Default for SingleMonitorSettings {
+    fn default() -> Self {
+        Self {
+            local_host: local_host(),
+            shared_monitor: None,
+            local_input: None,
+            supported_inputs: None,
+            peers: Vec::new(),
+            broadcast_ip: "255.255.255.255".to_owned(),
+            wake_port: 9,
+            shared_key: String::new(),
+            wait_seconds: 45,
+            autostart: true,
+            check_updates: true,
+            onboarding_completed: false,
+            host_switcher_enabled: false,
+            host_switcher_shortcut: DEFAULT_HOST_SWITCHER_SHORTCUT.to_owned(),
+        }
+    }
+}
+
 fn settings_from_value(value: serde_json::Value) -> AppSettings {
-    if value.get("sharedMonitor").is_some() || value.get("peers").is_some() {
+    if value.get("sharedMonitors").is_some() {
         let is_existing_install = value.get("onboardingCompleted").is_none();
         let mut settings = serde_json::from_value::<AppSettings>(value).unwrap_or_default();
         if is_existing_install {
             settings.onboarding_completed = true;
         }
         settings
+    } else if value.get("sharedMonitor").is_some() || value.get("peers").is_some() {
+        migrate_single_monitor_settings(value)
     } else {
         serde_json::from_value::<LegacySettings>(value)
             .map(migrate_legacy_settings)
@@ -1633,17 +1999,61 @@ fn settings_from_value(value: serde_json::Value) -> AppSettings {
     }
 }
 
+fn migrate_single_monitor_settings(value: serde_json::Value) -> AppSettings {
+    let is_existing_install = value.get("onboardingCompleted").is_none();
+    let old = serde_json::from_value::<SingleMonitorSettings>(value).unwrap_or_default();
+    let fingerprint = old
+        .shared_monitor
+        .as_ref()
+        .map(|monitor| monitor.fingerprint.clone());
+    let shared_monitors = old
+        .shared_monitor
+        .into_iter()
+        .map(|mut monitor| {
+            monitor.local_input = old.local_input;
+            monitor.supported_inputs = old.supported_inputs.clone();
+            monitor
+        })
+        .collect::<Vec<_>>();
+    let peers = old
+        .peers
+        .into_iter()
+        .map(|peer| {
+            let inputs = match (&fingerprint, peer.input) {
+                (Some(monitor), Some(input)) => vec![MonitorInputAssignment {
+                    monitor: monitor.clone(),
+                    input,
+                }],
+                _ => Vec::new(),
+            };
+            HostRoute {
+                id: peer.id,
+                name: peer.name,
+                platform: peer.platform,
+                address: peer.address,
+                port: peer.port,
+                mac_address: peer.mac_address,
+                inputs,
+            }
+        })
+        .collect();
+    AppSettings {
+        local_host: old.local_host,
+        shared_monitors,
+        peers,
+        broadcast_ip: old.broadcast_ip,
+        wake_port: old.wake_port,
+        shared_key: old.shared_key,
+        wait_seconds: old.wait_seconds,
+        autostart: old.autostart,
+        check_updates: old.check_updates,
+        onboarding_completed: old.onboarding_completed || is_existing_install,
+        host_switcher_enabled: old.host_switcher_enabled,
+        host_switcher_shortcut: old.host_switcher_shortcut,
+    }
+}
+
 fn migrate_legacy_settings(legacy: LegacySettings) -> AppSettings {
-    let local_input = DisplayInput::new(match legacy.local_host {
-        DestinationHost::Windows => 0x0f,
-        DestinationHost::Mac => 0x11,
-    })
-    .ok();
-    let peer_input = DisplayInput::new(match legacy.local_host {
-        DestinationHost::Windows => 0x11,
-        DestinationHost::Mac => 0x0f,
-    })
-    .ok();
     let peers = if legacy.peer_id.is_empty() || legacy.peer_ip.is_empty() {
         Vec::new()
     } else {
@@ -1657,15 +2067,14 @@ fn migrate_legacy_settings(legacy: LegacySettings) -> AppSettings {
             address: legacy.peer_ip,
             port: legacy.peer_port,
             mac_address: legacy.peer_mac,
-            input: peer_input,
+            inputs: Vec::new(),
         }]
     };
     AppSettings {
         local_host: legacy.local_host,
-        // 舊版沒有保存使用者選擇；升級後要求重新選取，避免沿用硬體假設。
-        shared_monitor: None,
-        local_input,
-        supported_inputs: None,
+        // 舊版沒有保存使用者選擇，也沒有螢幕身分可供輸入值附掛；升級後要求
+        // 重新選取，避免沿用硬體假設。
+        shared_monitors: Vec::new(),
         peers,
         broadcast_ip: legacy.broadcast_ip,
         wake_port: legacy.wake_port,
@@ -1695,17 +2104,6 @@ fn next_nonce() -> String {
         .as_nanos();
     let counter = NONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{}-{now}-{counter}", std::process::id())
-}
-
-fn run_local_switch(
-    settings: &AppSettings,
-    input: DisplayInput,
-) -> Result<SwitchOutcome, DisplayMuxError> {
-    let selected = settings
-        .shared_monitor
-        .as_ref()
-        .ok_or(DisplayMuxError::TargetNotFound)?;
-    run_switch(selected.fingerprint.clone(), input)
 }
 
 fn run_switch(
@@ -1761,13 +2159,13 @@ fn common_input_sources() -> Vec<DisplayInput> {
 fn refresh_selected_input_data<C: MonitorControl>(
     controller: &C,
     monitor: &MonitorDescriptor,
-    settings: &mut AppSettings,
+    selected: &mut SelectedMonitor,
 ) -> Result<(), DisplayMuxError> {
     // Reading VCP 0x60 is non-disruptive. Never write or cycle ports for discovery.
-    settings.local_input = None;
-    settings.supported_inputs = None;
-    settings.local_input = Some(controller.read_input(&monitor.id)?);
-    settings.supported_inputs = match controller.supported_inputs(&monitor.id) {
+    selected.local_input = None;
+    selected.supported_inputs = None;
+    selected.local_input = Some(controller.read_input(&monitor.id)?);
+    selected.supported_inputs = match controller.supported_inputs(&monitor.id) {
         Ok(inputs) if !inputs.is_empty() => Some(inputs),
         Ok(_) => None,
         Err(error) => {
@@ -1782,47 +2180,72 @@ fn refresh_selected_input_data<C: MonitorControl>(
     Ok(())
 }
 
+/// Reconciles every currently selected monitor against fresh enumeration
+/// results. Never reassigns a missing selection to a different physical
+/// monitor — a disappeared monitor is only ever removed, matching the
+/// exact-fingerprint safety guarantee in product-facts.md. Auto-select only
+/// fires from an empty selection; once at least one monitor is selected, a
+/// newly appeared monitor is never added automatically.
 fn reconcile_monitor_selection(
     settings: &mut AppSettings,
     detected: &[MonitorDescriptor],
     controllable: &[MonitorDescriptor],
-) -> Option<MonitorSelectionChange> {
-    if let Some(selected) = settings.shared_monitor.as_ref() {
+) -> Vec<MonitorSelectionChange> {
+    // Auto-select is only for "nothing has ever been selected" (onboarding).
+    // Captured before the removal pass below so a monitor disappearing
+    // during this same call never triggers an auto-pick of a replacement.
+    let had_no_selection = settings.shared_monitors.is_empty();
+    let mut changes = Vec::new();
+    let mut index = 0;
+    while index < settings.shared_monitors.len() {
+        let selected = &settings.shared_monitors[index];
         if let Some(current) = controllable
             .iter()
             .find(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
         {
-            let refreshed = SelectedMonitor::from(current);
-            if *selected != refreshed {
-                settings.shared_monitor = Some(refreshed);
-                return Some(MonitorSelectionChange::RefreshedMetadata);
+            let mut refreshed = SelectedMonitor::from(current);
+            refreshed.local_input = selected.local_input;
+            refreshed.supported_inputs = selected.supported_inputs.clone();
+            let metadata_changed = selected.name != refreshed.name
+                || selected.max_resolution != refreshed.max_resolution
+                || selected.resolution_source != refreshed.resolution_source;
+            if metadata_changed {
+                let name = refreshed.name.clone();
+                settings.shared_monitors[index] = refreshed;
+                changes.push(MonitorSelectionChange::RefreshedMetadata { name });
             }
-            return None;
+            index += 1;
+            continue;
         }
         if detected
             .iter()
             .any(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
         {
-            return None;
+            // Transient DDC failure (e.g. the monitor is asleep); keep the
+            // selection rather than dropping it.
+            index += 1;
+            continue;
+        }
+        // Physically gone; remove, never reassign to a different monitor.
+        let removed = settings.shared_monitors.remove(index);
+        changes.push(MonitorSelectionChange::RemovedMissingMonitor {
+            name: removed.name,
+            fingerprint: removed.fingerprint,
+        });
+    }
+
+    if had_no_selection {
+        let mut auto_candidates = controllable.iter().filter(|monitor| !monitor.built_in);
+        if let Some(only) = auto_candidates.next() {
+            if auto_candidates.next().is_none() {
+                let name = only.name.clone();
+                settings.shared_monitors.push(SelectedMonitor::from(only));
+                changes.push(MonitorSelectionChange::SelectedOnlyMonitor { name });
+            }
         }
     }
 
-    let mut auto_candidates = controllable.iter().filter(|monitor| !monitor.built_in);
-    let only = auto_candidates.next()?;
-    if auto_candidates.next().is_some() {
-        return None;
-    }
-    let replacement = SelectedMonitor::from(only);
-    let change = match settings.shared_monitor.replace(replacement) {
-        Some(previous) => MonitorSelectionChange::ReplacedMissingMonitor {
-            previous: previous.name,
-            replacement: only.name.clone(),
-        },
-        None => MonitorSelectionChange::SelectedOnlyMonitor {
-            name: only.name.clone(),
-        },
-    };
-    Some(change)
+    changes
 }
 
 #[cfg(target_os = "windows")]
@@ -2132,7 +2555,8 @@ pub fn run() -> anyhow::Result<()> {
             discover_peers,
             select_peer,
             remove_peer,
-            select_monitor,
+            add_shared_monitor,
+            remove_shared_monitor,
             get_settings,
             get_host_switcher_state,
             hide_host_switcher,
@@ -2226,8 +2650,7 @@ mod tests {
     #[test]
     fn new_install_does_not_assume_a_monitor_or_input() {
         let settings = AppSettings::default();
-        assert!(settings.shared_monitor.is_none());
-        assert!(settings.local_input.is_none());
+        assert!(settings.shared_monitors.is_empty());
         assert!(settings.peers.is_empty());
         assert!(settings.check_updates);
         assert!(!settings.onboarding_completed);
@@ -2320,16 +2743,18 @@ mod tests {
         let selected: SelectedMonitor = serde_json::from_value(value).unwrap();
         assert_eq!(selected.resolution_source, None);
         assert_eq!(selected.max_resolution.unwrap().width, 3440);
+        assert!(selected.local_input.is_none());
+        assert!(selected.supported_inputs.is_none());
     }
 
     #[test]
     fn migration_preserves_the_previous_two_host_configuration() {
         let cases = [
-            (DestinationHost::Windows, DestinationHost::Mac, 0x0f, 0x11),
-            (DestinationHost::Mac, DestinationHost::Windows, 0x11, 0x0f),
+            (DestinationHost::Windows, DestinationHost::Mac),
+            (DestinationHost::Mac, DestinationHost::Windows),
         ];
 
-        for (local_host, peer_platform, local_input, peer_input) in cases {
+        for (local_host, peer_platform) in cases {
             let legacy = LegacySettings {
                 local_host,
                 peer_id: "peer".to_owned(),
@@ -2338,12 +2763,66 @@ mod tests {
                 ..LegacySettings::default()
             };
             let migrated = migrate_legacy_settings(legacy);
-            assert!(migrated.shared_monitor.is_none());
+            // The legacy shape has no monitor identity to attach an input
+            // guess to; upgrading requires an explicit re-selection.
+            assert!(migrated.shared_monitors.is_empty());
             assert!(migrated.onboarding_completed);
-            assert_eq!(migrated.local_input.unwrap().value(), local_input);
             assert_eq!(migrated.peers[0].platform, peer_platform);
-            assert_eq!(migrated.peers[0].input.unwrap().value(), peer_input);
+            assert!(migrated.peers[0].inputs.is_empty());
         }
+    }
+
+    #[test]
+    fn migrate_single_monitor_settings_carries_forward_selection_and_peer_input() {
+        let selected = monitor("shared");
+        let value = serde_json::json!({
+            "localHost": "mac",
+            "sharedMonitor": {
+                "name": selected.name,
+                "fingerprint": {
+                    "manufacturer_id": selected.fingerprint.manufacturer_id,
+                    "product_code": selected.fingerprint.product_code,
+                    "serial_number": selected.fingerprint.serial_number,
+                },
+            },
+            "localInput": 15,
+            "supportedInputs": [15, 17],
+            "peers": [{
+                "id": "peer",
+                "name": "Peer computer",
+                "platform": "windows",
+                "address": "192.168.1.20",
+                "port": DEFAULT_AGENT_PORT,
+                "macAddress": "",
+                "input": 17,
+            }],
+        });
+
+        let migrated = migrate_single_monitor_settings(value);
+
+        assert_eq!(migrated.shared_monitors.len(), 1);
+        let migrated_selection = &migrated.shared_monitors[0];
+        assert!(migrated_selection
+            .fingerprint
+            .matches_exactly(&selected.fingerprint));
+        assert_eq!(migrated_selection.local_input.unwrap().value(), 15);
+        assert_eq!(
+            migrated_selection
+                .supported_inputs
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|input| input.value())
+                .collect::<Vec<_>>(),
+            vec![15, 17]
+        );
+        assert_eq!(
+            migrated.peers[0]
+                .input_for(&selected.fingerprint)
+                .unwrap()
+                .value(),
+            17
+        );
     }
 
     #[test]
@@ -2361,21 +2840,21 @@ mod tests {
         assert_eq!(inventory.controllable.len(), 2);
         let mut settings = AppSettings::default();
 
-        let change = reconcile_monitor_selection(
+        let changes = reconcile_monitor_selection(
             &mut settings,
             &inventory.detected,
             &inventory.controllable,
         );
 
         assert_eq!(
-            change,
-            Some(MonitorSelectionChange::SelectedOnlyMonitor {
+            changes,
+            vec![MonitorSelectionChange::SelectedOnlyMonitor {
                 name: "external".to_owned()
-            })
+            }]
         );
         assert_eq!(
-            settings.shared_monitor,
-            Some(SelectedMonitor::from(&external))
+            settings.shared_monitors,
+            vec![SelectedMonitor::from(&external)]
         );
     }
 
@@ -2386,13 +2865,13 @@ mod tests {
             monitors: vec![external.clone()],
             controllable: HashSet::from([external.id.as_str().to_owned()]),
         };
-        let mut settings = AppSettings::default();
+        let mut selected = SelectedMonitor::from(&external);
 
-        refresh_selected_input_data(&controller, &external, &mut settings).unwrap();
+        refresh_selected_input_data(&controller, &external, &mut selected).unwrap();
 
-        assert_eq!(settings.local_input.unwrap().value(), 0x0f);
+        assert_eq!(selected.local_input.unwrap().value(), 0x0f);
         assert_eq!(
-            settings
+            selected
                 .supported_inputs
                 .unwrap()
                 .iter()
@@ -2428,13 +2907,15 @@ mod tests {
     fn verified_peer_route_is_applied_only_for_the_same_monitor_and_free_port() {
         let selected = monitor("shared");
         let mut settings = AppSettings {
-            shared_monitor: Some(SelectedMonitor::from(&selected)),
-            local_input: DisplayInput::new(0x0f).ok(),
-            supported_inputs: Some(vec![
-                DisplayInput::new(0x0f).unwrap(),
-                DisplayInput::new(0x11).unwrap(),
-                DisplayInput::new(0x12).unwrap(),
-            ]),
+            shared_monitors: vec![SelectedMonitor {
+                local_input: DisplayInput::new(0x0f).ok(),
+                supported_inputs: Some(vec![
+                    DisplayInput::new(0x0f).unwrap(),
+                    DisplayInput::new(0x11).unwrap(),
+                    DisplayInput::new(0x12).unwrap(),
+                ]),
+                ..SelectedMonitor::from(&selected)
+            }],
             ..AppSettings::default()
         };
         settings.peers.push(HostRoute {
@@ -2444,7 +2925,7 @@ mod tests {
             address: "192.168.1.20".to_owned(),
             port: DEFAULT_AGENT_PORT,
             mac_address: String::new(),
-            input: None,
+            inputs: Vec::new(),
         });
 
         assert!(apply_verified_peer_route(
@@ -2455,9 +2936,15 @@ mod tests {
                 input: DisplayInput::new(0x11).unwrap(),
             },
         ));
-        assert_eq!(settings.peers[0].input.unwrap().value(), 0x11);
+        assert_eq!(
+            settings.peers[0]
+                .input_for(&selected.fingerprint)
+                .unwrap()
+                .value(),
+            0x11
+        );
 
-        settings.peers[0].input = None;
+        settings.peers[0].set_input_for(&selected.fingerprint, None);
         assert!(!apply_verified_peer_route(
             &mut settings,
             "peer",
@@ -2466,27 +2953,34 @@ mod tests {
                 input: DisplayInput::new(0x12).unwrap(),
             },
         ));
-        assert!(settings.peers[0].input.is_none());
+        assert!(settings.peers[0].input_for(&selected.fingerprint).is_none());
 
         assert!(!apply_verified_peer_route(
             &mut settings,
             "peer",
             AgentDisplayRoute {
-                monitor: selected.fingerprint,
+                monitor: selected.fingerprint.clone(),
                 input: DisplayInput::new(0x0f).unwrap(),
             },
         ));
-        assert!(settings.peers[0].input.is_none());
+        assert!(settings.peers[0].input_for(&selected.fingerprint).is_none());
     }
 
     #[test]
-    fn settings_reject_duplicate_and_unadvertised_input_assignments() {
+    fn verified_peer_route_for_one_monitor_never_leaks_into_another() {
+        let monitor_a = monitor("monitor-a");
+        let monitor_b = monitor("monitor-b");
         let mut settings = AppSettings {
-            local_input: DisplayInput::new(0x0f).ok(),
-            supported_inputs: Some(vec![
-                DisplayInput::new(0x0f).unwrap(),
-                DisplayInput::new(0x11).unwrap(),
-            ]),
+            shared_monitors: vec![
+                SelectedMonitor {
+                    supported_inputs: Some(vec![DisplayInput::new(0x0f).unwrap()]),
+                    ..SelectedMonitor::from(&monitor_a)
+                },
+                SelectedMonitor {
+                    supported_inputs: Some(vec![DisplayInput::new(0x0f).unwrap()]),
+                    ..SelectedMonitor::from(&monitor_b)
+                },
+            ],
             ..AppSettings::default()
         };
         settings.peers.push(HostRoute {
@@ -2496,40 +2990,109 @@ mod tests {
             address: "192.168.1.20".to_owned(),
             port: DEFAULT_AGENT_PORT,
             mac_address: String::new(),
-            input: DisplayInput::new(0x0f).ok(),
+            inputs: Vec::new(),
         });
+
+        assert!(apply_verified_peer_route(
+            &mut settings,
+            "peer",
+            AgentDisplayRoute {
+                monitor: monitor_b.fingerprint.clone(),
+                input: DisplayInput::new(0x0f).unwrap(),
+            },
+        ));
+
+        assert!(settings.peers[0]
+            .input_for(&monitor_a.fingerprint)
+            .is_none());
+        assert_eq!(
+            settings.peers[0]
+                .input_for(&monitor_b.fingerprint)
+                .unwrap()
+                .value(),
+            0x0f
+        );
+    }
+
+    #[test]
+    fn settings_reject_duplicate_and_unadvertised_input_assignments() {
+        let selected = monitor("shared");
+        let mut settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor {
+                local_input: DisplayInput::new(0x0f).ok(),
+                supported_inputs: Some(vec![
+                    DisplayInput::new(0x0f).unwrap(),
+                    DisplayInput::new(0x11).unwrap(),
+                ]),
+                ..SelectedMonitor::from(&selected)
+            }],
+            ..AppSettings::default()
+        };
+        settings.peers.push(HostRoute {
+            id: "peer".to_owned(),
+            name: "Peer".to_owned(),
+            platform: DestinationHost::Mac,
+            address: "192.168.1.20".to_owned(),
+            port: DEFAULT_AGENT_PORT,
+            mac_address: String::new(),
+            inputs: Vec::new(),
+        });
+        settings.peers[0].set_input_for(&selected.fingerprint, DisplayInput::new(0x0f).ok());
         assert!(validate_settings(&settings).is_err());
 
-        settings.peers[0].input = DisplayInput::new(0x1b).ok();
+        settings.peers[0].set_input_for(&selected.fingerprint, DisplayInput::new(0x1b).ok());
         assert!(validate_settings(&settings).is_err());
     }
 
     #[test]
-    fn safely_replaces_a_missing_selection_when_only_one_candidate_remains() {
+    fn the_same_input_value_may_be_assigned_to_different_monitors() {
+        let monitor_a = monitor("monitor-a");
+        let monitor_b = monitor("monitor-b");
+        let mut settings = AppSettings {
+            shared_monitors: vec![
+                SelectedMonitor::from(&monitor_a),
+                SelectedMonitor::from(&monitor_b),
+            ],
+            ..AppSettings::default()
+        };
+        settings.peers.push(HostRoute {
+            id: "peer".to_owned(),
+            name: "Peer".to_owned(),
+            platform: DestinationHost::Mac,
+            address: "192.168.1.20".to_owned(),
+            port: DEFAULT_AGENT_PORT,
+            mac_address: String::new(),
+            inputs: Vec::new(),
+        });
+        settings.peers[0].set_input_for(&monitor_a.fingerprint, DisplayInput::new(0x0f).ok());
+        settings.peers[0].set_input_for(&monitor_b.fingerprint, DisplayInput::new(0x0f).ok());
+
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn removes_a_missing_selection_without_reassigning_to_a_different_monitor() {
         let previous = monitor("disconnected");
         let replacement = monitor("replacement");
         let mut settings = AppSettings {
-            shared_monitor: Some(SelectedMonitor::from(&previous)),
+            shared_monitors: vec![SelectedMonitor::from(&previous)],
             ..AppSettings::default()
         };
 
-        let change = reconcile_monitor_selection(
+        let changes = reconcile_monitor_selection(
             &mut settings,
             std::slice::from_ref(&replacement),
             std::slice::from_ref(&replacement),
         );
 
         assert_eq!(
-            change,
-            Some(MonitorSelectionChange::ReplacedMissingMonitor {
-                previous: "disconnected".to_owned(),
-                replacement: "replacement".to_owned(),
-            })
+            changes,
+            vec![MonitorSelectionChange::RemovedMissingMonitor {
+                name: "disconnected".to_owned(),
+                fingerprint: previous.fingerprint,
+            }]
         );
-        assert_eq!(
-            settings.shared_monitor,
-            Some(SelectedMonitor::from(&replacement))
-        );
+        assert!(settings.shared_monitors.is_empty());
     }
 
     #[test]
@@ -2537,30 +3100,131 @@ mod tests {
         let mut settings = AppSettings::default();
         let monitors = [monitor("first"), monitor("second")];
 
-        assert_eq!(
-            reconcile_monitor_selection(&mut settings, &monitors, &monitors),
-            None
-        );
-        assert!(settings.shared_monitor.is_none());
+        assert!(reconcile_monitor_selection(&mut settings, &monitors, &monitors).is_empty());
+        assert!(settings.shared_monitors.is_empty());
     }
 
     #[test]
-    fn missing_selection_is_not_replaced_when_multiple_candidates_remain() {
+    fn missing_selection_is_removed_and_not_replaced_when_multiple_candidates_remain() {
         let disconnected = monitor("disconnected");
         let mut settings = AppSettings {
-            shared_monitor: Some(SelectedMonitor::from(&disconnected)),
+            shared_monitors: vec![SelectedMonitor::from(&disconnected)],
             ..AppSettings::default()
         };
         let monitors = [monitor("first"), monitor("second")];
 
+        let changes = reconcile_monitor_selection(&mut settings, &monitors, &monitors);
+
         assert_eq!(
-            reconcile_monitor_selection(&mut settings, &monitors, &monitors),
-            None
+            changes,
+            vec![MonitorSelectionChange::RemovedMissingMonitor {
+                name: "disconnected".to_owned(),
+                fingerprint: disconnected.fingerprint,
+            }]
+        );
+        assert!(settings.shared_monitors.is_empty());
+    }
+
+    #[test]
+    fn one_monitor_disappearing_does_not_affect_another_independently_selected_monitor() {
+        let stays = monitor("stays");
+        let disconnected = monitor("disconnected");
+        let mut settings = AppSettings {
+            shared_monitors: vec![
+                SelectedMonitor::from(&stays),
+                SelectedMonitor::from(&disconnected),
+            ],
+            ..AppSettings::default()
+        };
+        let monitors = [stays.clone()];
+
+        let changes = reconcile_monitor_selection(&mut settings, &monitors, &monitors);
+
+        assert_eq!(
+            changes,
+            vec![MonitorSelectionChange::RemovedMissingMonitor {
+                name: "disconnected".to_owned(),
+                fingerprint: disconnected.fingerprint,
+            }]
         );
         assert_eq!(
-            settings.shared_monitor,
-            Some(SelectedMonitor::from(&disconnected))
+            settings.shared_monitors,
+            vec![SelectedMonitor::from(&stays)]
         );
+    }
+
+    #[test]
+    fn auto_select_never_adds_a_new_monitor_once_one_is_already_selected() {
+        let already_selected = monitor("already-selected");
+        let mut settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor::from(&already_selected)],
+            ..AppSettings::default()
+        };
+        let monitors = [already_selected.clone(), monitor("new-arrival")];
+
+        let changes = reconcile_monitor_selection(&mut settings, &monitors, &monitors);
+
+        assert!(changes.is_empty());
+        assert_eq!(
+            settings.shared_monitors,
+            vec![SelectedMonitor::from(&already_selected)]
+        );
+    }
+
+    #[test]
+    fn metadata_refresh_for_one_selected_monitor_does_not_touch_another() {
+        let mut refreshed = monitor("refreshed");
+        let unaffected = monitor("unaffected");
+        let mut settings = AppSettings {
+            shared_monitors: vec![
+                SelectedMonitor::from(&refreshed),
+                SelectedMonitor::from(&unaffected),
+            ],
+            ..AppSettings::default()
+        };
+        refreshed.name = "renamed".to_owned();
+        let monitors = [refreshed.clone(), unaffected.clone()];
+
+        let changes = reconcile_monitor_selection(&mut settings, &monitors, &monitors);
+
+        assert_eq!(
+            changes,
+            vec![MonitorSelectionChange::RefreshedMetadata {
+                name: "renamed".to_owned()
+            }]
+        );
+        assert_eq!(settings.shared_monitors[0].name, "renamed");
+        assert_eq!(
+            settings.shared_monitors[1],
+            SelectedMonitor::from(&unaffected)
+        );
+    }
+
+    #[test]
+    fn plan_switch_input_targets_v2_peers_by_fingerprint() {
+        let fingerprint = monitor("target").fingerprint;
+        assert_eq!(
+            plan_switch_input(AGENT_PROTOCOL_VERSION, 1, &fingerprint),
+            Ok(Some(fingerprint.clone()))
+        );
+        assert_eq!(
+            plan_switch_input(AGENT_PROTOCOL_VERSION, 3, &fingerprint),
+            Ok(Some(fingerprint))
+        );
+    }
+
+    #[test]
+    fn plan_switch_input_falls_back_to_legacy_shape_for_a_single_monitor() {
+        let fingerprint = monitor("target").fingerprint;
+        assert_eq!(plan_switch_input(0, 1, &fingerprint), Ok(None));
+        assert_eq!(plan_switch_input(0, 0, &fingerprint), Ok(None));
+    }
+
+    #[test]
+    fn plan_switch_input_refuses_to_guess_for_an_old_peer_with_multiple_monitors() {
+        let fingerprint = monitor("target").fingerprint;
+        assert!(plan_switch_input(0, 2, &fingerprint).is_err());
+        assert!(plan_switch_input(AGENT_PROTOCOL_VERSION - 1, 2, &fingerprint).is_err());
     }
 
     #[test]
@@ -2598,22 +3262,20 @@ mod tests {
         let selected = monitor("selected");
         let replacement = monitor("replacement");
         let mut settings = AppSettings {
-            shared_monitor: Some(SelectedMonitor::from(&selected)),
+            shared_monitors: vec![SelectedMonitor::from(&selected)],
             ..AppSettings::default()
         };
         let detected = [selected.clone(), replacement.clone()];
 
+        assert!(reconcile_monitor_selection(
+            &mut settings,
+            &detected,
+            std::slice::from_ref(&replacement),
+        )
+        .is_empty());
         assert_eq!(
-            reconcile_monitor_selection(
-                &mut settings,
-                &detected,
-                std::slice::from_ref(&replacement),
-            ),
-            None
-        );
-        assert_eq!(
-            settings.shared_monitor,
-            Some(SelectedMonitor::from(&selected))
+            settings.shared_monitors,
+            vec![SelectedMonitor::from(&selected)]
         );
     }
 }
