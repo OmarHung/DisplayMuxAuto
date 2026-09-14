@@ -17,6 +17,14 @@ const INPUT_SELECT_VCP_CODE: u8 = 0x60;
 const DDC_RETRY_ATTEMPTS: u32 = 3;
 const DDC_RETRY_DELAY: Duration = Duration::from_millis(80);
 
+/// Some monitor firmware (observed on an MStar-driven MSI display) ACKs a
+/// VCP 0x60 SET without ever applying it, silently discarding the input
+/// switch while still reporting success. Reading the input back after the
+/// write catches this so callers see a real failure instead of a false
+/// "switched" result.
+const WRITE_VERIFY_DELAY: Duration = Duration::from_millis(300);
+const WRITE_VERIFY_ATTEMPTS: u32 = 2;
+
 fn with_ddc_retry<T>(
     mut operation: impl FnMut() -> Result<T, DisplayMuxError>,
 ) -> Result<T, DisplayMuxError> {
@@ -97,7 +105,28 @@ impl MonitorControl for MacOsMonitorController {
             monitor
                 .set_vcp_feature(INPUT_SELECT_VCP_CODE, input.value() as u16)
                 .map_err(backend_error)
-        })
+        })?;
+
+        let mut confirmed = input;
+        for _ in 0..WRITE_VERIFY_ATTEMPTS {
+            thread::sleep(WRITE_VERIFY_DELAY);
+            confirmed = with_ddc_retry(|| {
+                let mut monitor = find_monitor(monitor_id)?;
+                let value = monitor
+                    .get_vcp_feature(INPUT_SELECT_VCP_CODE)
+                    .map_err(backend_error)?;
+                DisplayInput::new(u32::from(value.value()))
+            })?;
+            if confirmed == input {
+                return Ok(());
+            }
+        }
+
+        Err(DisplayMuxError::Backend(format!(
+            "顯示器未執行輸入切換指令（要求 {:#x}，實際仍為 {:#x}）：這台顯示器的韌體可能不支援透過 DDC/CI 遠端切換輸入源",
+            input.value(),
+            confirmed.value()
+        )))
     }
 }
 

@@ -25,14 +25,49 @@ fn main() {
                     None => println!("edid            : <none>"),
                 }
 
-                match monitor.capabilities_string() {
-                    Ok(caps) => println!("capabilities_string: OK ({} bytes)", caps.len()),
+                let mut caps_result = monitor.capabilities_string();
+                for _ in 0..8 {
+                    if caps_result.is_ok() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    caps_result = monitor.capabilities_string();
+                }
+                match caps_result {
+                    Ok(caps) => println!(
+                        "capabilities_string: OK ({} bytes)\n{}",
+                        caps.len(),
+                        String::from_utf8_lossy(&caps)
+                    ),
                     Err(error) => println!("capabilities_string: ERROR -> {error}"),
                 }
 
                 match monitor.get_vcp_feature(0x60) {
                     Ok(value) => println!("get_vcp_feature(0x60): OK -> {:#x}", value.value()),
                     Err(error) => println!("get_vcp_feature(0x60): ERROR -> {error}"),
+                }
+
+                if monitor.description().contains("MPG") {
+                    println!("\n-- write+poll probe on {} --", monitor.description());
+                    match monitor.set_vcp_feature(0x60, 0x0F) {
+                        Ok(()) => println!("set_vcp_feature(0x60, 0x0F): OK"),
+                        Err(error) => println!("set_vcp_feature(0x60, 0x0F): ERROR -> {error}"),
+                    }
+                    let start = std::time::Instant::now();
+                    for _ in 0..20 {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        match monitor.get_vcp_feature(0x60) {
+                            Ok(value) => println!(
+                                "  t+{:>5}ms  get_vcp_feature(0x60): OK -> {:#x}",
+                                start.elapsed().as_millis(),
+                                value.value()
+                            ),
+                            Err(error) => println!(
+                                "  t+{:>5}ms  get_vcp_feature(0x60): ERROR -> {error}",
+                                start.elapsed().as_millis()
+                            ),
+                        }
+                    }
                 }
                 println!();
             }
@@ -51,6 +86,18 @@ fn main() {
             );
             for descriptor in descriptors {
                 println!("{descriptor:#?}");
+                if descriptor.name.contains("MPG") {
+                    println!(
+                        "\n-- MacOsMonitorController::write_input probe on {} --",
+                        descriptor.name
+                    );
+                    match controller
+                        .write_input(&descriptor.id, displaymux_core::DisplayInput::new(0x0F).unwrap())
+                    {
+                        Ok(()) => println!("write_input(0x0F): OK (verified switch took effect)"),
+                        Err(error) => println!("write_input(0x0F): ERROR -> {error}"),
+                    }
+                }
             }
         }
         Err(error) => println!("filtered enumerate() failed: {error}"),
