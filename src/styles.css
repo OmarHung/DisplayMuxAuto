@@ -282,21 +282,60 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   width: 100%;
 }
 
-/* Dashboard Showcase Monitor Card */
-.showcase-grid {
+/* Dashboard Monitor Strip (screen picker) */
+.monitor-strip {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.monitor-strip-card {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 28px;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 180px;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card-bg);
+  cursor: pointer;
+  text-align: left;
+  transition: all .16s ease;
+}
+
+.monitor-strip-card:hover {
+  border-color: #8cc4af;
+}
+
+.monitor-strip-card.is-active {
+  background: #f1f7f4;
+  border-color: #8cc4af;
+  box-shadow: 0 2px 8px rgba(19, 115, 86, 0.06);
+}
+
+.monitor-strip-name { font-size: 14px; font-weight: 800; color: var(--ink); }
+.monitor-strip-meta { font-size: 11.5px; color: var(--muted); }
+
+/* Dashboard Switch Panel (single active monitor) */
+.switch-panel {
+  display: flex;
+  justify-content: center;
   width: 100%;
+}
+
+.switch-panel .showcase-monitor-card {
+  width: min(640px, 100%);
 }
 
 .showcase-monitor-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-  width: min(520px, 100%);
-  padding: 24px 32px;
+  width: 100%;
+  padding: 22px 26px;
   border: 1px solid var(--line);
   border-radius: 18px;
   background: var(--panel-bg);
@@ -348,11 +387,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 14px 0 10px;
+  padding: 8px 0;
 }
 
 .flat-monitor-svg {
-  width: 380px;
+  width: 260px;
   max-width: 100%;
   height: auto;
   filter: drop-shadow(0 12px 24px rgba(18, 32, 26, 0.12));
@@ -379,9 +418,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 /* Host Route Grid & Cards */
 .host-route-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  width: min(840px, 100%);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  width: 100%;
   margin: 0;
 }
 

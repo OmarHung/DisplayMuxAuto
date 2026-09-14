@@ -141,6 +141,7 @@ let settings = previewSettings;
 let dashboard = previewDashboard;
 let discoveredPeers: DiscoveredPeer[] = [];
 let inputOptionsByMonitor: Record<string, InputOption[]> = {};
+let activeMonitorKey: string | null = null;
 let isPreview = false;
 let pendingUpdate: UpdateInfo | null = null;
 let isRecordingShortcut = false;
@@ -243,7 +244,8 @@ app.innerHTML = `
       </header>
 
       <section class="page is-active" id="dashboard-page">
-        <div class="showcase-grid" id="showcase-grid"></div>
+        <div class="monitor-strip" id="monitor-strip"></div>
+        <div class="switch-panel" id="switch-panel"></div>
 
         <section class="status-summary-bar">
           <div class="summary-item"><span>${t("dashboard.sharedLabel")}</span><strong id="monitor-health" class="text-accent">${t("dashboard.detecting")}</strong></div>
@@ -495,7 +497,14 @@ document.querySelector("#paired-routes")?.addEventListener("click", (event) => {
   if (button?.dataset.wakeId) void peerCommand("wake_peer", button.dataset.wakeId);
 });
 document.querySelector("#paired-routes")?.addEventListener("input", renderInputHints);
-document.querySelector("#showcase-grid")?.addEventListener("click", (event) => {
+document.querySelector("#monitor-strip")?.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-monitor-key]");
+  if (!button?.dataset.monitorKey || button.dataset.monitorKey === activeMonitorKey) return;
+  activeMonitorKey = button.dataset.monitorKey;
+  renderMonitorStrip();
+  renderSwitchPanel();
+});
+document.querySelector("#switch-panel")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-id]");
   if (!button?.dataset.switchId) return;
   const card = button.closest<HTMLElement>("[data-monitor-key]");
@@ -690,10 +699,30 @@ function ratioText(resolution: MonitorResolution | null, source: ResolutionSourc
   return resolution ? `${ratio} · ${resolution.width}×${resolution.height} · ${resolutionSourceName(source)}` : ratio;
 }
 
-function renderShowcaseCards(): void {
-  const container = document.querySelector("#showcase-grid");
+function renderMonitorStrip(): void {
+  const container = document.querySelector("#monitor-strip");
   if (!container) return;
   if (!dashboard.shared.length) {
+    container.innerHTML = "";
+    return;
+  }
+  container.innerHTML = dashboard.shared.map((shared) => {
+    const { resolution, source } = resolutionFor(shared);
+    const isUltrawide = Boolean(resolution && isUltrawideResolution(resolution));
+    const isActive = shared.monitorKey === activeMonitorKey;
+    return `<button type="button" class="monitor-strip-card ${isActive ? "is-active" : ""}" data-monitor-key="${escapeHtml(shared.monitorKey)}">
+      <span class="monitor-strip-name">${escapeHtml(shared.name)}</span>
+      <span class="monitor-strip-meta">${escapeHtml(ratioText(resolution, source, isUltrawide))}</span>
+      <span class="status-badge ${shared.ddcAvailable ? "" : "subtle"}">${shared.ddcAvailable ? t("dashboard.ddcReady") : t("dashboard.notReady")}</span>
+    </button>`;
+  }).join("");
+}
+
+function renderSwitchPanel(): void {
+  const container = document.querySelector("#switch-panel");
+  if (!container) return;
+  const shared = dashboard.shared.find((item) => item.monitorKey === activeMonitorKey);
+  if (!shared) {
     const isUltrawide = Boolean(dashboard.monitors[0]?.maxResolution && isUltrawideResolution(dashboard.monitors[0].maxResolution));
     container.innerHTML = `
       <div class="showcase-monitor-card">
@@ -709,27 +738,25 @@ function renderShowcaseCards(): void {
       </div>`;
     return;
   }
-  container.innerHTML = dashboard.shared.map((shared) => {
-    const { resolution, source } = resolutionFor(shared);
-    const isUltrawide = Boolean(resolution && isUltrawideResolution(resolution));
-    return `
-      <div class="showcase-monitor-card" data-monitor-key="${escapeHtml(shared.monitorKey)}">
-        <div class="showcase-header">
-          <span class="showcase-title">${escapeHtml(shared.name)}</span>
-          <div class="showcase-badges">
-            <span class="status-badge subtle">${ratioText(resolution, source, isUltrawide)}</span>
-            <span class="status-badge">${shared.ddcAvailable ? t("dashboard.ddcReady") : t("dashboard.notReady")}</span>
-          </div>
+  const { resolution, source } = resolutionFor(shared);
+  const isUltrawide = Boolean(resolution && isUltrawideResolution(resolution));
+  container.innerHTML = `
+    <div class="showcase-monitor-card" data-monitor-key="${escapeHtml(shared.monitorKey)}">
+      <div class="showcase-header">
+        <span class="showcase-title">${escapeHtml(shared.name)}</span>
+        <div class="showcase-badges">
+          <span class="status-badge subtle">${ratioText(resolution, source, isUltrawide)}</span>
+          <span class="status-badge">${shared.ddcAvailable ? t("dashboard.ddcReady") : t("dashboard.notReady")}</span>
         </div>
-        <div class="flat-monitor-wrap">${getFlatMonitorSvg(isUltrawide)}</div>
-        <div class="showcase-info">
-          <strong class="showcase-monitor-name">${escapeHtml(shared.name)}</strong>
-          <p class="showcase-monitor-desc">${escapeHtml(shared.statusText)}</p>
-        </div>
-        <div class="host-route-grid" data-host-route-grid="${escapeHtml(shared.monitorKey)}"></div>
-      </div>`;
-  }).join("");
-  for (const shared of dashboard.shared) renderHostRoutes(shared);
+      </div>
+      <div class="flat-monitor-wrap">${getFlatMonitorSvg(isUltrawide)}</div>
+      <div class="showcase-info">
+        <strong class="showcase-monitor-name">${escapeHtml(shared.name)}</strong>
+        <p class="showcase-monitor-desc">${escapeHtml(shared.statusText)}</p>
+      </div>
+      <div class="host-route-grid" data-host-route-grid="${escapeHtml(shared.monitorKey)}"></div>
+    </div>`;
+  renderHostRoutes(shared);
 }
 
 function renderState(): void {
@@ -750,7 +777,11 @@ function renderState(): void {
   const hostSwitcherEnabled = document.querySelector<HTMLInputElement>("#host-switcher-enabled");
   if (hostSwitcherEnabled) hostSwitcherEnabled.checked = settings.hostSwitcherEnabled;
   renderShortcutSetting();
-  renderShowcaseCards(); renderMonitors(); renderPeerList(); renderPairedRoutes(); renderLocalInputSummary(); renderInputHints(); refreshIcons();
+  if (!activeMonitorKey || !dashboard.shared.some((shared) => shared.monitorKey === activeMonitorKey)) {
+    activeMonitorKey = dashboard.shared[0]?.monitorKey ?? null;
+  }
+  renderMonitorStrip(); renderSwitchPanel();
+  renderMonitors(); renderPeerList(); renderPairedRoutes(); renderLocalInputSummary(); renderInputHints(); refreshIcons();
 }
 
 function shortcutDisplay(value: string): string {
