@@ -1,3 +1,5 @@
+use std::{thread, time::Duration};
+
 use ddc::Ddc;
 use ddc_macos::Monitor;
 
@@ -7,6 +9,31 @@ use crate::{
 };
 
 const INPUT_SELECT_VCP_CODE: u8 = 0x60;
+/// macOS Type-C/USB-C DDC/CI transports intermittently return malformed
+/// packets (e.g. "invalid DDC/CI length") even when the channel is
+/// otherwise healthy; a short retry with a fresh monitor lookup resolves
+/// most of these, matching the standard mitigation used by ddcutil and
+/// similar tools for unreliable DDC buses.
+const DDC_RETRY_ATTEMPTS: u32 = 3;
+const DDC_RETRY_DELAY: Duration = Duration::from_millis(80);
+
+fn with_ddc_retry<T>(
+    mut operation: impl FnMut() -> Result<T, DisplayMuxError>,
+) -> Result<T, DisplayMuxError> {
+    let mut last_error = None;
+    for attempt in 0..DDC_RETRY_ATTEMPTS {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                if attempt + 1 < DDC_RETRY_ATTEMPTS {
+                    thread::sleep(DDC_RETRY_DELAY);
+                }
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.expect("loop runs at least DDC_RETRY_ATTEMPTS >= 1 time"))
+}
 
 /// macOS DDC/CI adapter. `ddc-macos` chooses the Intel IOKit or Apple Silicon
 /// display service at runtime, so the same implementation covers Mac mini,
@@ -34,26 +61,30 @@ impl MonitorControl for MacOsMonitorController {
     }
 
     fn read_input(&self, monitor_id: &MonitorId) -> Result<DisplayInput, DisplayMuxError> {
-        let mut monitor = find_monitor(monitor_id)?;
-        let value = monitor
-            .get_vcp_feature(INPUT_SELECT_VCP_CODE)
-            .map_err(backend_error)?;
-        DisplayInput::new(u32::from(value.value()))
+        with_ddc_retry(|| {
+            let mut monitor = find_monitor(monitor_id)?;
+            let value = monitor
+                .get_vcp_feature(INPUT_SELECT_VCP_CODE)
+                .map_err(backend_error)?;
+            DisplayInput::new(u32::from(value.value()))
+        })
     }
 
     fn supported_inputs(
         &self,
         monitor_id: &MonitorId,
     ) -> Result<Vec<DisplayInput>, DisplayMuxError> {
-        let mut monitor = find_monitor(monitor_id)?;
-        let raw = monitor.capabilities_string().map_err(backend_error)?;
-        let inputs = capabilities::parse_input_sources(&raw);
-        if inputs.is_empty() {
-            return Err(DisplayMuxError::Backend(
-                "macOS 顯示器 capabilities 未宣告 VCP 0x60 輸入值".to_owned(),
-            ));
-        }
-        Ok(inputs)
+        with_ddc_retry(|| {
+            let mut monitor = find_monitor(monitor_id)?;
+            let raw = monitor.capabilities_string().map_err(backend_error)?;
+            let inputs = capabilities::parse_input_sources(&raw);
+            if inputs.is_empty() {
+                return Err(DisplayMuxError::Backend(
+                    "macOS 顯示器 capabilities 未宣告 VCP 0x60 輸入值".to_owned(),
+                ));
+            }
+            Ok(inputs)
+        })
     }
 
     fn write_input(
@@ -61,10 +92,12 @@ impl MonitorControl for MacOsMonitorController {
         monitor_id: &MonitorId,
         input: DisplayInput,
     ) -> Result<(), DisplayMuxError> {
-        let mut monitor = find_monitor(monitor_id)?;
-        monitor
-            .set_vcp_feature(INPUT_SELECT_VCP_CODE, input.value() as u16)
-            .map_err(backend_error)
+        with_ddc_retry(|| {
+            let mut monitor = find_monitor(monitor_id)?;
+            monitor
+                .set_vcp_feature(INPUT_SELECT_VCP_CODE, input.value() as u16)
+                .map_err(backend_error)
+        })
     }
 }
 
@@ -207,7 +240,35 @@ fn core_graphics_resolution(monitor: &Monitor) -> Option<MonitorResolution> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
+
+    #[test]
+    fn ddc_retry_succeeds_after_a_transient_failure() {
+        let attempts = Cell::new(0);
+        let result = with_ddc_retry(|| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() < 2 {
+                Err(DisplayMuxError::Backend("invalid DDC/CI length".to_owned()))
+            } else {
+                Ok(42)
+            }
+        });
+        assert_eq!(result, Ok(42));
+        assert_eq!(attempts.get(), 2);
+    }
+
+    #[test]
+    fn ddc_retry_gives_up_after_exhausting_attempts() {
+        let attempts = Cell::new(0);
+        let result = with_ddc_retry(|| {
+            attempts.set(attempts.get() + 1);
+            Err::<(), _>(DisplayMuxError::Backend("invalid DDC/CI length".to_owned()))
+        });
+        assert!(result.is_err());
+        assert_eq!(attempts.get(), DDC_RETRY_ATTEMPTS);
+    }
 
     fn finalize_edid(edid: &mut [u8; 128]) {
         edid[..8].copy_from_slice(&[0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00]);
