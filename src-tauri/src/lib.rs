@@ -591,23 +591,42 @@ fn resolve_controllable_monitor(
         .controllable
         .into_iter()
         .find(|monitor| monitor.id.as_str() == monitor_id)
-        .ok_or_else(|| {
-            ui_text(
-                "找不到這台螢幕，請重新整理後再選擇",
-                "This display was not found. Refresh and select it again.",
-            )
-            .to_owned()
-        })?;
+        .ok_or_else(display_not_found)?;
     Ok((controller, monitor))
 }
 
+/// Runs blocking display work (enumeration, DDC/CI) off the main thread,
+/// serialized with dashboard scans so they never talk to a display at once.
+async fn run_display_task<T: Send + 'static>(
+    app: AppHandle,
+    task: impl FnOnce(&AppRuntime) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _scan = DASHBOARD_SCAN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        task(&app.state::<AppRuntime>())
+    })
+    .await
+    .map_err(user_error)?
+}
+
+fn display_not_found() -> String {
+    ui_text(
+        "找不到這台螢幕，請重新整理後再選擇",
+        "This display was not found. Refresh and select it again.",
+    )
+    .to_owned()
+}
+
 #[tauri::command]
-fn add_shared_monitor(
-    monitor_id: String,
-    state: State<'_, AppRuntime>,
-) -> Result<AppSettings, String> {
-    let (controller, monitor) = resolve_controllable_monitor(&monitor_id)?;
-    let mut settings = read_settings(&state)?;
+async fn add_shared_monitor(monitor_id: String, app: AppHandle) -> Result<AppSettings, String> {
+    run_display_task(app, move |state| add_shared_monitor_now(state, &monitor_id)).await
+}
+
+fn add_shared_monitor_now(state: &AppRuntime, monitor_id: &str) -> Result<AppSettings, String> {
+    let (controller, monitor) = resolve_controllable_monitor(monitor_id)?;
+    let mut settings = read_settings(state)?;
     let already_selected = settings
         .shared_monitors
         .iter()
@@ -624,23 +643,37 @@ fn add_shared_monitor(
     {
         refresh_selected_input_data(&controller, &monitor, selected).map_err(core_user_error)?;
     }
-    store_settings(&state, settings)
+    store_settings(state, settings)
 }
 
+/// Removes a shared display. Needs only to find the display, not to read it:
+/// a display showing another host may not answer DDC/CI.
 #[tauri::command]
-fn remove_shared_monitor(
-    monitor_id: String,
-    state: State<'_, AppRuntime>,
+async fn remove_shared_monitor(monitor_id: String, app: AppHandle) -> Result<AppSettings, String> {
+    run_display_task(app, move |state| {
+        let monitor = platform_controller()
+            .and_then(|controller| controller.enumerate())
+            .map_err(core_user_error)?
+            .into_iter()
+            .find(|monitor| monitor.id.as_str() == monitor_id)
+            .ok_or_else(display_not_found)?;
+        remove_shared_monitor_now(state, &monitor)
+    })
+    .await
+}
+
+fn remove_shared_monitor_now(
+    state: &AppRuntime,
+    monitor: &MonitorDescriptor,
 ) -> Result<AppSettings, String> {
-    let (_controller, monitor) = resolve_controllable_monitor(&monitor_id)?;
-    let mut settings = read_settings(&state)?;
+    let mut settings = read_settings(state)?;
     settings
         .shared_monitors
         .retain(|selected| !selected.fingerprint.matches_exactly(&monitor.fingerprint));
     for peer in &mut settings.peers {
         peer.set_input_for(&monitor.fingerprint, None);
     }
-    store_settings(&state, settings)
+    store_settings(state, settings)
 }
 
 #[tauri::command]
@@ -925,14 +958,7 @@ async fn get_dashboard_state(app: AppHandle) -> Result<DashboardState, String> {
     // Monitor enumeration and DDC/CI reads block for hundreds of milliseconds up
     // to seconds (capabilities strings, retries). Keep them off the main thread so
     // the window stays responsive while displays are scanned.
-    tauri::async_runtime::spawn_blocking(move || {
-        let _scan = DASHBOARD_SCAN
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        build_dashboard_state(&app.state::<AppRuntime>())
-    })
-    .await
-    .map_err(user_error)?
+    run_display_task(app, build_dashboard_state).await
 }
 
 fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
