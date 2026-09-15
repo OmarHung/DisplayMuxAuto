@@ -170,6 +170,7 @@ let isRecordingShortcut = false;
 let shortcutStatus: { kind: "checking" | "available" | "conflict"; text: string } | null = null;
 
 const releaseHistoryFallback = [
+  { date: "2026-09-16", version: "v0.1.8", url: "https://github.com/OmarHung/DisplayMuxAuto/releases/tag/v0.1.8" },
   { date: "2026-09-15", version: "v0.1.7", url: "https://github.com/OmarHung/DisplayMuxAuto/releases/tag/v0.1.7" },
   { date: "2026-09-14", version: "v0.1.6", url: "https://github.com/HenryHsu/DisplayMux/releases/tag/v0.1.6" },
   { date: "2026-09-14", version: "v0.1.5", url: "https://github.com/HenryHsu/DisplayMux/releases/tag/v0.1.5" },
