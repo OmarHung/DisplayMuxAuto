@@ -607,7 +607,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 10px;
+  cursor: default;
   height: 44px;
   padding: 0 16px;
   background: #f2f7f4;
@@ -618,25 +619,29 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   font-weight: 800;
 }
 
-.active-toggle-indicator {
+/* A status light, not a control: the card showing on the display right now. */
+.active-route-dot {
   position: relative;
-  width: 38px;
-  height: 22px;
-  background: var(--accent);
-  border-radius: 12px;
-  display: inline-block;
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
-.active-toggle-indicator::after {
+.active-route-dot::after {
   content: "";
   position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 18px;
-  height: 18px;
-  background: #ffffff;
+  inset: 0;
   border-radius: 50%;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  background: currentColor;
+  opacity: .45;
+  animation: active-route-pulse 1.8s ease-out infinite;
+}
+
+@keyframes active-route-pulse {
+  from { transform: scale(1); opacity: .45; }
+  to { transform: scale(2.6); opacity: 0; }
 }
 
 .switch-button.primary {
