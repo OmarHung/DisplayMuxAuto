@@ -1097,31 +1097,19 @@ function isCommonApplicationShortcut(shortcut: string): boolean {
 function renderMonitors(): void {
   const container = document.querySelector("#monitor-picker");
   if (!container) return;
+  // A shared display showing another host can't be read from here, but it is
+  // still this computer's shared display, so list it with the controllable ones.
+  const isOnOtherHost = (monitor: MonitorDescriptor) => dashboard.shared.some((shared) =>
+    shared.displayState === "onOtherHost" && sameFingerprint(shared.fingerprint, monitor.fingerprint));
   const uncontrollable = dashboard.uncontrollableMonitors ?? [];
+  const elsewhere = uncontrollable.filter(isOnOtherHost);
+  const unreachable = uncontrollable.filter((monitor) => !isOnOtherHost(monitor));
   if (!dashboard.monitors.length && !uncontrollable.length) {
     container.innerHTML = `<p class="peer-empty">${t("settings.noMonitors")}</p>`; return;
   }
-  container.innerHTML = dashboard.monitors.map((monitor) => {
-    const isSelected = settings.sharedMonitors.some((sm) => sameFingerprint(sm.fingerprint, monitor.fingerprint));
-    const fp = monitor.fingerprint;
-    const res = monitor.maxResolution;
-    const resText = res
-      ? `(${res.width}×${res.height} ${isUltrawideResolution(res) ? "21:9" : "16:9"} · ${resolutionSourceName(monitor.resolutionSource ?? null)})`
-      : "";
-    return `<article class="monitor-card-item ${isSelected ? "is-selected" : ""}">
-      <div class="monitor-item-left">
-        <div class="monitor-item-icon"><i data-lucide="monitor"></i></div>
-        <div class="monitor-identity">
-          <strong>${escapeHtml(monitor.name)}</strong>
-          <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? t("settings.noSerial"))} ${resText} (${t("settings.ddcControllable")})</span>
-          ${renderConnection(monitor.connection ?? null)}
-        </div>
-      </div>
-      <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""}" data-monitor-id="${escapeHtml(monitor.id)}" data-monitor-selected="${isSelected}">
-        ${isSelected ? t("action.removeShared") : t("action.selectShared")}
-      </button>
-    </article>`;
-  }).join("") + uncontrollable.map((monitor) => {
+  container.innerHTML = dashboard.monitors.map((monitor) => selectableMonitorCard(monitor, t("settings.ddcControllable")))
+    .concat(elsewhere.map((monitor) => selectableMonitorCard(monitor, t("dashboard.onOtherHost"))))
+    .join("") + unreachable.map((monitor) => {
     const fp = monitor.fingerprint;
     return `<article class="monitor-card-item is-unreachable">
       <div class="monitor-item-left">
@@ -1134,6 +1122,28 @@ function renderMonitors(): void {
       </div>
     </article>`;
   }).join("");
+}
+
+function selectableMonitorCard(monitor: MonitorDescriptor, statusLabel: string): string {
+  const isSelected = settings.sharedMonitors.some((sm) => sameFingerprint(sm.fingerprint, monitor.fingerprint));
+  const fp = monitor.fingerprint;
+  const res = monitor.maxResolution;
+  const resText = res
+    ? `(${res.width}×${res.height} ${isUltrawideResolution(res) ? "21:9" : "16:9"} · ${resolutionSourceName(monitor.resolutionSource ?? null)})`
+    : "";
+  return `<article class="monitor-card-item ${isSelected ? "is-selected" : ""}">
+    <div class="monitor-item-left">
+      <div class="monitor-item-icon"><i data-lucide="monitor"></i></div>
+      <div class="monitor-identity">
+        <strong>${escapeHtml(monitor.name)}</strong>
+        <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? t("settings.noSerial"))} ${resText} (${escapeHtml(statusLabel)})</span>
+        ${renderConnection(monitor.connection ?? null)}
+      </div>
+    </div>
+    <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""}" data-monitor-id="${escapeHtml(monitor.id)}" data-monitor-selected="${isSelected}">
+      ${isSelected ? t("action.removeShared") : t("action.selectShared")}
+    </button>
+  </article>`;
 }
 
 const hostOutputKeys = {
