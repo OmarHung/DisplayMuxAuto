@@ -4,6 +4,7 @@ const zhTW: Record<keyof typeof en, string> = {
   "app.rootMissing": "找不到 DisplayMux 應用程式根節點",
   "nav.aria": "主要導覽", "nav.dashboard": "切換中心", "nav.settings": "螢幕與主機", "nav.help": "使用說明",
   "language.label": "語言", "language.system": "系統預設", "language.english": "English", "language.traditionalChinese": "繁體中文",
+  "theme.label": "外觀", "theme.system": "跟隨系統外觀", "theme.light": "淺色", "theme.dark": "深色",
   "page.dashboard": "共用螢幕切換中心", "page.settings": "螢幕與主機設定", "page.help": "使用說明",
   "action.checkUpdates": "檢查更新", "action.refresh": "重新整理", "action.searchAgain": "重新搜尋", "action.searching": "搜尋中",
   "action.save": "儲存設定", "action.add": "加入", "action.remove": "移除", "action.testConnection": "測試連線", "action.sendWake": "送出喚醒",
