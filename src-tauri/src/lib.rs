@@ -1775,22 +1775,44 @@ fn agent_display_routes(response: &AgentResponse) -> Vec<AgentDisplayRoute> {
     }
 }
 
+/// Which shared display a paired host means by `remote`. Hosts read serial
+/// numbers differently, so after an exact match fails the display is matched
+/// by model, but only when a single shared display has that model.
+fn shared_monitor_index_for_peer(
+    monitors: &[SelectedMonitor],
+    remote: &MonitorFingerprint,
+) -> Option<usize> {
+    if let Some(exact) = monitors
+        .iter()
+        .position(|selected| selected.fingerprint.matches_exactly(remote))
+    {
+        return Some(exact);
+    }
+    let mut same_model = monitors
+        .iter()
+        .enumerate()
+        .filter(|(_, selected)| selected.fingerprint.is_same_model(remote));
+    match (same_model.next(), same_model.next()) {
+        (Some((index, _)), None) => Some(index),
+        _ => None,
+    }
+}
+
 fn apply_verified_peer_route(
     settings: &mut AppSettings,
     peer_id: &str,
     route: AgentDisplayRoute,
 ) -> bool {
-    let Some((fingerprint, local_input, supported_inputs)) = settings
-        .shared_monitors
-        .iter()
-        .find(|selected| selected.fingerprint.matches_exactly(&route.monitor))
-        .map(|selected| {
-            (
-                selected.fingerprint.clone(),
-                selected.local_input,
-                selected.supported_inputs.clone(),
-            )
-        })
+    let Some((fingerprint, local_input, supported_inputs)) =
+        shared_monitor_index_for_peer(&settings.shared_monitors, &route.monitor)
+            .map(|index| &settings.shared_monitors[index])
+            .map(|selected| {
+                (
+                    selected.fingerprint.clone(),
+                    selected.local_input,
+                    selected.supported_inputs.clone(),
+                )
+            })
     else {
         return false;
     };
@@ -1891,12 +1913,11 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                         AgentAction::SwitchInput { monitor, input } => {
                             let resolved = live_settings.read().ok().map(|settings| {
                                 match &monitor {
-                                    Some(requested) => settings
-                                        .shared_monitors
-                                        .iter()
-                                        .find(|selected| {
-                                            selected.fingerprint.matches_exactly(requested)
-                                        })
+                                    Some(requested) => shared_monitor_index_for_peer(
+                                        &settings.shared_monitors,
+                                        requested,
+                                    )
+                                        .map(|index| &settings.shared_monitors[index])
                                         .map(|selected| {
                                             (selected.fingerprint.clone(), selected.vendor_indexed_inputs)
                                         })
@@ -2688,14 +2709,11 @@ fn apply_active_input_notice(
     input: DisplayInput,
     now_ms: u64,
 ) -> bool {
-    let peers = &settings.peers;
-    let Some(selected) = settings
-        .shared_monitors
-        .iter_mut()
-        .find(|selected| selected.fingerprint.matches_exactly(fingerprint))
-    else {
+    let Some(index) = shared_monitor_index_for_peer(&settings.shared_monitors, fingerprint) else {
         return false;
     };
+    let peers = &settings.peers;
+    let selected = &mut settings.shared_monitors[index];
     let Some(changed) = adopt_route_for_input(selected, peers, input) else {
         return false;
     };
@@ -4117,6 +4135,60 @@ mod tests {
         assert_eq!(
             settings.shared_monitors[0].active_route.as_deref(),
             Some("peer")
+        );
+    }
+
+    /// How a paired host can describe `display`: same model, but it read a
+    /// different serial number (EDID text on Windows, a number or none on macOS).
+    fn as_seen_by_peer(display: &MonitorDescriptor) -> MonitorFingerprint {
+        MonitorFingerprint {
+            serial_number: Some("EDID-TEXT-SERIAL".to_owned()),
+            ..display.fingerprint.clone()
+        }
+    }
+
+    #[test]
+    fn peer_notice_matches_the_display_when_hosts_read_different_serials() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, Some("peer"));
+
+        let changed = apply_active_input_notice(
+            &mut settings,
+            &as_seen_by_peer(&shared),
+            DisplayInput::new(0x08).unwrap(),
+            SETTLED_MS,
+        );
+
+        assert!(changed);
+        assert_eq!(
+            settings.shared_monitors[0].active_route.as_deref(),
+            Some("local")
+        );
+    }
+
+    #[test]
+    fn peer_display_is_not_guessed_between_two_shared_displays_of_the_same_model() {
+        let left = monitor("twin");
+        let right = MonitorDescriptor {
+            id: displaymux_core::MonitorId::new("twin-right"),
+            fingerprint: MonitorFingerprint {
+                serial_number: Some("serial-twin-right".to_owned()),
+                ..left.fingerprint.clone()
+            },
+            ..left.clone()
+        };
+        let settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor::from(&left), SelectedMonitor::from(&right)],
+            ..AppSettings::default()
+        };
+
+        assert_eq!(
+            shared_monitor_index_for_peer(&settings.shared_monitors, &as_seen_by_peer(&left)),
+            None
+        );
+        assert_eq!(
+            shared_monitor_index_for_peer(&settings.shared_monitors, &right.fingerprint),
+            Some(1)
         );
     }
 
