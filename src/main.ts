@@ -726,6 +726,9 @@ async function refresh(): Promise<void> {
     ]);
     try { discoveredPeers = await invoke<DiscoveredPeer[]>("discover_peers"); } catch { discoveredPeers = []; }
     isPreview = false;
+    // Catch up on host names and order changed while a paired host was offline.
+    // Throttled and run in the background by the backend; results arrive as events.
+    void invoke("exchange_host_layout").catch((error: unknown) => showToast(t("toast.hostNameFailed"), String(error), true));
   } catch {
     dashboard = previewDashboard; settings = previewSettings; inputOptionsByMonitor = {}; discoveredPeers = []; isPreview = true;
   } finally {

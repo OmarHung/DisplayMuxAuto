@@ -438,7 +438,7 @@ impl AgentRequest {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentResponse {
     pub ready: bool,
     pub message: String,
@@ -458,6 +458,16 @@ pub struct AgentResponse {
     /// per-monitor switch requests".
     #[serde(default)]
     pub protocol_version: u32,
+    /// The responder's host card order and when it last changed, so a host
+    /// that was offline when the order changed can catch up. Empty and `0` on
+    /// agents that predate this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_order: Vec<String>,
+    #[serde(default)]
+    pub host_order_updated_at_ms: u64,
+    /// The responder's custom host names, for the same catch-up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_aliases: Vec<HostAlias>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -630,6 +640,7 @@ fn rejection_response(error: &DisplayMuxError) -> AgentResponse {
         display_route: None,
         display_routes: Vec::new(),
         protocol_version: AGENT_PROTOCOL_VERSION,
+        ..AgentResponse::default()
     }
 }
 
@@ -751,6 +762,30 @@ mod tests {
         assert!(response.display_route.is_none());
         assert!(response.display_routes.is_empty());
         assert_eq!(response.protocol_version, 0);
+        assert!(response.host_order.is_empty());
+        assert_eq!(response.host_order_updated_at_ms, 0);
+        assert!(response.host_aliases.is_empty());
+    }
+
+    #[test]
+    fn agent_response_carries_host_layout_for_peers_that_missed_a_change() {
+        let response = AgentResponse {
+            host_order: vec!["2cf05de0c029-windows".to_owned()],
+            host_order_updated_at_ms: 42,
+            host_aliases: vec![HostAlias {
+                host_id: "2cf05de0c029-windows".to_owned(),
+                name: "遊戲電腦".to_owned(),
+                updated_at_ms: 7,
+            }],
+            ..AgentResponse::default()
+        };
+
+        let serialized = serde_json::to_string(&response).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<AgentResponse>(&serialized).unwrap(),
+            response
+        );
     }
 
     #[test]
