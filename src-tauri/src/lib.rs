@@ -155,6 +155,11 @@ struct SelectedMonitor {
     // switched away from (see macOS DDC/CI limitations in product-facts.md).
     #[serde(default)]
     active_route: Option<String>,
+    /// When a switch or a paired host's notice last confirmed `active_route`
+    /// (Unix milliseconds). Live reads cannot override it until
+    /// `ACTIVE_ROUTE_SETTLE_MS` later. In memory only.
+    #[serde(default, skip_serializing)]
+    active_route_confirmed_at_ms: u64,
 }
 
 impl From<&MonitorDescriptor> for SelectedMonitor {
@@ -168,6 +173,7 @@ impl From<&MonitorDescriptor> for SelectedMonitor {
             supported_inputs: None,
             vendor_indexed_inputs: false,
             active_route: None,
+            active_route_confirmed_at_ms: 0,
         }
     }
 }
@@ -938,7 +944,8 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
                         }
                     }
                 }
-                let routes_changed = sync_active_routes_with_live_inputs(&mut settings, &inventory);
+                let routes_changed =
+                    sync_active_routes_with_live_inputs(&mut settings, &inventory, unix_time_ms());
                 if !changes.is_empty() || routes_changed {
                     store_settings(state, settings.clone())?;
                 }
@@ -2000,6 +2007,7 @@ fn set_active_route(
     settings: &mut AppSettings,
     fingerprint: &MonitorFingerprint,
     route_id: &str,
+    now_ms: u64,
 ) -> bool {
     let Some(selected) = settings
         .shared_monitors
@@ -2009,6 +2017,7 @@ fn set_active_route(
         return false;
     };
     selected.active_route = Some(route_id.to_owned());
+    selected.active_route_confirmed_at_ms = now_ms;
     true
 }
 
@@ -2018,7 +2027,7 @@ fn record_active_route(
     route_id: &str,
 ) -> Result<(), String> {
     let mut settings = read_settings(state)?;
-    if set_active_route(&mut settings, fingerprint, route_id) {
+    if set_active_route(&mut settings, fingerprint, route_id, unix_time_ms()) {
         store_settings(state, settings)?;
     }
     Ok(())
@@ -2026,6 +2035,11 @@ fn record_active_route(
 
 /// Frontend event telling the dashboard to re-read which host is active.
 const ACTIVE_ROUTE_CHANGED_EVENT: &str = "active-route-changed";
+
+/// How long a confirmed switch outranks live reads of the display's input.
+/// Displays can keep reporting the previous input for several seconds while
+/// they change over, and Windows returns from a switch without waiting.
+const ACTIVE_ROUTE_SETTLE_MS: u64 = 15_000;
 
 /// Tells every paired host that `fingerprint` now shows `input`, so their
 /// dashboards update without a manual refresh. Fire-and-forget: hosts that are
@@ -2060,7 +2074,7 @@ fn broadcast_to_peers(state: &AppRuntime, action: &AgentAction) {
         tauri::async_runtime::spawn(async move {
             let peer = &settings.peers[index];
             if let Err(error) = request_peer(&settings, peer, action).await {
-                tracing::debug!(
+                tracing::info!(
                     peer = peer.name.as_str(),
                     error = %error,
                     "paired host did not accept the notice"
@@ -2314,7 +2328,11 @@ async fn receive_active_input_notice(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = app.state::<AppRuntime>();
         let mut settings = read_settings(&state)?;
-        if apply_active_input_notice(&mut settings, &monitor, input) {
+        if apply_active_input_notice(&mut settings, &monitor, input, unix_time_ms()) {
+            tracing::info!(
+                input = input.value(),
+                "paired host notice moved the active host"
+            );
             store_settings(&state, settings)?;
             if let Err(error) = app.emit(ACTIVE_ROUTE_CHANGED_EVENT, ()) {
                 tracing::warn!(error = %error, "unable to notify the dashboard of an active host change");
@@ -2622,14 +2640,20 @@ fn monitor_inventory<C: MonitorControl>(
 /// display's own buttons, or a cable swap) shows up on the next refresh.
 /// Only an input owned by exactly one route is trusted; an unreadable display
 /// or an unrecognized or ambiguous input keeps the last confirmed route.
+/// A display confirmed switched within `ACTIVE_ROUTE_SETTLE_MS` is skipped: it
+/// can still report its previous input while it changes over.
 /// Returns whether any route changed.
 fn sync_active_routes_with_live_inputs(
     settings: &mut AppSettings,
     inventory: &MonitorInventory,
+    now_ms: u64,
 ) -> bool {
     let peers = &settings.peers;
     let mut changed = false;
     for selected in &mut settings.shared_monitors {
+        if now_ms.saturating_sub(selected.active_route_confirmed_at_ms) < ACTIVE_ROUTE_SETTLE_MS {
+            continue;
+        }
         let Some(current) = inventory
             .controllable
             .iter()
@@ -2638,35 +2662,56 @@ fn sync_active_routes_with_live_inputs(
         else {
             continue;
         };
-        changed |= adopt_route_for_input(selected, peers, *current);
+        let previous = selected.active_route.clone();
+        if adopt_route_for_input(selected, peers, *current) == Some(true) {
+            tracing::info!(
+                monitor = selected.name.as_str(),
+                input = current.value(),
+                previous = previous.as_deref().unwrap_or(host_order::LOCAL_ROUTE_ID),
+                active = selected.active_route.as_deref().unwrap_or_default(),
+                "live input moved the active host"
+            );
+            changed = true;
+        }
     }
     changed
 }
 
 /// Applies a paired host's notice that it switched `fingerprint` to `input`.
 /// The receiver resolves the owning route from its own settings rather than
-/// trusting a route id from the sender. Returns whether the route changed.
+/// trusting a route id from the sender. A recognized notice starts the settle
+/// period (see `sync_active_routes_with_live_inputs`) even when the route
+/// already matches. Returns whether the route changed.
 fn apply_active_input_notice(
     settings: &mut AppSettings,
     fingerprint: &MonitorFingerprint,
     input: DisplayInput,
+    now_ms: u64,
 ) -> bool {
     let peers = &settings.peers;
-    settings
+    let Some(selected) = settings
         .shared_monitors
         .iter_mut()
         .find(|selected| selected.fingerprint.matches_exactly(fingerprint))
-        .is_some_and(|selected| adopt_route_for_input(selected, peers, input))
+    else {
+        return false;
+    };
+    let Some(changed) = adopt_route_for_input(selected, peers, input) else {
+        return false;
+    };
+    selected.active_route_confirmed_at_ms = now_ms;
+    changed
 }
 
 /// Marks the single route ("local" or a peer id) configured for `input` as the
 /// display's active route. An input owned by no route or by several keeps the
-/// last confirmed route. Returns whether the route changed.
+/// last confirmed route. Returns whether the route changed, or `None` when no
+/// single route owns `input`.
 fn adopt_route_for_input(
     selected: &mut SelectedMonitor,
     peers: &[HostRoute],
     input: DisplayInput,
-) -> bool {
+) -> Option<bool> {
     let local = (selected.local_input == Some(input)).then_some("local");
     let owners: Vec<&str> = local
         .into_iter()
@@ -2678,14 +2723,14 @@ fn adopt_route_for_input(
         )
         .collect();
     let [owner] = owners.as_slice() else {
-        return false;
+        return None;
     };
     // An unset route is rendered as this host, so it already agrees.
     if selected.active_route.as_deref().unwrap_or("local") == *owner {
-        return false;
+        return Some(false);
     }
     selected.active_route = Some((*owner).to_owned());
-    true
+    Some(true)
 }
 
 /// External monitors the OS reports but whose DDC/CI input cannot be read.
@@ -2831,6 +2876,7 @@ fn reconcile_monitor_selection(
             refreshed.supported_inputs = selected.supported_inputs.clone();
             refreshed.vendor_indexed_inputs = selected.vendor_indexed_inputs;
             refreshed.active_route = selected.active_route.clone();
+            refreshed.active_route_confirmed_at_ms = selected.active_route_confirmed_at_ms;
             let metadata_changed = selected.name != refreshed.name
                 || selected.max_resolution != refreshed.max_resolution
                 || selected.resolution_source != refreshed.resolution_source;
@@ -3829,7 +3875,8 @@ mod tests {
         assert!(set_active_route(
             &mut settings,
             &monitor_b.fingerprint,
-            "peer"
+            "peer",
+            SETTLED_MS
         ));
 
         assert_eq!(settings.shared_monitors[0].active_route, None);
@@ -3851,7 +3898,8 @@ mod tests {
         assert!(!set_active_route(
             &mut settings,
             &missing.fingerprint,
-            "peer"
+            "peer",
+            SETTLED_MS
         ));
         assert_eq!(settings.shared_monitors[0].active_route, None);
     }
@@ -3922,8 +3970,11 @@ mod tests {
         let shared = monitor("shared");
         let mut settings = routed_settings(&shared, 0x08, 0x07, Some("local"));
 
-        let changed =
-            sync_active_routes_with_live_inputs(&mut settings, &inventory_reading(&shared, 0x07));
+        let changed = sync_active_routes_with_live_inputs(
+            &mut settings,
+            &inventory_reading(&shared, 0x07),
+            SETTLED_MS,
+        );
 
         assert!(changed);
         assert_eq!(
@@ -3937,8 +3988,11 @@ mod tests {
         let shared = monitor("shared");
         let mut settings = routed_settings(&shared, 0x08, 0x07, Some("peer"));
 
-        let changed =
-            sync_active_routes_with_live_inputs(&mut settings, &inventory_reading(&shared, 0x08));
+        let changed = sync_active_routes_with_live_inputs(
+            &mut settings,
+            &inventory_reading(&shared, 0x08),
+            SETTLED_MS,
+        );
 
         assert!(changed);
         assert_eq!(
@@ -3952,8 +4006,11 @@ mod tests {
         let shared = monitor("shared");
         let mut settings = routed_settings(&shared, 0x08, 0x07, Some("peer"));
 
-        let changed =
-            sync_active_routes_with_live_inputs(&mut settings, &inventory_reading(&shared, 0x03));
+        let changed = sync_active_routes_with_live_inputs(
+            &mut settings,
+            &inventory_reading(&shared, 0x03),
+            SETTLED_MS,
+        );
 
         assert!(!changed);
         assert_eq!(
@@ -3967,8 +4024,11 @@ mod tests {
         let shared = monitor("shared");
         let mut settings = routed_settings(&shared, 0x07, 0x07, Some("peer"));
 
-        let changed =
-            sync_active_routes_with_live_inputs(&mut settings, &inventory_reading(&shared, 0x07));
+        let changed = sync_active_routes_with_live_inputs(
+            &mut settings,
+            &inventory_reading(&shared, 0x07),
+            SETTLED_MS,
+        );
 
         assert!(!changed);
         assert_eq!(
@@ -3989,7 +4049,8 @@ mod tests {
 
         assert!(!sync_active_routes_with_live_inputs(
             &mut settings,
-            &inventory
+            &inventory,
+            SETTLED_MS
         ));
         assert_eq!(
             settings.shared_monitors[0].active_route.as_deref(),
@@ -4006,6 +4067,7 @@ mod tests {
             &mut settings,
             &shared.fingerprint,
             DisplayInput::new(0x08).unwrap(),
+            SETTLED_MS,
         );
 
         assert!(changed);
@@ -4024,6 +4086,7 @@ mod tests {
             &mut settings,
             &shared.fingerprint,
             DisplayInput::new(0x07).unwrap(),
+            SETTLED_MS,
         );
 
         assert!(changed);
@@ -4043,11 +4106,13 @@ mod tests {
             &mut settings,
             &other.fingerprint,
             DisplayInput::new(0x08).unwrap(),
+            SETTLED_MS
         ));
         assert!(!apply_active_input_notice(
             &mut settings,
             &shared.fingerprint,
             DisplayInput::new(0x03).unwrap(),
+            SETTLED_MS
         ));
         assert_eq!(
             settings.shared_monitors[0].active_route.as_deref(),
@@ -4097,6 +4162,70 @@ mod tests {
         assert_eq!(settings.host_order_updated_at_ms, 100);
     }
 
+    /// A time well past any settle period, for tests about other behaviour.
+    const SETTLED_MS: u64 = ACTIVE_ROUTE_SETTLE_MS * 100;
+
+    #[test]
+    fn live_input_right_after_a_confirmed_switch_does_not_revert_it() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, None);
+        let switched_at = SETTLED_MS;
+        assert!(set_active_route(
+            &mut settings,
+            &shared.fingerprint,
+            "peer",
+            switched_at
+        ));
+        // The display still reports the old input while it changes over.
+        let stale = inventory_reading(&shared, 0x08);
+
+        let changed_while_settling = sync_active_routes_with_live_inputs(
+            &mut settings,
+            &stale,
+            switched_at + ACTIVE_ROUTE_SETTLE_MS - 1,
+        );
+        assert!(!changed_while_settling);
+        assert_eq!(
+            settings.shared_monitors[0].active_route.as_deref(),
+            Some("peer")
+        );
+
+        let changed_after_settling = sync_active_routes_with_live_inputs(
+            &mut settings,
+            &stale,
+            switched_at + ACTIVE_ROUTE_SETTLE_MS,
+        );
+        assert!(changed_after_settling);
+        assert_eq!(
+            settings.shared_monitors[0].active_route.as_deref(),
+            Some("local")
+        );
+    }
+
+    #[test]
+    fn peer_notice_starts_the_settle_period_even_when_the_route_already_matches() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, Some("peer"));
+
+        let changed = apply_active_input_notice(
+            &mut settings,
+            &shared.fingerprint,
+            DisplayInput::new(0x07).unwrap(),
+            SETTLED_MS,
+        );
+
+        assert!(!changed);
+        assert_eq!(
+            settings.shared_monitors[0].active_route_confirmed_at_ms,
+            SETTLED_MS
+        );
+        assert!(!sync_active_routes_with_live_inputs(
+            &mut settings,
+            &inventory_reading(&shared, 0x08),
+            SETTLED_MS + 1
+        ));
+    }
+
     #[test]
     fn unset_active_route_already_means_this_host() {
         let shared = monitor("shared");
@@ -4104,7 +4233,8 @@ mod tests {
 
         assert!(!sync_active_routes_with_live_inputs(
             &mut settings,
-            &inventory_reading(&shared, 0x08)
+            &inventory_reading(&shared, 0x08),
+            SETTLED_MS
         ));
         assert_eq!(settings.shared_monitors[0].active_route, None);
     }
