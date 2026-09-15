@@ -1398,8 +1398,8 @@ function renderHostRoutes(shared: SharedMonitorStatus): void {
         </div>
         ${isActive ? `
           <div class="active-route-state">
+            <span class="active-route-dot" aria-hidden="true"></span>
             <span>${t("dashboard.currentlyDisplayed")}</span>
-            <span class="active-toggle-indicator"></span>
           </div>
         ` : `
           <button class="switch-button primary" data-switch-id="${escapeHtml(route.id)}" ${route.input == null || (!shared.ddcAvailable && !dashboard.agentConfigured) ? "disabled" : ""}>
