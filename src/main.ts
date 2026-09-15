@@ -1,14 +1,14 @@
 import "@fontsource-variable/manrope";
 import {
   Activity, ArrowLeftRight, CircleHelp, Computer, createIcons, Download, KeyRound, Laptop,
-  ChevronDown, ExternalLink, Github, Languages, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
+  ChevronDown, ExternalLink, Github, Languages, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
   ShieldCheck, Trash2, UserRound, Zap,
 } from "lucide";
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import packageMetadata from "../package.json";
-import { locale, localePreference, setLocalePreference, t } from "./i18n";
+import { locale, localePreference, setLocalePreference, t, type MessageKey } from "./i18n";
 import "./styles.css";
 
 type Platform = "windows" | "mac";
@@ -25,6 +25,19 @@ interface Fingerprint {
   serial_number: string | null;
 }
 
+type HostOutput = "hdmi" | "displayPort" | "usbC" | "thunderbolt" | "dvi" | "vga" | "indirect";
+type SinkInterface = "hdmi" | "displayPort" | "dvi" | "vga" | "unknownDigital";
+type DdcRisk = "low" | "elevated" | "unsupported";
+
+interface MonitorConnection {
+  hostOutput: HostOutput | null;
+  hostPort?: string | null;
+  sinkInterface: SinkInterface | null;
+  sharesUsbData: boolean;
+  signalConversion: boolean;
+  ddcRisk: DdcRisk | null;
+}
+
 interface MonitorDescriptor {
   id: string;
   name: string;
@@ -33,6 +46,7 @@ interface MonitorDescriptor {
   fingerprint: Fingerprint;
   maxResolution?: MonitorResolution | null;
   resolutionSource?: ResolutionSource | null;
+  connection?: MonitorConnection | null;
 }
 
 interface SelectedMonitor {
@@ -81,6 +95,8 @@ interface SharedMonitorStatus {
   name: string;
   ddcAvailable: boolean;
   statusText: string;
+  connection: MonitorConnection | null;
+  connectionInputConflict: boolean;
 }
 
 interface DashboardState {
@@ -88,6 +104,7 @@ interface DashboardState {
   localHost: Platform;
   agentConfigured: boolean;
   monitors: MonitorDescriptor[];
+  uncontrollableMonitors: MonitorDescriptor[];
   shared: SharedMonitorStatus[];
   selectionNotices: string[];
 }
@@ -135,7 +152,7 @@ const previewSettings: AppSettings = {
 };
 const previewDashboard: DashboardState = {
   platform: "windows", localHost: "windows", agentConfigured: false,
-  monitors: [], shared: [], selectionNotices: [],
+  monitors: [], uncontrollableMonitors: [], shared: [], selectionNotices: [],
 };
 
 let settings = previewSettings;
@@ -433,7 +450,7 @@ app.innerHTML = `
   <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
 `;
 
-const iconSet = { Activity, ArrowLeftRight, ChevronDown, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, Trash2, UserRound, Zap };
+const iconSet = { Activity, ArrowLeftRight, ChevronDown, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, Trash2, UserRound, Zap };
 const refreshIcons = () => createIcons({ icons: iconSet });
 refreshIcons();
 
@@ -895,7 +912,8 @@ function isCommonApplicationShortcut(shortcut: string): boolean {
 function renderMonitors(): void {
   const container = document.querySelector("#monitor-picker");
   if (!container) return;
-  if (!dashboard.monitors.length) {
+  const uncontrollable = dashboard.uncontrollableMonitors ?? [];
+  if (!dashboard.monitors.length && !uncontrollable.length) {
     container.innerHTML = `<p class="peer-empty">${t("settings.noMonitors")}</p>`; return;
   }
   container.innerHTML = dashboard.monitors.map((monitor) => {
@@ -911,13 +929,52 @@ function renderMonitors(): void {
         <div class="monitor-identity">
           <strong>${escapeHtml(monitor.name)}</strong>
           <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? t("settings.noSerial"))} ${resText} (${t("settings.ddcControllable")})</span>
+          ${renderConnection(monitor.connection ?? null)}
         </div>
       </div>
       <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""}" data-monitor-id="${escapeHtml(monitor.id)}" data-monitor-selected="${isSelected}">
         ${isSelected ? t("action.removeShared") : t("action.selectShared")}
       </button>
     </article>`;
+  }).join("") + uncontrollable.map((monitor) => {
+    const fp = monitor.fingerprint;
+    return `<article class="monitor-card-item is-unreachable">
+      <div class="monitor-item-left">
+        <div class="monitor-item-icon"><i data-lucide="monitor-off"></i></div>
+        <div class="monitor-identity">
+          <strong>${escapeHtml(monitor.name)}</strong>
+          <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? t("settings.noSerial"))} (${t("settings.ddcUnreachable")})</span>
+          ${renderConnection(monitor.connection ?? null)}
+        </div>
+      </div>
+    </article>`;
   }).join("");
+}
+
+const hostOutputKeys = {
+  hdmi: "connection.host.hdmi", displayPort: "connection.host.displayPort", usbC: "connection.host.usbC",
+  thunderbolt: "connection.host.thunderbolt", dvi: "connection.host.dvi", vga: "connection.host.vga",
+  indirect: "connection.host.indirect",
+} as const satisfies Record<HostOutput, MessageKey>;
+
+const sinkInterfaceKeys = {
+  hdmi: "connection.sink.hdmi", displayPort: "connection.sink.displayPort", dvi: "connection.sink.dvi",
+  vga: "connection.sink.vga", unknownDigital: "connection.sink.unknownDigital",
+} as const satisfies Record<SinkInterface, MessageKey>;
+
+function renderConnection(connection: MonitorConnection | null): string {
+  if (!connection || (!connection.hostOutput && !connection.sinkInterface)) return "";
+  const host = connection.hostOutput ? t(hostOutputKeys[connection.hostOutput]) : t("connection.unknown");
+  const sink = connection.sinkInterface ? t(sinkInterfaceKeys[connection.sinkInterface]) : t("connection.unknown");
+  const traits = [
+    connection.signalConversion ? t("connection.conversion") : null,
+    connection.sharesUsbData ? t("connection.sharesUsb") : null,
+  ].filter((value): value is string => value !== null);
+  const risk = connection.ddcRisk === "elevated" ? t("connection.riskElevated")
+    : connection.ddcRisk === "unsupported" ? t("connection.riskUnsupported") : null;
+  const title = connection.hostPort ? ` title="${escapeHtml(connection.hostPort)}"` : "";
+  return `<span class="monitor-connection"${title}>${escapeHtml(t("connection.summary", { host, sink }))}${traits.length ? ` · ${escapeHtml(traits.join(" · "))}` : ""}</span>
+    ${risk ? `<span class="monitor-connection-risk">${escapeHtml(risk)}</span>` : ""}`;
 }
 
 function renderLocalInputSummary(): void {
@@ -929,7 +986,8 @@ function renderLocalInputSummary(): void {
   }
   container.innerHTML = dashboard.shared.map((shared) => {
     const value = selectedMonitorFor(shared)?.localInput ?? null;
-    return `<div class="local-input-row"><span>${escapeHtml(shared.name)}</span><strong>${value == null ? t("input.unset") : escapeHtml(inputName(value, shared.monitorKey))}</strong></div>`;
+    const conflict = shared.connectionInputConflict ? `<small class="local-input-conflict">${t("settings.inputConflict")}</small>` : "";
+    return `<div class="local-input-row"><span>${escapeHtml(shared.name)}</span><strong>${value == null ? t("input.unset") : escapeHtml(inputName(value, shared.monitorKey))}</strong>${conflict}</div>`;
   }).join("");
 }
 

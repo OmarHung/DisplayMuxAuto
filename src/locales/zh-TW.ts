@@ -85,6 +85,17 @@ const zhTW: Record<keyof typeof en, string> = {
   "toast.updateUnavailableBody": "請從已安裝的 DisplayMux 執行更新檢查。", "toast.updateFailed": "無法檢查更新", "toast.installFailed": "更新未安裝",
   "toast.onboardingFailed": "無法儲存設定引導狀態", "toast.openLinkFailed": "無法開啟連結",
   "preview.monitorStatus": "請在設定頁選擇共用螢幕",
+  "settings.ddcUnreachable": "已偵測到，但無法讀取 DDC/CI",
+  "settings.inputConflict": "記錄的輸入與連接方式不符，可能是在螢幕顯示其他電腦時讀取的，請確認。",
+  "connection.summary": "連接方式：{host} → {sink}", "connection.unknown": "未知",
+  "connection.host.hdmi": "HDMI", "connection.host.displayPort": "DisplayPort", "connection.host.usbC": "USB-C",
+  "connection.host.thunderbolt": "Thunderbolt", "connection.host.dvi": "DVI", "connection.host.vga": "VGA",
+  "connection.host.indirect": "USB／網路顯示",
+  "connection.sink.hdmi": "螢幕 HDMI 輸入", "connection.sink.displayPort": "螢幕 DisplayPort 或 Type-C 輸入",
+  "connection.sink.dvi": "螢幕 DVI 輸入", "connection.sink.vga": "螢幕 VGA 輸入", "connection.sink.unknownDigital": "螢幕數位輸入",
+  "connection.conversion": "訊號轉換", "connection.sharesUsb": "同接口有 USB 資料（Hub、Dock 或 USB-C 螢幕）",
+  "connection.riskElevated": "訊號轉換器常只傳畫面、不傳 DDC/CI",
+  "connection.riskUnsupported": "此連接方式沒有 DDC/CI 通道",
 };
 
 export default zhTW;

@@ -77,6 +77,9 @@ impl WindowsMonitorController {
                         resolution_source: details
                             .max_resolution
                             .map(|_| ResolutionSource::WindowsDisplayMode),
+                        // TODO: map WmiMonitorConnectionParams.VideoOutputTechnology
+                        // once verified on real Windows hardware.
+                        connection: None,
                     },
                     handle: physical.hPhysicalMonitor,
                 });

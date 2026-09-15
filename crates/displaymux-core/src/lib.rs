@@ -1,4 +1,5 @@
 mod capabilities;
+mod connection;
 mod domain;
 #[cfg(any(target_os = "macos", test))]
 mod edid;
@@ -9,9 +10,14 @@ mod service;
 
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "macos")]
+mod macos_connection;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+pub use connection::{
+    candidate_inputs, input_matches_sink, DdcRisk, HostOutput, MonitorConnection, SinkInterface,
+};
 pub use domain::{
     DestinationHost, DiscoveredPeer, DisplayInput, DisplayMuxProfile, MonitorDescriptor,
     MonitorFingerprint, MonitorId, MonitorResolution, ResolutionSource, SwitchMode, SwitchOutcome,

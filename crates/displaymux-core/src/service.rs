@@ -136,6 +136,7 @@ mod tests {
             built_in: false,
             max_resolution: None,
             resolution_source: None,
+            connection: None,
         }
     }
 
