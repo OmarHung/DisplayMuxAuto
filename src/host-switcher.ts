@@ -1,5 +1,6 @@
 import "@fontsource-variable/manrope";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { locale, t } from "./i18n";
 import "./host-switcher.css";
 
@@ -44,6 +45,8 @@ let state: HostSwitcherState = { monitors: [] };
 let rows: Row[] = [];
 let selectedIndex = 0;
 let switching = false;
+/** Emitted by the backend when this or a paired host saves a new host card order. */
+const HOST_ORDER_CHANGED_EVENT = "host-order-changed";
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({
@@ -193,6 +196,34 @@ async function initialize(): Promise<void> {
   }
   rows = computeRows();
   selectedIndex = Math.max(0, rows.findIndex((row) => isSelectableRow(row)));
+  render();
+  try {
+    await listen(HOST_ORDER_CHANGED_EVENT, () => void reloadState());
+  } catch {
+    // Preview mode has no Tauri backend; the static preview order never changes.
+    return;
+  }
+  // The window is hidden rather than closed, so re-read hosts each time it opens.
+  window.addEventListener("focus", () => void reloadState());
+}
+
+/** Re-reads hosts and their order, keeping the same host selected. */
+async function reloadState(): Promise<void> {
+  if (switching) return;
+  const selected = rows[selectedIndex];
+  let latest: HostSwitcherState;
+  try {
+    latest = await invoke<HostSwitcherState>("get_host_switcher_state");
+  } catch {
+    // Keep showing the previous hosts; the next time the switcher opens it retries.
+    return;
+  }
+  state = latest;
+  rows = computeRows();
+  const kept = selected?.kind === "host"
+    ? rows.findIndex((row) => row.kind === "host" && row.monitorKey === selected.monitorKey && row.host.id === selected.host.id)
+    : -1;
+  selectedIndex = kept !== -1 ? kept : Math.max(0, rows.findIndex((row) => isSelectableRow(row)));
   render();
 }
 

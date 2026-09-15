@@ -42,20 +42,29 @@ pub struct MdnsPeerDiscovery {
     peers: Arc<StdRwLock<HashMap<String, DiscoveredPeer>>>,
 }
 
-impl MdnsPeerDiscovery {
-    pub fn start(local_platform: DestinationHost, port: u16) -> Result<Self, DisplayMuxError> {
+/// How this computer identifies itself to paired hosts. `id` is the same value
+/// a peer stores for this host after discovering it, so it can name this host
+/// in data shared between hosts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalHostIdentity {
+    pub id: String,
+    pub name: String,
+    pub platform: DestinationHost,
+    pub mac_address: Option<String>,
+}
+
+impl LocalHostIdentity {
+    pub fn detect(platform: DestinationHost) -> Result<Self, DisplayMuxError> {
         let host_name = hostname::get()
             .map_err(|error| DisplayMuxError::Backend(error.to_string()))?
             .to_string_lossy()
             .trim()
             .to_owned();
-        let friendly_name = if host_name.is_empty() {
+        let name = if host_name.is_empty() {
             "DisplayMux".to_owned()
         } else {
             host_name
         };
-        let dns_label = dns_label(&friendly_name);
-        let dns_host_name = format!("{dns_label}.local.");
         let mac_address = match mac_address::get_mac_address() {
             Ok(address) => address.map(|address| address.to_string()),
             Err(error) => {
@@ -63,8 +72,32 @@ impl MdnsPeerDiscovery {
                 None
             }
         };
-        let platform = platform_name(local_platform);
-        let local_id = peer_id(&friendly_name, platform, mac_address.as_deref());
+        Ok(Self::from_parts(name, platform, mac_address))
+    }
+
+    pub fn from_parts(
+        name: String,
+        platform: DestinationHost,
+        mac_address: Option<String>,
+    ) -> Self {
+        let id = peer_id(&name, platform_name(platform), mac_address.as_deref());
+        Self {
+            id,
+            name,
+            platform,
+            mac_address,
+        }
+    }
+}
+
+impl MdnsPeerDiscovery {
+    pub fn start(identity: &LocalHostIdentity, port: u16) -> Result<Self, DisplayMuxError> {
+        let friendly_name = identity.name.clone();
+        let dns_label = dns_label(&friendly_name);
+        let dns_host_name = format!("{dns_label}.local.");
+        let mac_address = identity.mac_address.clone();
+        let platform = platform_name(identity.platform);
+        let local_id = identity.id.clone();
 
         let mut properties = HashMap::from([
             ("id".to_owned(), local_id.clone()),
@@ -337,6 +370,13 @@ pub enum AgentAction {
     ActiveInputChanged {
         monitor: MonitorFingerprint,
         input: DisplayInput,
+    },
+    /// Best-effort notice of the host card order a paired host just saved,
+    /// as `LocalHostIdentity::id` values. `updated_at_ms` lets receivers keep
+    /// the most recent order when several hosts change it.
+    HostOrderChanged {
+        order: Vec<String>,
+        updated_at_ms: u64,
     },
 }
 
@@ -718,6 +758,37 @@ mod tests {
         };
         let serialized = serde_json::to_value(&action).unwrap();
         assert!(serialized.get("monitor").is_some());
+    }
+
+    #[test]
+    fn host_order_changed_notice_round_trips_with_its_order_and_timestamp() {
+        let action = AgentAction::HostOrderChanged {
+            order: vec![
+                "2cf05de0c029-windows".to_owned(),
+                "aabbccddeeff-mac".to_owned(),
+            ],
+            updated_at_ms: 1_757_000_000_000,
+        };
+
+        let serialized = serde_json::to_string(&action).unwrap();
+
+        assert!(serialized.contains(r#""type":"host_order_changed""#));
+        assert_eq!(
+            serde_json::from_str::<AgentAction>(&serialized).unwrap(),
+            action
+        );
+    }
+
+    #[test]
+    fn local_host_identity_matches_the_id_peers_discover() {
+        let identity = LocalHostIdentity::from_parts(
+            "Henry-PC".to_owned(),
+            DestinationHost::Windows,
+            Some("AA:BB:CC:DD:EE:FF".to_owned()),
+        );
+
+        assert_eq!(identity.id, "aabbccddeeff-windows");
+        assert_eq!(identity.name, "Henry-PC");
     }
 
     #[test]

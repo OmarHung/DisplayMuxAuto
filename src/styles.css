@@ -456,6 +456,71 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   box-shadow: 0 0 0 2px rgba(19, 115, 86, 0.08), var(--shadow-card);
 }
 
+.host-route-card[draggable="true"] {
+  position: relative;
+  cursor: grab;
+  transition: opacity .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+
+.host-route-card.is-dragging {
+  opacity: .45;
+  cursor: grabbing;
+}
+
+.host-route-card.is-drop-target {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-light), var(--shadow-card);
+}
+
+.host-order-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity .16s ease;
+}
+
+.host-route-card:hover .host-order-controls,
+.host-order-controls:focus-within {
+  opacity: 1;
+}
+
+.host-order-button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.host-order-button:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.host-order-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.host-order-button:disabled {
+  opacity: .35;
+  cursor: default;
+}
+
+.host-order-button svg { width: 15px; height: 15px; }
+
+@media (hover: none) {
+  .host-order-controls { opacity: 1; }
+}
+
 .host-card-header {
   display: flex;
   align-items: center;
