@@ -44,6 +44,7 @@ const en = {
   "dashboard.identityHint": "Locked by EDID vendor, product code, and serial number—not display order.",
   "dashboard.detecting": "Detecting",
   "dashboard.locked": "Locked",
+  "dashboard.onOtherHost": "Showing another host",
   "dashboard.sharedLabel": "Shared display:",
   "dashboard.hostsLabel": "Added hosts:",
   "dashboard.wakeLabel": "Wake support:",

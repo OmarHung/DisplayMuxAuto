@@ -96,6 +96,8 @@ interface SharedMonitorStatus {
   fingerprint: Fingerprint;
   name: string;
   ddcAvailable: boolean;
+  /** "onOtherHost": unreadable because the display is showing a paired host, which is expected. */
+  displayState: "ready" | "onOtherHost" | "unavailable";
   statusText: string;
   connection: MonitorConnection | null;
   connectionInputConflict: boolean;
@@ -862,9 +864,15 @@ function renderMonitorStrip(): void {
     return `<button type="button" class="monitor-strip-card ${isActive ? "is-active" : ""}" data-monitor-key="${escapeHtml(shared.monitorKey)}">
       <span class="monitor-strip-name">${escapeHtml(shared.name)}</span>
       <span class="monitor-strip-meta">${escapeHtml(ratioText(resolution, source, isUltrawide))}</span>
-      <span class="status-badge ${shared.ddcAvailable ? "" : "subtle"}">${shared.ddcAvailable ? t("dashboard.ddcReady") : t("dashboard.notReady")}</span>
+      ${displayStateBadge(shared)}
     </button>`;
   }).join("");
+}
+
+function displayStateBadge(shared: SharedMonitorStatus): string {
+  if (shared.displayState === "ready") return `<span class="status-badge">${t("dashboard.ddcReady")}</span>`;
+  if (shared.displayState === "onOtherHost") return `<span class="status-badge is-elsewhere">${t("dashboard.onOtherHost")}</span>`;
+  return `<span class="status-badge subtle">${t("dashboard.notReady")}</span>`;
 }
 
 function renderSwitchPanel(): void {
@@ -895,7 +903,7 @@ function renderSwitchPanel(): void {
         <span class="showcase-title">${escapeHtml(shared.name)}</span>
         <div class="showcase-badges">
           <span class="status-badge subtle">${ratioText(resolution, source, isUltrawide)}</span>
-          <span class="status-badge">${shared.ddcAvailable ? t("dashboard.ddcReady") : t("dashboard.notReady")}</span>
+          ${displayStateBadge(shared)}
         </div>
       </div>
       <div class="flat-monitor-wrap">${getFlatMonitorSvg(isUltrawide)}</div>
@@ -909,7 +917,7 @@ function renderSwitchPanel(): void {
 }
 
 function renderState(): void {
-  const ddcAvailable = dashboard.shared.some((shared) => shared.ddcAvailable);
+  const ddcAvailable = dashboard.shared.some((shared) => shared.displayState !== "unavailable");
   setText("#monitor-health", dashboard.shared.length === 0 ? t("dashboard.notSelected") : ddcAvailable ? t("dashboard.locked") : t("dashboard.notReady"));
   setText("#peer-health", t("dashboard.hostCount", { count: settings.peers.length }));
   setText("#wake-health", settings.peers.some((peer) => peer.macAddress) ? t("dashboard.wakeNormal") : (settings.peers.length ? t("dashboard.noMac") : t("dashboard.noHosts")));

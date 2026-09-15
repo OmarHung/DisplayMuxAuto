@@ -11,7 +11,7 @@ const zhTW: Record<keyof typeof en, string> = {
   "action.selectShared": "設為共用", "action.removeShared": "移出共用", "action.selected": "已選取", "action.switchHost": "切換至此主機", "action.moveHostEarlier": "將 {name} 往前移", "action.moveHostLater": "將 {name} 往後移",
   "dashboard.dragToReorder": "拖曳卡片調整主機順序，或使用這些按鈕改名與移動", "dashboard.hostNameLabel": "主機名稱（留空則使用預設名稱）",
   "action.renameHost": "重新命名 {name}", "toast.hostOrderFailed": "無法儲存主機順序", "toast.hostNameFailed": "無法儲存主機名稱", "action.later": "稍後", "action.downloadInstall": "下載並安裝",
-  "dashboard.sharedDisplay": "共用螢幕", "dashboard.ddcReady": "DDC/CI 已就緒", "dashboard.notReady": "尚未就緒", "dashboard.notSelected": "尚未選擇",
+  "dashboard.sharedDisplay": "共用螢幕", "dashboard.ddcReady": "DDC/CI 已就緒", "dashboard.notReady": "尚未就緒", "dashboard.onOtherHost": "顯示其他主機中", "dashboard.notSelected": "尚未選擇",
   "dashboard.identityHint": "以 EDID 製造商、產品碼與序號鎖定，不依顯示器排列順序。", "dashboard.detecting": "正在偵測", "dashboard.locked": "已鎖定",
   "dashboard.sharedLabel": "共用螢幕：", "dashboard.hostsLabel": "已加入主機：", "dashboard.wakeLabel": "喚醒支援：", "dashboard.hostCount": "{count} 台",
   "dashboard.wakeNormal": "正常", "dashboard.noMac": "無 MAC 資料", "dashboard.noHosts": "尚未加入主機", "dashboard.preview": "介面預覽",
