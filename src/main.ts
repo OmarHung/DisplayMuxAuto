@@ -42,6 +42,7 @@ interface SelectedMonitor {
   resolutionSource?: ResolutionSource | null;
   localInput: number | null;
   supportedInputs: number[] | null;
+  activeRoute?: string | null;
 }
 
 interface MonitorInputAssignment {
@@ -1007,6 +1008,7 @@ function renderHostRoutes(shared: SharedMonitorStatus): void {
   const container = document.querySelector(`[data-host-route-grid="${cssEscape(shared.monitorKey)}"]`);
   if (!container) return;
   const selectedMonitor = selectedMonitorFor(shared);
+  const activeRouteId = selectedMonitor?.activeRoute ?? "local";
   const routes = [
     { id: "local", name: dashboard.localHost === "windows" ? t("dashboard.localWindows") : t("dashboard.localMac"), platform: dashboard.localHost, input: selectedMonitor?.localInput ?? null, local: true },
     ...settings.peers.map((peer) => ({
@@ -1016,6 +1018,7 @@ function renderHostRoutes(shared: SharedMonitorStatus): void {
     })),
   ];
   container.innerHTML = routes.map((route) => {
+    const isActive = route.id === activeRouteId;
     const badgeText = route.local
       ? (route.platform === "mac" ? t("dashboard.localMacOs") : t("dashboard.localWindowsBadge"))
       : (route.platform === "mac" ? t("dashboard.connectedMacOs") : t("dashboard.connectedWindows"));
@@ -1036,8 +1039,8 @@ function renderHostRoutes(shared: SharedMonitorStatus): void {
             <p class="host-input-desc">${inputDesc}</p>
           </div>
         </div>
-        ${route.local ? `
-          <div class="local-active-state">
+        ${isActive ? `
+          <div class="active-route-state">
             <span>${t("dashboard.currentlyDisplayed")}</span>
             <span class="active-toggle-indicator"></span>
           </div>
@@ -1153,6 +1156,7 @@ async function switchHost(monitorKey: string, targetId: string): Promise<void> {
   try {
     const result = await invoke<OperationResult>("switch_host", { monitorId: monitorKey, targetId, onEvent });
     showToast(result.title, result.detail, result.warning);
+    await refresh();
   } catch (error) {
     showToast(t("toast.switchFailed"), String(error), true);
   } finally {

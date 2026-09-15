@@ -129,6 +129,12 @@ struct SelectedMonitor {
     local_input: Option<DisplayInput>,
     #[serde(default)]
     supported_inputs: Option<Vec<DisplayInput>>,
+    // "local" or a peer id: whichever route was last confirmed as the
+    // monitor's active input by a successful switch. Not re-derived from a
+    // live DDC read, since some displays cannot be read back reliably once
+    // switched away from (see macOS DDC/CI limitations in product-facts.md).
+    #[serde(default)]
+    active_route: Option<String>,
 }
 
 impl From<&MonitorDescriptor> for SelectedMonitor {
@@ -140,6 +146,7 @@ impl From<&MonitorDescriptor> for SelectedMonitor {
             resolution_source: monitor.resolution_source,
             local_input: None,
             supported_inputs: None,
+            active_route: None,
         }
     }
 }
@@ -1046,7 +1053,10 @@ async fn switch_host(
     };
     let _ = on_event.send(SwitchProgress::Switching);
     match run_switch(selected.fingerprint.clone(), input) {
-        Ok(outcome) => Ok(outcome_result(outcome, &preparation)),
+        Ok(outcome) => {
+            record_active_route(&state, &selected.fingerprint, &target_id)?;
+            Ok(outcome_result(outcome, &preparation))
+        }
         Err(local_error) => {
             let local_error = core_user_error(local_error);
             let executor = if target_id == "local" {
@@ -1090,6 +1100,7 @@ async fn switch_host(
                     executor.name, local_error, remote_error
                 ),
             })?;
+            record_active_route(&state, &selected.fingerprint, &target_id)?;
             Ok(OperationResult {
                 title: match UiLocale::current() {
                     UiLocale::TraditionalChinese => format!("已由 {} 執行切換", executor.name),
@@ -1869,6 +1880,34 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
     Ok(())
 }
 
+/// Marks which route ("local" or a peer id) a shared monitor's input was
+/// just confirmed switched to, so the dashboard can show the true active
+/// host instead of always assuming local. Returns `false` (no-op) if the
+/// monitor was since unselected, e.g. removed while the switch was in flight.
+fn set_active_route(settings: &mut AppSettings, fingerprint: &MonitorFingerprint, route_id: &str) -> bool {
+    let Some(selected) = settings
+        .shared_monitors
+        .iter_mut()
+        .find(|selected| selected.fingerprint.matches_exactly(fingerprint))
+    else {
+        return false;
+    };
+    selected.active_route = Some(route_id.to_owned());
+    true
+}
+
+fn record_active_route(
+    state: &AppRuntime,
+    fingerprint: &MonitorFingerprint,
+    route_id: &str,
+) -> Result<(), String> {
+    let mut settings = read_settings(state)?;
+    if set_active_route(&mut settings, fingerprint, route_id) {
+        store_settings(state, settings)?;
+    }
+    Ok(())
+}
+
 fn store_settings(state: &AppRuntime, settings: AppSettings) -> Result<AppSettings, String> {
     persist_settings(&state.settings_path, &settings).map_err(core_user_error)?;
     let mut current = state.settings.write().map_err(|_| {
@@ -2206,6 +2245,7 @@ fn reconcile_monitor_selection(
             let mut refreshed = SelectedMonitor::from(current);
             refreshed.local_input = selected.local_input;
             refreshed.supported_inputs = selected.supported_inputs.clone();
+            refreshed.active_route = selected.active_route.clone();
             let metadata_changed = selected.name != refreshed.name
                 || selected.max_resolution != refreshed.max_resolution
                 || selected.resolution_source != refreshed.resolution_source;
@@ -3012,6 +3052,40 @@ mod tests {
                 .value(),
             0x0f
         );
+    }
+
+    #[test]
+    fn set_active_route_updates_the_matching_monitor_only() {
+        let monitor_a = monitor("monitor-a");
+        let monitor_b = monitor("monitor-b");
+        let mut settings = AppSettings {
+            shared_monitors: vec![
+                SelectedMonitor::from(&monitor_a),
+                SelectedMonitor::from(&monitor_b),
+            ],
+            ..AppSettings::default()
+        };
+
+        assert!(set_active_route(&mut settings, &monitor_b.fingerprint, "peer"));
+
+        assert_eq!(settings.shared_monitors[0].active_route, None);
+        assert_eq!(
+            settings.shared_monitors[1].active_route,
+            Some("peer".to_owned())
+        );
+    }
+
+    #[test]
+    fn set_active_route_is_a_noop_for_an_unselected_monitor() {
+        let selected = monitor("shared");
+        let missing = monitor("missing");
+        let mut settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor::from(&selected)],
+            ..AppSettings::default()
+        };
+
+        assert!(!set_active_route(&mut settings, &missing.fingerprint, "peer"));
+        assert_eq!(settings.shared_monitors[0].active_route, None);
     }
 
     #[test]

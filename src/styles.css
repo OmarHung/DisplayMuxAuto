@@ -496,7 +496,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   font-weight: 600;
 }
 
-.local-active-state {
+.active-route-state {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1646,7 +1646,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   body { background: var(--canvas); }
   .topbar { background: rgba(19, 27, 23, 0.96); }
   .status-badge.subtle { background: #192821; color: #8fa59b; }
-  .local-active-state { background: #162e24; border-color: #244d3c; color: #52c79b; }
+  .active-route-state { background: #162e24; border-color: #244d3c; color: #52c79b; }
   .field input, .field select { background: #1a2520; color: #e5ece8; border-color: #2d3e35; }
   .field input:disabled, .field select:disabled { background: #141c18; color: #6a7c74; }
   .peer-row, .paired-route-card, .monitor-card-item, .monitor-strip-card, .local-input-row { background: #1c2722; border-color: #293830; }
