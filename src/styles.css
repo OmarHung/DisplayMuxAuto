@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   font-family: "Manrope Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   color: #17211e;
   background: #e8ece9;
@@ -9,11 +10,23 @@
   font-size: 15px;
   line-height: 1.5;
 
-  --sidebar-bg: #141d19;
-  --sidebar-nav-active: #1d5c42;
-  --sidebar-nav-hover: #1c2822;
-  --sidebar-text: #8e9b96;
+  --sidebar-bg: #f8faf9;
+  --sidebar-divider: #dde3df;
+  --sidebar-title: #17211e;
+  --sidebar-brand-bg: #e3efe9;
+  --sidebar-brand-icon: #137356;
+  --sidebar-nav-active: #137356;
+  --sidebar-nav-active-shadow: 0 4px 14px rgba(19, 115, 86, 0.18);
+  --sidebar-nav-hover: #e7eeea;
+  --sidebar-text: #5a6662;
+  --sidebar-text-hover: #17211e;
   --sidebar-text-active: #ffffff;
+  --sidebar-control-bg: #ffffff;
+  --sidebar-control-border: #d3dbd6;
+  --sidebar-control-icon: #5a6662;
+  --sidebar-control-text: #17211e;
+  --sidebar-control-focus: rgba(19, 115, 86, 0.45);
+  --sidebar-control-focus-ring: rgba(19, 115, 86, 0.12);
   --canvas: #e8ece9;
   --workspace-bg: #f1f4f2;
   --panel-bg: #fcfdfc;
@@ -72,7 +85,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 
 .brand-block {
   padding-bottom: 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--sidebar-divider);
 }
 
 .brand-header {
@@ -88,12 +101,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   width: 36px;
   height: 36px;
   border-radius: 10px;
-  background: #1d5c42;
-  color: #6ee7b7;
+  background: var(--sidebar-brand-bg);
+  color: var(--sidebar-brand-icon);
 }
 
 .brand-icon svg { width: 20px; height: 20px; }
-.brand-title { font-size: 18px; font-weight: 800; color: #ffffff; letter-spacing: -0.02em; }
+.brand-title { font-size: 18px; font-weight: 800; color: var(--sidebar-title); letter-spacing: -0.02em; }
 
 .language-picker {
   position: relative;
@@ -103,15 +116,17 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   height: 34px;
   margin: 0 6px;
   padding-left: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--sidebar-control-border);
   border-radius: 9px;
-  background: rgba(255, 255, 255, 0.04);
-  color: #aab8b2;
+  background: var(--sidebar-control-bg);
+  color: var(--sidebar-control-icon);
 }
 
+.language-picker + .language-picker { margin-top: 8px; }
+
 .language-picker:focus-within {
-  border-color: rgba(110, 231, 183, 0.65);
-  box-shadow: 0 0 0 3px rgba(110, 231, 183, 0.1);
+  border-color: var(--sidebar-control-focus);
+  box-shadow: 0 0 0 3px var(--sidebar-control-focus-ring);
 }
 
 .language-picker > svg { width: 15px; height: 15px; flex: 0 0 auto; }
@@ -124,7 +139,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   outline: 0;
   appearance: none;
   background: transparent;
-  color: #edf5f1;
+  color: var(--sidebar-control-text);
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
@@ -162,11 +177,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 }
 
 .nav-button svg { width: 18px; height: 18px; flex-shrink: 0; }
-.nav-button:hover { background: var(--sidebar-nav-hover); color: #edf5f1; }
+.nav-button:hover { background: var(--sidebar-nav-hover); color: var(--sidebar-text-hover); }
 .nav-button.is-active {
   background: var(--sidebar-nav-active);
   color: var(--sidebar-text-active);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+  box-shadow: var(--sidebar-nav-active-shadow);
 }
 .nav-button.nav-bottom { margin-top: auto; }
 
@@ -1634,40 +1649,54 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #e5ece8;
-    background: #0e1512;
-    --canvas: #0e1512;
-    --sidebar-bg: #090e0c;
-    --workspace-bg: #131b17;
-    --panel-bg: #18221d;
-    --card-bg: #1c2722;
-    --ink: #e5ece8;
-    --muted: #9ca9a3;
-    --subtle: #7d8984;
-    --line: #293830;
-    --line-light: #222f28;
-    --accent: #52c79b;
-    --accent-hover: #40b086;
-    --accent-light: #183327;
-    --accent-border: #285542;
-    --shadow-card: 0 4px 18px rgba(0, 0, 0, 0.25);
-    --shadow-window: 0 16px 40px rgba(0, 0, 0, 0.4);
-  }
-
-  body { background: var(--canvas); }
-  .topbar { background: rgba(19, 27, 23, 0.96); }
-  .status-badge.subtle { background: #192821; color: #8fa59b; }
-  .active-route-state { background: #162e24; border-color: #244d3c; color: #52c79b; }
-  .field input, .field select { background: #1a2520; color: #e5ece8; border-color: #2d3e35; }
-  .field input:disabled, .field select:disabled { background: #141c18; color: #6a7c74; }
-  .peer-row, .paired-route-card, .monitor-card-item, .monitor-strip-card, .local-input-row { background: #1c2722; border-color: #293830; }
-  .monitor-card-item.is-selected, .monitor-strip-card.is-active { background: #172d24; border-color: #2e5947; }
-  .monitor-card-item.is-unreachable .monitor-item-icon { background: #232e29; }
-  .compat-note { background: #172d24; border-color: #285542; color: #9fe2c7; }
-  .operation-dialog, .update-dialog { background: #18221d; }
-  .onboarding-status { border-color: #61472e; background: #2b221a; color: #e2ad74; }
-  .toast { background: #192620; border-color: #2f4c3d; }
-  .toast.is-warning { background: #2b221a; border-color: #594129; }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  color: #e5ece8;
+  background: #0e1512;
+  --canvas: #0e1512;
+  --sidebar-bg: #090e0c;
+  --sidebar-divider: rgba(255, 255, 255, 0.08);
+  --sidebar-title: #ffffff;
+  --sidebar-brand-bg: #1d5c42;
+  --sidebar-brand-icon: #6ee7b7;
+  --sidebar-nav-active: #1d5c42;
+  --sidebar-nav-active-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+  --sidebar-nav-hover: #1c2822;
+  --sidebar-text: #8e9b96;
+  --sidebar-text-hover: #edf5f1;
+  --sidebar-control-bg: rgba(255, 255, 255, 0.04);
+  --sidebar-control-border: rgba(255, 255, 255, 0.12);
+  --sidebar-control-icon: #aab8b2;
+  --sidebar-control-text: #edf5f1;
+  --sidebar-control-focus: rgba(110, 231, 183, 0.65);
+  --sidebar-control-focus-ring: rgba(110, 231, 183, 0.1);
+  --workspace-bg: #131b17;
+  --panel-bg: #18221d;
+  --card-bg: #1c2722;
+  --ink: #e5ece8;
+  --muted: #9ca9a3;
+  --subtle: #7d8984;
+  --line: #293830;
+  --line-light: #222f28;
+  --accent: #52c79b;
+  --accent-hover: #40b086;
+  --accent-light: #183327;
+  --accent-border: #285542;
+  --shadow-card: 0 4px 18px rgba(0, 0, 0, 0.25);
+  --shadow-window: 0 16px 40px rgba(0, 0, 0, 0.4);
 }
+
+:root[data-theme="dark"] body { background: var(--canvas); }
+:root[data-theme="dark"] .topbar { background: rgba(19, 27, 23, 0.96); }
+:root[data-theme="dark"] .status-badge.subtle { background: #192821; color: #8fa59b; }
+:root[data-theme="dark"] .active-route-state { background: #162e24; border-color: #244d3c; color: #52c79b; }
+:root[data-theme="dark"] .field input, :root[data-theme="dark"] .field select { background: #1a2520; color: #e5ece8; border-color: #2d3e35; }
+:root[data-theme="dark"] .field input:disabled, :root[data-theme="dark"] .field select:disabled { background: #141c18; color: #6a7c74; }
+:root[data-theme="dark"] .peer-row, :root[data-theme="dark"] .paired-route-card, :root[data-theme="dark"] .monitor-card-item, :root[data-theme="dark"] .monitor-strip-card, :root[data-theme="dark"] .local-input-row { background: #1c2722; border-color: #293830; }
+:root[data-theme="dark"] .monitor-card-item.is-selected, :root[data-theme="dark"] .monitor-strip-card.is-active { background: #172d24; border-color: #2e5947; }
+:root[data-theme="dark"] .monitor-card-item.is-unreachable .monitor-item-icon { background: #232e29; }
+:root[data-theme="dark"] .compat-note { background: #172d24; border-color: #285542; color: #9fe2c7; }
+:root[data-theme="dark"] .operation-dialog, :root[data-theme="dark"] .update-dialog { background: #18221d; }
+:root[data-theme="dark"] .onboarding-status { border-color: #61472e; background: #2b221a; color: #e2ad74; }
+:root[data-theme="dark"] .toast { background: #192620; border-color: #2f4c3d; }
+:root[data-theme="dark"] .toast.is-warning { background: #2b221a; border-color: #594129; }

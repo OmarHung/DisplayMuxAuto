@@ -2,13 +2,14 @@ import "@fontsource-variable/manrope";
 import {
   Activity, ArrowLeftRight, CircleHelp, Computer, createIcons, Download, KeyRound, Laptop,
   ChevronDown, ExternalLink, Github, Languages, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
-  ShieldCheck, Trash2, UserRound, Zap,
+  ShieldCheck, SunMoon, Trash2, UserRound, Zap,
 } from "lucide";
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import packageMetadata from "../package.json";
 import { locale, localePreference, setLocalePreference, t, type MessageKey } from "./i18n";
+import { initializeTheme, setThemePreference } from "./theme";
 import "./styles.css";
 
 type Platform = "windows" | "mac";
@@ -226,6 +227,7 @@ let onboardingStep = 0;
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error(t("app.rootMissing"));
 document.documentElement.lang = locale;
+const themePreference = initializeTheme();
 
 app.innerHTML = `
   <div class="app-shell">
@@ -242,6 +244,16 @@ app.innerHTML = `
             <option value="system">${t("language.system")}</option>
             <option value="en">${t("language.english")}</option>
             <option value="zh-TW">${t("language.traditionalChinese")}</option>
+          </select>
+          <i class="language-chevron" data-lucide="chevron-down"></i>
+        </label>
+        <label class="language-picker">
+          <i data-lucide="sun-moon"></i>
+          <span class="sr-only">${t("theme.label")}</span>
+          <select id="theme-select" aria-label="${t("theme.label")}">
+            <option value="system">${t("theme.system")}</option>
+            <option value="light">${t("theme.light")}</option>
+            <option value="dark">${t("theme.dark")}</option>
           </select>
           <i class="language-chevron" data-lucide="chevron-down"></i>
         </label>
@@ -450,7 +462,7 @@ app.innerHTML = `
   <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
 `;
 
-const iconSet = { Activity, ArrowLeftRight, ChevronDown, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, Trash2, UserRound, Zap };
+const iconSet = { Activity, ArrowLeftRight, ChevronDown, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, SunMoon, Trash2, UserRound, Zap };
 const refreshIcons = () => createIcons({ icons: iconSet });
 refreshIcons();
 
@@ -488,6 +500,14 @@ if (languageSelect) {
   languageSelect.value = localePreference;
   languageSelect.addEventListener("change", () => {
     if (setLocalePreference(languageSelect.value)) window.location.reload();
+  });
+}
+
+const themeSelect = document.querySelector<HTMLSelectElement>("#theme-select");
+if (themeSelect) {
+  themeSelect.value = themePreference;
+  themeSelect.addEventListener("change", () => {
+    if (!setThemePreference(themeSelect.value)) themeSelect.value = themePreference;
   });
 }
 document.querySelector<HTMLFormElement>("#settings-form")?.addEventListener("submit", (event) => void saveSettings(event));
