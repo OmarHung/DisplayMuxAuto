@@ -760,6 +760,57 @@ async function reloadActiveRoutes(): Promise<void> {
   } catch (error) {
     showToast(t("toast.activeHostSyncFailed"), String(error), true);
   }
+  scheduleSettledRescans();
+}
+
+function renderMonitorHealth(): void {
+  const usable = dashboard.shared.some((shared) => shared.displayState !== "unavailable");
+  setText("#monitor-health", dashboard.shared.length === 0 ? t("dashboard.notSelected") : usable ? t("dashboard.locked") : t("dashboard.notReady"));
+}
+
+/**
+ * When to rescan after a switch. Displays take a few seconds to change input
+ * and keep answering (or not answering) DDC/CI as before until they do, so an
+ * immediate scan shows the old readiness.
+ */
+const SETTLED_RESCAN_DELAYS_MS = [3_000, 8_000];
+let settledRescanTimers: number[] = [];
+
+function scheduleSettledRescans(): void {
+  settledRescanTimers.forEach((timer) => window.clearTimeout(timer));
+  settledRescanTimers = SETTLED_RESCAN_DELAYS_MS.map((delay) => window.setTimeout(() => void rescanDisplays(), delay));
+}
+
+/**
+ * Rescans displays and redraws only the dashboard's display cards, so unsaved
+ * edits on the settings page survive.
+ */
+async function rescanDisplays(): Promise<void> {
+  if (isPreview || isRefreshing) return;
+  isRefreshing = true;
+  lastRefreshAt = Date.now();
+  try {
+    // The scan can move the active host, so read settings after it.
+    dashboard = await invoke<DashboardState>("get_dashboard_state");
+    const latest = await invoke<AppSettings>("get_settings");
+    settings = { ...settings, sharedMonitors: latest.sharedMonitors };
+    renderMonitorHealth();
+    keepActiveMonitorSelected();
+    renderMonitorStrip();
+    renderSwitchPanel();
+    refreshIcons();
+  } catch (error) {
+    showToast(t("toast.activeHostSyncFailed"), String(error), true);
+  } finally {
+    isRefreshing = false;
+  }
+}
+
+/** Falls back to the first shared display when the selected one disappeared. */
+function keepActiveMonitorSelected(): void {
+  if (!activeMonitorKey || !dashboard.shared.some((shared) => shared.monitorKey === activeMonitorKey)) {
+    activeMonitorKey = dashboard.shared[0]?.monitorKey ?? null;
+  }
 }
 
 function getFlatMonitorSvg(isUltrawide: boolean): string {
@@ -917,8 +968,7 @@ function renderSwitchPanel(): void {
 }
 
 function renderState(): void {
-  const ddcAvailable = dashboard.shared.some((shared) => shared.displayState !== "unavailable");
-  setText("#monitor-health", dashboard.shared.length === 0 ? t("dashboard.notSelected") : ddcAvailable ? t("dashboard.locked") : t("dashboard.notReady"));
+  renderMonitorHealth();
   setText("#peer-health", t("dashboard.hostCount", { count: settings.peers.length }));
   setText("#wake-health", settings.peers.some((peer) => peer.macAddress) ? t("dashboard.wakeNormal") : (settings.peers.length ? t("dashboard.noMac") : t("dashboard.noHosts")));
   const pill = document.querySelector("#agent-pill");
@@ -934,9 +984,7 @@ function renderState(): void {
   const hostSwitcherEnabled = document.querySelector<HTMLInputElement>("#host-switcher-enabled");
   if (hostSwitcherEnabled) hostSwitcherEnabled.checked = settings.hostSwitcherEnabled;
   renderShortcutSetting();
-  if (!activeMonitorKey || !dashboard.shared.some((shared) => shared.monitorKey === activeMonitorKey)) {
-    activeMonitorKey = dashboard.shared[0]?.monitorKey ?? null;
-  }
+  keepActiveMonitorSelected();
   renderMonitorStrip(); renderSwitchPanel();
   renderMonitors(); renderPeerList(); renderPairedRoutes(); renderLocalInputSummary(); renderInputHints(); refreshIcons();
 }
@@ -1466,6 +1514,7 @@ async function switchHost(monitorKey: string, targetId: string): Promise<void> {
     const result = await invoke<OperationResult>("switch_host", { monitorId: monitorKey, targetId, onEvent });
     showToast(result.title, result.detail, result.warning);
     await refresh();
+    scheduleSettledRescans();
   } catch (error) {
     showToast(t("toast.switchFailed"), String(error), true);
   } finally {
