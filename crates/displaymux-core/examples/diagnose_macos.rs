@@ -47,25 +47,70 @@ fn main() {
                     Err(error) => println!("get_vcp_feature(0x60): ERROR -> {error}"),
                 }
 
-                if monitor.description().contains("MPG") {
-                    println!("\n-- write+poll probe on {} --", monitor.description());
-                    match monitor.set_vcp_feature(0x60, 0x0F) {
-                        Ok(()) => println!("set_vcp_feature(0x60, 0x0F): OK"),
-                        Err(error) => println!("set_vcp_feature(0x60, 0x0F): ERROR -> {error}"),
-                    }
-                    let start = std::time::Instant::now();
-                    for _ in 0..20 {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        match monitor.get_vcp_feature(0x60) {
+                // Extra probes for a specific display. Reads are harmless;
+                // writes only run when DIAG_INPUT_VALUES (comma-separated hex,
+                // e.g. "11,12,10") is set, and stop at the first value that
+                // changes the monitor's state or kills the DDC channel.
+                let probe_target = std::env::var("DIAG_PROBE_MONITOR").unwrap_or_default();
+                if !probe_target.is_empty() && monitor.description().contains(&probe_target) {
+                    println!("\n-- read probe on {} --", monitor.description());
+                    for code in [0x60_u8, 0xFD, 0xDC, 0xD6, 0xAA, 0xC8, 0xC9, 0xDF] {
+                        match monitor.get_vcp_feature(code) {
                             Ok(value) => println!(
-                                "  t+{:>5}ms  get_vcp_feature(0x60): OK -> {:#x}",
-                                start.elapsed().as_millis(),
-                                value.value()
+                                "  get_vcp_feature({code:#04x}): OK -> value={:#x} max={:#x}",
+                                value.value(),
+                                value.maximum()
                             ),
-                            Err(error) => println!(
-                                "  t+{:>5}ms  get_vcp_feature(0x60): ERROR -> {error}",
-                                start.elapsed().as_millis()
-                            ),
+                            Err(error) => {
+                                println!("  get_vcp_feature({code:#04x}): ERROR -> {error}")
+                            }
+                        }
+                    }
+
+                    let candidates = std::env::var("DIAG_INPUT_VALUES")
+                        .ok()
+                        .map(|raw| {
+                            raw.split(',')
+                                .filter_map(|token| u16::from_str_radix(token.trim(), 16).ok())
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let baseline = monitor
+                        .get_vcp_feature(0x60)
+                        .ok()
+                        .map(|value| value.value());
+                    'candidates: for candidate in candidates {
+                        println!("\n-- write probe: set_vcp_feature(0x60, {candidate:#04x}) --");
+                        match monitor.set_vcp_feature(0x60, candidate) {
+                            Ok(()) => println!("  set: OK"),
+                            Err(error) => println!("  set: ERROR -> {error}"),
+                        }
+                        let start = std::time::Instant::now();
+                        for _ in 0..10 {
+                            std::thread::sleep(std::time::Duration::from_millis(150));
+                            match monitor.get_vcp_feature(0x60) {
+                                Ok(value) => {
+                                    println!(
+                                        "  t+{:>5}ms  read 0x60 -> {:#x}",
+                                        start.elapsed().as_millis(),
+                                        value.value()
+                                    );
+                                    if Some(value.value()) != baseline {
+                                        println!("  >>> state changed from {baseline:?}; stopping");
+                                        break 'candidates;
+                                    }
+                                }
+                                Err(error) => {
+                                    println!(
+                                        "  t+{:>5}ms  read 0x60 -> ERROR {error}",
+                                        start.elapsed().as_millis()
+                                    );
+                                    println!(
+                                        "  >>> DDC channel lost (likely switched away); stopping"
+                                    );
+                                    break 'candidates;
+                                }
+                            }
                         }
                     }
                 }
@@ -86,14 +131,17 @@ fn main() {
             );
             for descriptor in descriptors {
                 println!("{descriptor:#?}");
-                if descriptor.name.contains("MPG") {
+                if std::env::var("DIAG_WRITE_INPUT_PROBE").is_ok()
+                    && descriptor.name.contains("MPG")
+                {
                     println!(
                         "\n-- MacOsMonitorController::write_input probe on {} --",
                         descriptor.name
                     );
-                    match controller
-                        .write_input(&descriptor.id, displaymux_core::DisplayInput::new(0x0F).unwrap())
-                    {
+                    match controller.write_input(
+                        &descriptor.id,
+                        displaymux_core::DisplayInput::new(0x0F).unwrap(),
+                    ) {
                         Ok(()) => println!("write_input(0x0F): OK (verified switch took effect)"),
                         Err(error) => println!("write_input(0x0F): ERROR -> {error}"),
                     }

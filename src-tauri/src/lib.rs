@@ -65,6 +65,16 @@ fn ui_text(zh_tw: &'static str, en: &'static str) -> &'static str {
     }
 }
 
+fn input_label(vendor_indexed: bool, input: DisplayInput) -> String {
+    if !vendor_indexed {
+        return localized_input_name(input);
+    }
+    match UiLocale::current() {
+        UiLocale::TraditionalChinese => format!("輸入 {}", input.value()),
+        UiLocale::English => format!("Input {}", input.value()),
+    }
+}
+
 fn localized_input_name(input: DisplayInput) -> String {
     let standard_name = match (UiLocale::current(), input.value()) {
         (_, 0x01) => Some("VGA"),
@@ -129,6 +139,12 @@ struct SelectedMonitor {
     local_input: Option<DisplayInput>,
     #[serde(default)]
     supported_inputs: Option<Vec<DisplayInput>>,
+    // True when `supported_inputs` is the display's private 1..=max index
+    // list rather than MCCS codes, because the advertised capabilities did
+    // not even contain the input it was actually showing. Values are then
+    // labelled "Input N" instead of by MCCS name.
+    #[serde(default)]
+    vendor_indexed_inputs: bool,
     // "local" or a peer id: whichever route was last confirmed as the
     // monitor's active input by a successful switch. Not re-derived from a
     // live DDC read, since some displays cannot be read back reliably once
@@ -146,6 +162,7 @@ impl From<&MonitorDescriptor> for SelectedMonitor {
             resolution_source: monitor.resolution_source,
             local_input: None,
             supported_inputs: None,
+            vendor_indexed_inputs: false,
             active_route: None,
         }
     }
@@ -690,7 +707,7 @@ fn get_input_options(
         .into_iter()
         .map(|input| InputOption {
             value: input.value(),
-            name: localized_input_name(input),
+            name: input_label(selected.vendor_indexed_inputs, input),
         })
         .collect())
 }
@@ -1055,7 +1072,11 @@ async fn switch_host(
     match run_switch(selected.fingerprint.clone(), input) {
         Ok(outcome) => {
             record_active_route(&state, &selected.fingerprint, &target_id)?;
-            Ok(outcome_result(outcome, &preparation))
+            Ok(outcome_result(
+                outcome,
+                &preparation,
+                selected.vendor_indexed_inputs,
+            ))
         }
         Err(local_error) => {
             let local_error = core_user_error(local_error);
@@ -1107,15 +1128,14 @@ async fn switch_host(
                     UiLocale::English => format!("Switch performed by {}", executor.name),
                 },
                 detail: match UiLocale::current() {
-                    UiLocale::TraditionalChinese => {
-                        format!("遠端主機已切換至 {}。", localized_input_name(input))
-                    }
-                    UiLocale::English => {
-                        format!(
-                            "The remote host switched to {}.",
-                            localized_input_name(input)
-                        )
-                    }
+                    UiLocale::TraditionalChinese => format!(
+                        "遠端主機已切換至 {}。",
+                        input_label(selected.vendor_indexed_inputs, input)
+                    ),
+                    UiLocale::English => format!(
+                        "The remote host switched to {}.",
+                        input_label(selected.vendor_indexed_inputs, input)
+                    ),
                 },
                 peer_woken: preparation.peer_woken(),
                 warning: false,
@@ -1160,7 +1180,12 @@ fn plan_switch_input(
     .to_owned())
 }
 
-fn outcome_result(outcome: SwitchOutcome, preparation: &NetworkPreparation) -> OperationResult {
+fn outcome_result(
+    outcome: SwitchOutcome,
+    preparation: &NetworkPreparation,
+    vendor_indexed: bool,
+) -> OperationResult {
+    let label = |input: DisplayInput| input_label(vendor_indexed, input);
     let mut result = match outcome {
         SwitchOutcome::DryRun { .. } => OperationResult {
             title: ui_text("檢查完成", "Check complete").to_owned(),
@@ -1172,13 +1197,11 @@ fn outcome_result(outcome: SwitchOutcome, preparation: &NetworkPreparation) -> O
             title: ui_text("已在指定輸入", "Already on the assigned input").to_owned(),
             detail: match UiLocale::current() {
                 UiLocale::TraditionalChinese => {
-                    format!("{} 已使用 {}。", target.name, localized_input_name(input))
+                    format!("{} 已使用 {}。", target.name, label(input))
                 }
-                UiLocale::English => format!(
-                    "{} is already using {}.",
-                    target.name,
-                    localized_input_name(input)
-                ),
+                UiLocale::English => {
+                    format!("{} is already using {}.", target.name, label(input))
+                }
             },
             peer_woken: preparation.peer_woken(),
             warning: preparation.warning(),
@@ -1193,14 +1216,14 @@ fn outcome_result(outcome: SwitchOutcome, preparation: &NetworkPreparation) -> O
                 UiLocale::TraditionalChinese => format!(
                     "{} 已由 {} 切換至 {}。",
                     target.name,
-                    localized_input_name(previous),
-                    localized_input_name(selected)
+                    label(previous),
+                    label(selected)
                 ),
                 UiLocale::English => format!(
                     "{} switched from {} to {}.",
                     target.name,
-                    localized_input_name(previous),
-                    localized_input_name(selected)
+                    label(previous),
+                    label(selected)
                 ),
             },
             peer_woken: preparation.peer_woken(),
@@ -1780,7 +1803,9 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                         .find(|selected| {
                                             selected.fingerprint.matches_exactly(requested)
                                         })
-                                        .map(|selected| selected.fingerprint.clone())
+                                        .map(|selected| {
+                                            (selected.fingerprint.clone(), selected.vendor_indexed_inputs)
+                                        })
                                         .ok_or_else(|| ui_text(
                                             "找不到指定的共用螢幕，請確認雙方設定一致",
                                             "The requested shared display was not found; confirm both hosts' selections match",
@@ -1791,7 +1816,7 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                             "No shared display is selected on this host",
                                         )
                                         .to_owned()),
-                                        [only] => Ok(only.fingerprint.clone()),
+                                        [only] => Ok((only.fingerprint.clone(), only.vendor_indexed_inputs)),
                                         _ => Err(ui_text(
                                             "配對主機切換到了多台共用螢幕，請將這台電腦更新到最新版本",
                                             "The paired host is now managing multiple shared displays; update this computer to the latest version.",
@@ -1800,8 +1825,8 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                     },
                                 }
                             });
-                            let fingerprint = match resolved {
-                                Some(Ok(fingerprint)) => fingerprint,
+                            let (fingerprint, vendor_indexed) = match resolved {
+                                Some(Ok(resolved)) => resolved,
                                 Some(Err(message)) => {
                                     return AgentResponse {
                                         ready: false,
@@ -1835,11 +1860,11 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                     message: match UiLocale::current() {
                                         UiLocale::TraditionalChinese => format!(
                                             "遠端主機已切換至 {}",
-                                            localized_input_name(input)
+                                            input_label(vendor_indexed, input)
                                         ),
                                         UiLocale::English => format!(
                                             "The remote host switched to {}",
-                                            localized_input_name(input)
+                                            input_label(vendor_indexed, input)
                                         ),
                                     },
                                     display_route: None,
@@ -1884,7 +1909,11 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
 /// just confirmed switched to, so the dashboard can show the true active
 /// host instead of always assuming local. Returns `false` (no-op) if the
 /// monitor was since unselected, e.g. removed while the switch was in flight.
-fn set_active_route(settings: &mut AppSettings, fingerprint: &MonitorFingerprint, route_id: &str) -> bool {
+fn set_active_route(
+    settings: &mut AppSettings,
+    fingerprint: &MonitorFingerprint,
+    route_id: &str,
+) -> bool {
     let Some(selected) = settings
         .shared_monitors
         .iter_mut()
@@ -2203,8 +2232,10 @@ fn refresh_selected_input_data<C: MonitorControl>(
     // Reading VCP 0x60 is non-disruptive. Never write or cycle ports for discovery.
     selected.local_input = None;
     selected.supported_inputs = None;
-    selected.local_input = Some(controller.read_input(&monitor.id)?);
-    selected.supported_inputs = match controller.supported_inputs(&monitor.id) {
+    selected.vendor_indexed_inputs = false;
+    let current = controller.read_input(&monitor.id)?;
+    selected.local_input = Some(current);
+    let advertised = match controller.supported_inputs(&monitor.id) {
         Ok(inputs) if !inputs.is_empty() => Some(inputs),
         Ok(_) => None,
         Err(error) => {
@@ -2216,7 +2247,54 @@ fn refresh_selected_input_data<C: MonitorControl>(
             None
         }
     };
+    let Some(advertised) = advertised else {
+        return Ok(());
+    };
+    if advertised.contains(&current) {
+        selected.supported_inputs = Some(advertised);
+        return Ok(());
+    }
+
+    // The display is showing an input its own capabilities string does not
+    // list, so that list cannot be trusted for writes either. Fall back to
+    // the private index range the display reports for VCP 0x60, if any.
+    match controller.input_value_maximum(&monitor.id) {
+        Ok(Some(maximum)) => {
+            let inputs = vendor_index_inputs(maximum, current);
+            tracing::warn!(
+                monitor_id = monitor.id.as_str(),
+                current = current.value(),
+                maximum,
+                "capabilities omit the active input; using the display's private 1..=max index list"
+            );
+            selected.supported_inputs = Some(inputs);
+            selected.vendor_indexed_inputs = true;
+        }
+        Ok(None) => {
+            tracing::warn!(
+                monitor_id = monitor.id.as_str(),
+                current = current.value(),
+                "capabilities omit the active input and no value range is available; using common MCCS input list"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                monitor_id = monitor.id.as_str(),
+                error = %error,
+                "capabilities omit the active input and the value range could not be read; using common MCCS input list"
+            );
+        }
+    }
     Ok(())
+}
+
+/// `1..=maximum`, always including `current` even if the display under-reports
+/// its range, capped at the one-byte VCP value space.
+fn vendor_index_inputs(maximum: u32, current: DisplayInput) -> Vec<DisplayInput> {
+    let upper = maximum.max(current.value()).min(u32::from(u8::MAX));
+    (1..=upper)
+        .filter_map(|value| DisplayInput::new(value).ok())
+        .collect()
 }
 
 /// Reconciles every currently selected monitor against fresh enumeration
@@ -2245,6 +2323,7 @@ fn reconcile_monitor_selection(
             let mut refreshed = SelectedMonitor::from(current);
             refreshed.local_input = selected.local_input;
             refreshed.supported_inputs = selected.supported_inputs.clone();
+            refreshed.vendor_indexed_inputs = selected.vendor_indexed_inputs;
             refreshed.active_route = selected.active_route.clone();
             let metadata_changed = selected.name != refreshed.name
                 || selected.max_resolution != refreshed.max_resolution
@@ -2919,6 +2998,111 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0x0f, 0x11, 0x1b]
         );
+        assert!(!selected.vendor_indexed_inputs);
+    }
+
+    /// Mimics an MStar-style display: capabilities advertise MCCS codes it
+    /// never honours, while the live value and range use a private index.
+    struct VendorIndexedController {
+        maximum: Option<u32>,
+    }
+
+    impl MonitorControl for VendorIndexedController {
+        fn enumerate(&self) -> Result<Vec<MonitorDescriptor>, DisplayMuxError> {
+            Ok(Vec::new())
+        }
+
+        fn read_input(
+            &self,
+            _monitor: &displaymux_core::MonitorId,
+        ) -> Result<DisplayInput, DisplayMuxError> {
+            DisplayInput::new(0x08)
+        }
+
+        fn supported_inputs(
+            &self,
+            _monitor: &displaymux_core::MonitorId,
+        ) -> Result<Vec<DisplayInput>, DisplayMuxError> {
+            Ok(vec![
+                DisplayInput::new(0x0f).unwrap(),
+                DisplayInput::new(0x11).unwrap(),
+            ])
+        }
+
+        fn input_value_maximum(
+            &self,
+            _monitor: &displaymux_core::MonitorId,
+        ) -> Result<Option<u32>, DisplayMuxError> {
+            Ok(self.maximum)
+        }
+
+        fn write_input(
+            &self,
+            _monitor: &displaymux_core::MonitorId,
+            _input: DisplayInput,
+        ) -> Result<(), DisplayMuxError> {
+            unreachable!("selection tests never write an input")
+        }
+    }
+
+    #[test]
+    fn capabilities_that_omit_the_active_input_fall_back_to_the_private_index_range() {
+        let external = monitor("external");
+        let mut selected = SelectedMonitor::from(&external);
+
+        refresh_selected_input_data(
+            &VendorIndexedController {
+                maximum: Some(0x0e),
+            },
+            &external,
+            &mut selected,
+        )
+        .unwrap();
+
+        assert_eq!(selected.local_input.unwrap().value(), 0x08);
+        assert!(selected.vendor_indexed_inputs);
+        assert_eq!(
+            selected
+                .supported_inputs
+                .unwrap()
+                .iter()
+                .map(|input| input.value())
+                .collect::<Vec<_>>(),
+            (1..=0x0e).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn capabilities_that_omit_the_active_input_without_a_range_use_the_common_list() {
+        let external = monitor("external");
+        let mut selected = SelectedMonitor::from(&external);
+
+        refresh_selected_input_data(
+            &VendorIndexedController { maximum: None },
+            &external,
+            &mut selected,
+        )
+        .unwrap();
+
+        assert_eq!(selected.supported_inputs, None);
+        assert!(!selected.vendor_indexed_inputs);
+    }
+
+    #[test]
+    fn vendor_index_inputs_always_include_the_active_value() {
+        let current = DisplayInput::new(0x08).unwrap();
+        let values = vendor_index_inputs(0x05, current)
+            .iter()
+            .map(|input| input.value())
+            .collect::<Vec<_>>();
+        assert_eq!(values, (1..=0x08).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn vendor_indexed_inputs_are_labelled_by_index_not_mccs_name() {
+        let seven = DisplayInput::new(0x07).unwrap();
+        assert!(input_label(true, seven).ends_with(" 7"));
+        assert!(!input_label(false, seven).ends_with(" 7"));
     }
 
     #[test]
@@ -3066,7 +3250,11 @@ mod tests {
             ..AppSettings::default()
         };
 
-        assert!(set_active_route(&mut settings, &monitor_b.fingerprint, "peer"));
+        assert!(set_active_route(
+            &mut settings,
+            &monitor_b.fingerprint,
+            "peer"
+        ));
 
         assert_eq!(settings.shared_monitors[0].active_route, None);
         assert_eq!(
@@ -3084,7 +3272,11 @@ mod tests {
             ..AppSettings::default()
         };
 
-        assert!(!set_active_route(&mut settings, &missing.fingerprint, "peer"));
+        assert!(!set_active_route(
+            &mut settings,
+            &missing.fingerprint,
+            "peer"
+        ));
         assert_eq!(settings.shared_monitors[0].active_route, None);
     }
 
@@ -3312,6 +3504,7 @@ mod tests {
         let result = outcome_result(
             SwitchOutcome::AlreadySelected { target, input },
             &preparation,
+            false,
         );
 
         assert!(result.warning);

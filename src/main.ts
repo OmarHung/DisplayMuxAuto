@@ -993,7 +993,7 @@ function renderInputOptions(routeId: string, monitorKey: string, current: number
   const monitorOptions = inputOptionsByMonitor[monitorKey] ?? standardInputs;
   const options = monitorOptions
     .filter((item) => !assignedElsewhere.has(item.value) || item.value === current)
-    .map((item) => `<option value="${item.value}" ${item.value === current ? "selected" : ""}>${escapeHtml(localizedInputOptionName(item))}</option>`)
+    .map((item) => `<option value="${item.value}" ${item.value === current ? "selected" : ""}>${escapeHtml(item.name)}</option>`)
     .join("");
   return `<option value="" ${current == null ? "selected" : ""}>${t("settings.selectInput")}</option>${options}`;
 }
@@ -1466,15 +1466,7 @@ function parseInput(value: string): number | null {
 
 function inputName(value: number, monitorKey: string): string {
   const known = (inputOptionsByMonitor[monitorKey] ?? standardInputs).find((item) => item.value === value);
-  return known ? localizedInputOptionName(known) : t("input.other");
-}
-function localizedInputOptionName(input: InputOption): string {
-  const localized = new Map<number, string>([
-    [0x05, t("input.composite1")], [0x06, t("input.composite2")],
-    [0x09, t("input.tuner1")], [0x0a, t("input.tuner2")], [0x0b, t("input.tuner3")],
-    [0x0c, t("input.component1")], [0x0d, t("input.component2")], [0x0e, t("input.component3")],
-  ]);
-  return localized.get(input.value) ?? input.name;
+  return known ? known.name : t("input.other");
 }
 function platformName(value: Platform): string { return value === "mac" ? "macOS" : "Windows"; }
 function isUltrawideResolution(value: MonitorResolution): boolean { return value.height > 0 && value.width >= value.height * 2; }

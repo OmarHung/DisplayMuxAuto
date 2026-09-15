@@ -95,6 +95,16 @@ impl MonitorControl for MacOsMonitorController {
         })
     }
 
+    fn input_value_maximum(&self, monitor_id: &MonitorId) -> Result<Option<u32>, DisplayMuxError> {
+        with_ddc_retry(|| {
+            let mut monitor = find_monitor(monitor_id)?;
+            let value = monitor
+                .get_vcp_feature(INPUT_SELECT_VCP_CODE)
+                .map_err(backend_error)?;
+            Ok(Some(u32::from(value.maximum())))
+        })
+    }
+
     fn write_input(
         &self,
         monitor_id: &MonitorId,

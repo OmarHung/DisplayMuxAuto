@@ -92,18 +92,9 @@ impl WindowsMonitorController {
             .find(|monitor| monitor.descriptor.id == *id)
             .ok_or_else(|| DisplayMuxError::MonitorNoLongerAvailable(id.as_str().to_owned()))
     }
-}
 
-impl MonitorControl for WindowsMonitorController {
-    fn enumerate(&self) -> Result<Vec<MonitorDescriptor>, DisplayMuxError> {
-        Ok(self
-            .enumerate_native()?
-            .into_iter()
-            .map(|monitor| monitor.descriptor.clone())
-            .collect())
-    }
-
-    fn read_input(&self, monitor: &MonitorId) -> Result<DisplayInput, DisplayMuxError> {
+    /// Returns the display's `(current, maximum)` reply for VCP 0x60.
+    fn read_input_reply(&self, monitor: &MonitorId) -> Result<(u32, u32), DisplayMuxError> {
         let native = self.find_native(monitor)?;
         let mut code_type = 0;
         let mut current = 0;
@@ -124,7 +115,27 @@ impl MonitorControl for WindowsMonitorController {
             return Err(last_windows_error("無法讀取共用螢幕目前的輸入來源"));
         }
 
+        Ok((current, maximum))
+    }
+}
+
+impl MonitorControl for WindowsMonitorController {
+    fn enumerate(&self) -> Result<Vec<MonitorDescriptor>, DisplayMuxError> {
+        Ok(self
+            .enumerate_native()?
+            .into_iter()
+            .map(|monitor| monitor.descriptor.clone())
+            .collect())
+    }
+
+    fn read_input(&self, monitor: &MonitorId) -> Result<DisplayInput, DisplayMuxError> {
+        let (current, _) = self.read_input_reply(monitor)?;
         DisplayInput::new(current)
+    }
+
+    fn input_value_maximum(&self, monitor: &MonitorId) -> Result<Option<u32>, DisplayMuxError> {
+        let (_, maximum) = self.read_input_reply(monitor)?;
+        Ok(Some(maximum))
     }
 
     fn supported_inputs(&self, monitor: &MonitorId) -> Result<Vec<DisplayInput>, DisplayMuxError> {
