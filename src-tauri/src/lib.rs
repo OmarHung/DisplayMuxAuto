@@ -19,7 +19,7 @@ use displaymux_core::{
     AGENT_PROTOCOL_VERSION, DEFAULT_AGENT_PORT,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{ipc::Channel, AppHandle, Manager, State};
+use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_updater::UpdaterExt;
@@ -766,7 +766,7 @@ async fn save_settings(
             autostart.disable().map_err(user_error)?;
         }
     }
-    restart_agent(&state).await?;
+    restart_agent(&state, &app).await?;
     Ok(OperationResult {
         title: ui_text("設定已儲存", "Settings saved").to_owned(),
         detail: ui_text(
@@ -1117,6 +1117,7 @@ async fn switch_host(
     match run_switch(selected.fingerprint.clone(), input) {
         Ok(outcome) => {
             record_active_route(&state, &selected.fingerprint, &target_id)?;
+            announce_active_input(&state, &selected.fingerprint, input);
             Ok(outcome_result(
                 outcome,
                 &preparation,
@@ -1167,6 +1168,7 @@ async fn switch_host(
                 ),
             })?;
             record_active_route(&state, &selected.fingerprint, &target_id)?;
+            announce_active_input(&state, &selected.fingerprint, input);
             Ok(OperationResult {
                 title: match UiLocale::current() {
                     UiLocale::TraditionalChinese => format!("已由 {} 執行切換", executor.name),
@@ -1790,7 +1792,7 @@ fn refresh_paired_endpoints(state: &AppRuntime, peers: &[DiscoveredPeer]) -> Res
     Ok(())
 }
 
-async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
+async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String> {
     let settings = read_settings_inner(state)?;
     let mut current_task = state.agent_task.lock().await;
     if let Some(task) = current_task.take() {
@@ -1804,12 +1806,17 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
         Arc::<[u8]>::from(settings.shared_key.as_bytes()),
     );
     let live_settings = Arc::clone(&state.settings);
+    let app = app.clone();
     *current_task = Some(tauri::async_runtime::spawn(async move {
         let result = server
             .run(move |action| {
                 let live_settings = Arc::clone(&live_settings);
+                let app = app.clone();
                 async move {
                     match action {
+                        AgentAction::ActiveInputChanged { monitor, input } => {
+                            receive_active_input_notice(app, monitor, input).await
+                        }
                         AgentAction::Ping => {
                             let display_routes = live_settings
                                 .read()
@@ -1980,6 +1987,81 @@ fn record_active_route(
         store_settings(state, settings)?;
     }
     Ok(())
+}
+
+/// Frontend event telling the dashboard to re-read which host is active.
+const ACTIVE_ROUTE_CHANGED_EVENT: &str = "active-route-changed";
+
+/// Tells every paired host that `fingerprint` now shows `input`, so their
+/// dashboards update without a manual refresh. Fire-and-forget: hosts that are
+/// offline or run an agent predating the notice are only logged.
+fn announce_active_input(
+    state: &AppRuntime,
+    fingerprint: &MonitorFingerprint,
+    input: DisplayInput,
+) {
+    let Ok(settings) = read_settings(state) else {
+        return;
+    };
+    if !has_valid_shared_key(&settings.shared_key) {
+        return;
+    }
+    let settings = Arc::new(settings);
+    for index in 0..settings.peers.len() {
+        let settings = Arc::clone(&settings);
+        let action = AgentAction::ActiveInputChanged {
+            monitor: fingerprint.clone(),
+            input,
+        };
+        tauri::async_runtime::spawn(async move {
+            let peer = &settings.peers[index];
+            if let Err(error) = request_peer(&settings, peer, action).await {
+                tracing::debug!(
+                    peer = peer.name.as_str(),
+                    error = %error,
+                    "paired host did not accept the active input notice"
+                );
+            }
+        });
+    }
+}
+
+async fn receive_active_input_notice(
+    app: AppHandle,
+    monitor: MonitorFingerprint,
+    input: DisplayInput,
+) -> AgentResponse {
+    let applied = tauri::async_runtime::spawn_blocking(move || {
+        // Serialize with dashboard scans, which write back a settings snapshot.
+        let _scan = DASHBOARD_SCAN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = app.state::<AppRuntime>();
+        let mut settings = read_settings(&state)?;
+        if apply_active_input_notice(&mut settings, &monitor, input) {
+            store_settings(&state, settings)?;
+            if let Err(error) = app.emit(ACTIVE_ROUTE_CHANGED_EVENT, ()) {
+                tracing::warn!(error = %error, "unable to notify the dashboard of an active host change");
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await;
+    let (ready, message) = match applied {
+        Ok(Ok(())) => (
+            true,
+            ui_text("已同步目前顯示的主機", "Synced the active host").to_owned(),
+        ),
+        Ok(Err(message)) => (false, message),
+        Err(error) => (false, user_error(error)),
+    };
+    AgentResponse {
+        ready,
+        message,
+        display_route: None,
+        display_routes: Vec::new(),
+        protocol_version: AGENT_PROTOCOL_VERSION,
+    }
 }
 
 fn store_settings(state: &AppRuntime, settings: AppSettings) -> Result<AppSettings, String> {
@@ -2288,27 +2370,54 @@ fn sync_active_routes_with_live_inputs(
         else {
             continue;
         };
-        let local = (selected.local_input == Some(*current)).then_some("local");
-        let owners: Vec<&str> = local
-            .into_iter()
-            .chain(
-                peers
-                    .iter()
-                    .filter(|peer| peer.input_for(&selected.fingerprint) == Some(*current))
-                    .map(|peer| peer.id.as_str()),
-            )
-            .collect();
-        let [owner] = owners.as_slice() else {
-            continue;
-        };
-        // An unset route is rendered as this host, so it already agrees.
-        let shown = selected.active_route.as_deref().unwrap_or("local");
-        if shown != *owner {
-            selected.active_route = Some((*owner).to_owned());
-            changed = true;
-        }
+        changed |= adopt_route_for_input(selected, peers, *current);
     }
     changed
+}
+
+/// Applies a paired host's notice that it switched `fingerprint` to `input`.
+/// The receiver resolves the owning route from its own settings rather than
+/// trusting a route id from the sender. Returns whether the route changed.
+fn apply_active_input_notice(
+    settings: &mut AppSettings,
+    fingerprint: &MonitorFingerprint,
+    input: DisplayInput,
+) -> bool {
+    let peers = &settings.peers;
+    settings
+        .shared_monitors
+        .iter_mut()
+        .find(|selected| selected.fingerprint.matches_exactly(fingerprint))
+        .is_some_and(|selected| adopt_route_for_input(selected, peers, input))
+}
+
+/// Marks the single route ("local" or a peer id) configured for `input` as the
+/// display's active route. An input owned by no route or by several keeps the
+/// last confirmed route. Returns whether the route changed.
+fn adopt_route_for_input(
+    selected: &mut SelectedMonitor,
+    peers: &[HostRoute],
+    input: DisplayInput,
+) -> bool {
+    let local = (selected.local_input == Some(input)).then_some("local");
+    let owners: Vec<&str> = local
+        .into_iter()
+        .chain(
+            peers
+                .iter()
+                .filter(|peer| peer.input_for(&selected.fingerprint) == Some(input))
+                .map(|peer| peer.id.as_str()),
+        )
+        .collect();
+    let [owner] = owners.as_slice() else {
+        return false;
+    };
+    // An unset route is rendered as this host, so it already agrees.
+    if selected.active_route.as_deref().unwrap_or("local") == *owner {
+        return false;
+    }
+    selected.active_route = Some((*owner).to_owned());
+    true
 }
 
 /// External monitors the OS reports but whose DDC/CI input cannot be read.
@@ -2791,7 +2900,7 @@ pub fn run() -> anyhow::Result<()> {
             let handle: AppHandle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Some(runtime) = handle.try_state::<AppRuntime>() {
-                    if let Err(error) = restart_agent(&runtime).await {
+                    if let Err(error) = restart_agent(&runtime, &handle).await {
                         tracing::warn!(error = %error, "unable to start DisplayMux agent");
                     }
                 }
@@ -3604,6 +3713,64 @@ mod tests {
         assert!(!sync_active_routes_with_live_inputs(
             &mut settings,
             &inventory
+        ));
+        assert_eq!(
+            settings.shared_monitors[0].active_route.as_deref(),
+            Some("peer")
+        );
+    }
+
+    #[test]
+    fn peer_notice_marks_this_host_active_when_it_names_the_local_input() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, Some("peer"));
+
+        let changed = apply_active_input_notice(
+            &mut settings,
+            &shared.fingerprint,
+            DisplayInput::new(0x08).unwrap(),
+        );
+
+        assert!(changed);
+        assert_eq!(
+            settings.shared_monitors[0].active_route.as_deref(),
+            Some("local")
+        );
+    }
+
+    #[test]
+    fn peer_notice_marks_the_peer_that_owns_the_input_active() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, Some("local"));
+
+        let changed = apply_active_input_notice(
+            &mut settings,
+            &shared.fingerprint,
+            DisplayInput::new(0x07).unwrap(),
+        );
+
+        assert!(changed);
+        assert_eq!(
+            settings.shared_monitors[0].active_route.as_deref(),
+            Some("peer")
+        );
+    }
+
+    #[test]
+    fn peer_notice_for_an_unknown_display_or_input_changes_nothing() {
+        let shared = monitor("shared");
+        let other = monitor("other");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, Some("peer"));
+
+        assert!(!apply_active_input_notice(
+            &mut settings,
+            &other.fingerprint,
+            DisplayInput::new(0x08).unwrap(),
+        ));
+        assert!(!apply_active_input_notice(
+            &mut settings,
+            &shared.fingerprint,
+            DisplayInput::new(0x03).unwrap(),
         ));
         assert_eq!(
             settings.shared_monitors[0].active_route.as_deref(),

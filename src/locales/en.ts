@@ -241,6 +241,7 @@ const en = {
   "toast.installFailed": "Update was not installed",
   "toast.onboardingFailed": "Unable to save setup guide status",
   "toast.openLinkFailed": "Unable to open link",
+  "toast.activeHostSyncFailed": "Unable to update the active host",
   "preview.monitorStatus": "Select a shared display on the settings page",
   "settings.ddcUnreachable": "Detected, but DDC/CI cannot be read",
   "settings.inputConflict": "The recorded input does not match this connection type. It may have been read while the display showed another computer.",

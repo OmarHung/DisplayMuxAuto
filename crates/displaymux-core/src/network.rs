@@ -331,6 +331,13 @@ pub enum AgentAction {
         monitor: Option<MonitorFingerprint>,
         input: DisplayInput,
     },
+    /// Best-effort notice that a paired host just switched `monitor` to
+    /// `input`, so the receiver can update which host it shows as active.
+    /// Agents older than this variant reject the request; senders ignore that.
+    ActiveInputChanged {
+        monitor: MonitorFingerprint,
+        input: DisplayInput,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -711,6 +718,22 @@ mod tests {
         };
         let serialized = serde_json::to_value(&action).unwrap();
         assert!(serialized.get("monitor").is_some());
+    }
+
+    #[test]
+    fn active_input_changed_notice_round_trips_with_its_monitor_and_input() {
+        let action = AgentAction::ActiveInputChanged {
+            monitor: MonitorFingerprint::new("MSI", "3CF0", None::<String>),
+            input: DisplayInput::new(0x08).unwrap(),
+        };
+
+        let serialized = serde_json::to_string(&action).unwrap();
+
+        assert!(serialized.contains(r#""type":"active_input_changed""#));
+        assert_eq!(
+            serde_json::from_str::<AgentAction>(&serialized).unwrap(),
+            action
+        );
     }
 
     #[tokio::test]
