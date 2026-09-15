@@ -107,25 +107,30 @@ impl MonitorControl for MacOsMonitorController {
                 .map_err(backend_error)
         })?;
 
-        let mut confirmed = input;
+        // A transient read failure here does not prove the switch failed - it
+        // just means we couldn't confirm it. Only a *clean* read that clearly
+        // disagrees with the requested input, repeated across every verify
+        // attempt, is treated as a real failure; anything else falls back to
+        // trusting the write that already reported success above.
         for _ in 0..WRITE_VERIFY_ATTEMPTS {
             thread::sleep(WRITE_VERIFY_DELAY);
-            confirmed = with_ddc_retry(|| {
+            let confirmed = with_ddc_retry(|| {
                 let mut monitor = find_monitor(monitor_id)?;
                 let value = monitor
                     .get_vcp_feature(INPUT_SELECT_VCP_CODE)
                     .map_err(backend_error)?;
                 DisplayInput::new(u32::from(value.value()))
-            })?;
-            if confirmed == input {
-                return Ok(());
+            });
+            match confirmed {
+                Ok(value) if value == input => return Ok(()),
+                Ok(_) => continue,
+                Err(_) => return Ok(()),
             }
         }
 
         Err(DisplayMuxError::Backend(format!(
-            "顯示器未執行輸入切換指令（要求 {:#x}，實際仍為 {:#x}）：這台顯示器的韌體可能不支援透過 DDC/CI 遠端切換輸入源",
-            input.value(),
-            confirmed.value()
+            "顯示器未執行輸入切換指令（要求 {:#x}）：這台顯示器的韌體可能不支援透過 DDC/CI 遠端切換輸入源",
+            input.value()
         )))
     }
 }
