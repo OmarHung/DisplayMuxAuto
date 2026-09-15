@@ -1,3 +1,5 @@
+mod host_order;
+
 use std::{
     collections::HashMap,
     fs,
@@ -14,9 +16,9 @@ use std::{
 use displaymux_core::{
     AgentAction, AgentClient, AgentDisplayRoute, AgentResponse, AgentServer, DestinationHost,
     DiscoveredPeer, DisplayInput, DisplayMuxError, DisplayMuxProfile, DisplayMuxService,
-    MacAddress, MdnsPeerDiscovery, MonitorControl, MonitorDescriptor, MonitorFingerprint,
-    PeerDiscovery, PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome, WakeTarget,
-    AGENT_PROTOCOL_VERSION, DEFAULT_AGENT_PORT,
+    LocalHostIdentity, MacAddress, MdnsPeerDiscovery, MonitorControl, MonitorDescriptor,
+    MonitorFingerprint, PeerDiscovery, PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome,
+    WakeTarget, AGENT_PROTOCOL_VERSION, DEFAULT_AGENT_PORT,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
@@ -224,6 +226,13 @@ struct AppSettings {
     onboarding_completed: bool,
     host_switcher_enabled: bool,
     host_switcher_shortcut: String,
+    /// Host card order shared with paired hosts, as discovery ids (see
+    /// `host_order`). Backend-owned: changed only through `set_host_order` or a
+    /// paired host's notice, never by `save_settings`.
+    host_order: Vec<String>,
+    /// When `host_order` last changed (Unix milliseconds), so the newest order
+    /// wins when several hosts reorder.
+    host_order_updated_at_ms: u64,
 }
 
 impl Default for AppSettings {
@@ -241,6 +250,8 @@ impl Default for AppSettings {
             onboarding_completed: false,
             host_switcher_enabled: false,
             host_switcher_shortcut: DEFAULT_HOST_SWITCHER_SHORTCUT.to_owned(),
+            host_order: Vec::new(),
+            host_order_updated_at_ms: 0,
         }
     }
 }
@@ -331,6 +342,8 @@ struct AppRuntime {
     settings_path: PathBuf,
     agent_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     discovery: Option<MdnsPeerDiscovery>,
+    /// This computer's discovery id, used to name it in the shared host order.
+    local_host_id: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -597,6 +610,7 @@ fn get_settings(state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
 #[tauri::command]
 fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherState, String> {
     let settings = read_settings(&state)?;
+    let route_order = ordered_routes(&state, &settings);
     let monitors = settings
         .shared_monitors
         .iter()
@@ -621,6 +635,7 @@ fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherS
                     available: input.is_some(),
                 }
             }));
+            hosts.sort_by_key(|host| route_order.iter().position(|route| *route == host.id));
             HostSwitcherMonitor {
                 monitor_key: monitor_key(&selected.fingerprint),
                 name: selected.name.clone(),
@@ -748,6 +763,9 @@ async fn save_settings(
     settings.local_host = protected.local_host;
     settings.shared_monitors = protected.shared_monitors.clone();
     settings.onboarding_completed = protected.onboarding_completed;
+    // A settings form opened before a paired host reordered must not revert it.
+    settings.host_order = protected.host_order.clone();
+    settings.host_order_updated_at_ms = protected.host_order_updated_at_ms;
     validate_settings(&settings).map_err(core_user_error)?;
     let enable_autostart = settings.autostart;
     update_host_switcher_shortcut(&app, &protected, &settings)?;
@@ -1817,6 +1835,10 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                         AgentAction::ActiveInputChanged { monitor, input } => {
                             receive_active_input_notice(app, monitor, input).await
                         }
+                        AgentAction::HostOrderChanged {
+                            order,
+                            updated_at_ms,
+                        } => receive_host_order_notice(app, order, updated_at_ms).await,
                         AgentAction::Ping => {
                             let display_routes = live_settings
                                 .read()
@@ -2000,6 +2022,18 @@ fn announce_active_input(
     fingerprint: &MonitorFingerprint,
     input: DisplayInput,
 ) {
+    broadcast_to_peers(
+        state,
+        &AgentAction::ActiveInputChanged {
+            monitor: fingerprint.clone(),
+            input,
+        },
+    );
+}
+
+/// Sends `action` to every paired host without waiting. Hosts that are
+/// offline or run an agent predating the action are only logged.
+fn broadcast_to_peers(state: &AppRuntime, action: &AgentAction) {
     let Ok(settings) = read_settings(state) else {
         return;
     };
@@ -2009,20 +2043,142 @@ fn announce_active_input(
     let settings = Arc::new(settings);
     for index in 0..settings.peers.len() {
         let settings = Arc::clone(&settings);
-        let action = AgentAction::ActiveInputChanged {
-            monitor: fingerprint.clone(),
-            input,
-        };
+        let action = action.clone();
         tauri::async_runtime::spawn(async move {
             let peer = &settings.peers[index];
             if let Err(error) = request_peer(&settings, peer, action).await {
                 tracing::debug!(
                     peer = peer.name.as_str(),
                     error = %error,
-                    "paired host did not accept the active input notice"
+                    "paired host did not accept the notice"
                 );
             }
         });
+    }
+}
+
+/// Frontend event telling the dashboard and host switcher to re-read the order.
+const HOST_ORDER_CHANGED_EVENT: &str = "host-order-changed";
+
+/// Adopts a host order from a paired host when it is well formed and newer
+/// than the saved one. Returns whether the saved order changed.
+fn apply_host_order_notice(
+    settings: &mut AppSettings,
+    order: Vec<String>,
+    updated_at_ms: u64,
+) -> bool {
+    if updated_at_ms <= settings.host_order_updated_at_ms
+        || !host_order::is_valid_shared_host_order(&order)
+    {
+        return false;
+    }
+    settings.host_order = order;
+    settings.host_order_updated_at_ms = updated_at_ms;
+    true
+}
+
+fn peer_ids(settings: &AppSettings) -> Vec<&str> {
+    settings.peers.iter().map(|peer| peer.id.as_str()).collect()
+}
+
+fn ordered_routes(state: &AppRuntime, settings: &AppSettings) -> Vec<String> {
+    host_order::ordered_route_ids(
+        &settings.host_order,
+        &state.local_host_id,
+        &peer_ids(settings),
+    )
+}
+
+/// Route ids ("local" and peer ids) in the saved host card order.
+#[tauri::command]
+fn get_host_order(state: State<'_, AppRuntime>) -> Result<Vec<String>, String> {
+    let settings = read_settings(&state)?;
+    Ok(ordered_routes(&state, &settings))
+}
+
+/// Saves a new host card order from dashboard route ids and shares it with
+/// every paired host. Returns the order as saved.
+#[tauri::command]
+fn set_host_order(
+    route_ids: Vec<String>,
+    state: State<'_, AppRuntime>,
+    app: AppHandle,
+) -> Result<Vec<String>, String> {
+    let mut settings = read_settings(&state)?;
+    let order = host_order::host_order_from_route_ids(
+        &route_ids,
+        &state.local_host_id,
+        &peer_ids(&settings),
+        &settings.host_order,
+    )
+    .ok_or_else(|| {
+        ui_text(
+            "主機清單已變更，請重新整理後再調整順序",
+            "The host list changed. Refresh and reorder again.",
+        )
+        .to_owned()
+    })?;
+    // Never move backwards in time, or peers holding a newer order ignore this one.
+    let updated_at_ms = unix_time_ms().max(settings.host_order_updated_at_ms + 1);
+    settings.host_order = order.clone();
+    settings.host_order_updated_at_ms = updated_at_ms;
+    let settings = store_settings(&state, settings)?;
+    if let Err(error) = app.emit(HOST_ORDER_CHANGED_EVENT, ()) {
+        tracing::warn!(error = %error, "unable to notify the host switcher of a host order change");
+    }
+    broadcast_to_peers(
+        &state,
+        &AgentAction::HostOrderChanged {
+            order,
+            updated_at_ms,
+        },
+    );
+    Ok(ordered_routes(&state, &settings))
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
+async fn receive_host_order_notice(
+    app: AppHandle,
+    order: Vec<String>,
+    updated_at_ms: u64,
+) -> AgentResponse {
+    let applied = tauri::async_runtime::spawn_blocking(move || {
+        // Serialize with dashboard scans, which write back a settings snapshot.
+        let _scan = DASHBOARD_SCAN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = app.state::<AppRuntime>();
+        let mut settings = read_settings(&state)?;
+        if apply_host_order_notice(&mut settings, order, updated_at_ms) {
+            store_settings(&state, settings)?;
+            if let Err(error) = app.emit(HOST_ORDER_CHANGED_EVENT, ()) {
+                tracing::warn!(error = %error, "unable to notify windows of a host order change");
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await;
+    agent_notice_response(applied)
+}
+
+fn agent_notice_response(applied: Result<Result<(), String>, tauri::Error>) -> AgentResponse {
+    let (ready, message) = match applied {
+        Ok(Ok(())) => (true, ui_text("已同步設定", "Settings synced").to_owned()),
+        Ok(Err(message)) => (false, message),
+        Err(error) => (false, user_error(error)),
+    };
+    AgentResponse {
+        ready,
+        message,
+        display_route: None,
+        display_routes: Vec::new(),
+        protocol_version: AGENT_PROTOCOL_VERSION,
     }
 }
 
@@ -2047,21 +2203,7 @@ async fn receive_active_input_notice(
         Ok::<(), String>(())
     })
     .await;
-    let (ready, message) = match applied {
-        Ok(Ok(())) => (
-            true,
-            ui_text("已同步目前顯示的主機", "Synced the active host").to_owned(),
-        ),
-        Ok(Err(message)) => (false, message),
-        Err(error) => (false, user_error(error)),
-    };
-    AgentResponse {
-        ready,
-        message,
-        display_route: None,
-        display_routes: Vec::new(),
-        protocol_version: AGENT_PROTOCOL_VERSION,
-    }
+    agent_notice_response(applied)
 }
 
 fn store_settings(state: &AppRuntime, settings: AppSettings) -> Result<AppSettings, String> {
@@ -2245,6 +2387,8 @@ fn migrate_single_monitor_settings(value: serde_json::Value) -> AppSettings {
         onboarding_completed: old.onboarding_completed || is_existing_install,
         host_switcher_enabled: old.host_switcher_enabled,
         host_switcher_shortcut: old.host_switcher_shortcut,
+        host_order: Vec::new(),
+        host_order_updated_at_ms: 0,
     }
 }
 
@@ -2280,6 +2424,8 @@ fn migrate_legacy_settings(legacy: LegacySettings) -> AppSettings {
         onboarding_completed: true,
         host_switcher_enabled: false,
         host_switcher_shortcut: DEFAULT_HOST_SWITCHER_SHORTCUT.to_owned(),
+        host_order: Vec::new(),
+        host_order_updated_at_ms: 0,
     }
 }
 
@@ -2861,7 +3007,11 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!(error = %error, "unable to refresh the login autostart entry");
                 }
             }
-            let discovery = MdnsPeerDiscovery::start(local_host(), DEFAULT_AGENT_PORT)
+            let identity = LocalHostIdentity::detect(local_host()).unwrap_or_else(|error| {
+                tracing::warn!(error = %error, "unable to read this computer's host name");
+                LocalHostIdentity::from_parts("DisplayMux".to_owned(), local_host(), None)
+            });
+            let discovery = MdnsPeerDiscovery::start(&identity, DEFAULT_AGENT_PORT)
                 .map(Some)
                 .unwrap_or_else(|error| {
                     tracing::warn!(error = %error, "unable to start DisplayMux mDNS discovery");
@@ -2872,6 +3022,7 @@ pub fn run() -> anyhow::Result<()> {
                 settings_path,
                 agent_task: Mutex::new(None),
                 discovery,
+                local_host_id: identity.id,
             });
             if let Some(runtime) = app.try_state::<AppRuntime>() {
                 let settings = read_settings_inner(&runtime).map_err(anyhow::Error::msg)?;
@@ -2916,6 +3067,8 @@ pub fn run() -> anyhow::Result<()> {
             remove_shared_monitor,
             get_settings,
             get_host_switcher_state,
+            get_host_order,
+            set_host_order,
             hide_host_switcher,
             check_host_switcher_shortcut,
             complete_onboarding,
@@ -3776,6 +3929,48 @@ mod tests {
             settings.shared_monitors[0].active_route.as_deref(),
             Some("peer")
         );
+    }
+
+    #[test]
+    fn newer_host_order_from_a_peer_replaces_the_saved_order() {
+        let mut settings = AppSettings {
+            host_order: vec!["mac-a".to_owned(), "pc-b".to_owned()],
+            host_order_updated_at_ms: 100,
+            ..AppSettings::default()
+        };
+
+        let changed = apply_host_order_notice(
+            &mut settings,
+            vec!["pc-b".to_owned(), "mac-a".to_owned()],
+            200,
+        );
+
+        assert!(changed);
+        assert_eq!(settings.host_order, vec!["pc-b", "mac-a"]);
+        assert_eq!(settings.host_order_updated_at_ms, 200);
+    }
+
+    #[test]
+    fn stale_or_malformed_host_order_from_a_peer_is_ignored() {
+        let saved = vec!["mac-a".to_owned(), "pc-b".to_owned()];
+        let mut settings = AppSettings {
+            host_order: saved.clone(),
+            host_order_updated_at_ms: 100,
+            ..AppSettings::default()
+        };
+
+        assert!(!apply_host_order_notice(
+            &mut settings,
+            vec!["pc-b".to_owned()],
+            100
+        ));
+        assert!(!apply_host_order_notice(
+            &mut settings,
+            vec!["pc-b".to_owned(), "pc-b".to_owned()],
+            300
+        ));
+        assert_eq!(settings.host_order, saved);
+        assert_eq!(settings.host_order_updated_at_ms, 100);
     }
 
     #[test]

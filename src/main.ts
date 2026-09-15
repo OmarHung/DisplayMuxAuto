@@ -1,7 +1,7 @@
 import "@fontsource-variable/manrope";
 import {
   Activity, ArrowLeftRight, CircleHelp, Computer, createIcons, Download, KeyRound, Laptop,
-  ChevronDown, ExternalLink, Github, Languages, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
+  ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Github, Languages, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
   ShieldCheck, SunMoon, Trash2, UserRound, Zap,
 } from "lucide";
 import { getVersion } from "@tauri-apps/api/app";
@@ -463,7 +463,7 @@ app.innerHTML = `
   <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
 `;
 
-const iconSet = { Activity, ArrowLeftRight, ChevronDown, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, SunMoon, Trash2, UserRound, Zap };
+const iconSet = { Activity, ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, SunMoon, Trash2, UserRound, Zap };
 const refreshIcons = () => createIcons({ icons: iconSet });
 refreshIcons();
 
@@ -544,7 +544,42 @@ document.querySelector("#monitor-strip")?.addEventListener("click", (event) => {
   renderMonitorStrip();
   renderSwitchPanel();
 });
-document.querySelector("#switch-panel")?.addEventListener("click", (event) => {
+const switchPanel = document.querySelector<HTMLElement>("#switch-panel");
+switchPanel?.addEventListener("click", (event) => {
+  const moveButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-move-route]");
+  if (moveButton?.dataset.moveRoute) {
+    moveRouteBy(moveButton.dataset.moveRoute, Number(moveButton.dataset.moveOffset));
+  }
+});
+switchPanel?.addEventListener("dragstart", (event) => {
+  const card = (event.target as HTMLElement).closest<HTMLElement>("[data-route-card]");
+  if (!card?.dataset.routeCard || !event.dataTransfer) return;
+  draggedRouteId = card.dataset.routeCard;
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", draggedRouteId);
+  card.classList.add("is-dragging");
+});
+switchPanel?.addEventListener("dragover", (event) => {
+  const card = (event.target as HTMLElement).closest<HTMLElement>("[data-route-card]");
+  if (!draggedRouteId || !card) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  switchPanel.querySelectorAll(".is-drop-target").forEach((item) => item.classList.remove("is-drop-target"));
+  if (card.dataset.routeCard !== draggedRouteId) card.classList.add("is-drop-target");
+});
+switchPanel?.addEventListener("drop", (event) => {
+  const card = (event.target as HTMLElement).closest<HTMLElement>("[data-route-card]");
+  if (!draggedRouteId || !card?.dataset.routeCard) return;
+  event.preventDefault();
+  const order = currentRouteIds();
+  const next = movedRoute(order, draggedRouteId, order.indexOf(card.dataset.routeCard));
+  if (next.join() !== order.join()) void saveRouteOrder(next);
+});
+switchPanel?.addEventListener("dragend", () => {
+  draggedRouteId = null;
+  switchPanel.querySelectorAll(".is-dragging, .is-drop-target").forEach((item) => item.classList.remove("is-dragging", "is-drop-target"));
+});
+switchPanel?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-id]");
   if (!button?.dataset.switchId) return;
   const card = button.closest<HTMLElement>("[data-monitor-key]");
@@ -637,6 +672,10 @@ async function loadInputOptionsByMonitor(monitorKeys: string[]): Promise<Record<
 const FOCUS_REFRESH_INTERVAL_MS = 10_000;
 /** Emitted by the backend when a paired host reports a switch. */
 const ACTIVE_ROUTE_CHANGED_EVENT = "active-route-changed";
+/** Emitted by the backend when this or a paired host saves a new host card order. */
+const HOST_ORDER_CHANGED_EVENT = "host-order-changed";
+/** Route ids ("local" and peer ids) in the saved host card order. */
+let routeOrder: string[] = [];
 let isRefreshing = false;
 let lastRefreshAt = 0;
 
@@ -646,9 +685,10 @@ async function refresh(): Promise<void> {
   document.querySelector("#refresh-button svg")?.classList.add("is-spinning");
   try {
     dashboard = await invoke<DashboardState>("get_dashboard_state");
-    [settings, inputOptionsByMonitor] = await Promise.all([
+    [settings, inputOptionsByMonitor, routeOrder] = await Promise.all([
       invoke<AppSettings>("get_settings"),
       loadInputOptionsByMonitor(dashboard.shared.map((shared) => shared.monitorKey)),
+      invoke<string[]>("get_host_order"),
     ]);
     try { discoveredPeers = await invoke<DiscoveredPeer[]>("discover_peers"); } catch { discoveredPeers = []; }
     isPreview = false;
@@ -1121,6 +1161,62 @@ function inputValueFromElement(selector: string, fallback: number | null): numbe
   try { return parseInput(value); } catch { return null; }
 }
 
+/** Position of a route in the saved order; routes not yet ordered sort last. */
+function routeRank(routeId: string): number {
+  const rank = routeOrder.indexOf(routeId);
+  return rank === -1 ? Number.MAX_SAFE_INTEGER : rank;
+}
+
+/** Every current route id in display order, as the backend expects it. */
+function currentRouteIds(): string[] {
+  return ["local", ...settings.peers.map((peer) => peer.id)]
+    .sort((left, right) => routeRank(left) - routeRank(right));
+}
+
+function movedRoute(order: string[], routeId: string, targetIndex: number): string[] {
+  const without = order.filter((id) => id !== routeId);
+  const clamped = Math.max(0, Math.min(targetIndex, without.length));
+  return [...without.slice(0, clamped), routeId, ...without.slice(clamped)];
+}
+
+async function saveRouteOrder(next: string[]): Promise<void> {
+  const previous = routeOrder;
+  routeOrder = next;
+  renderSwitchPanel();
+  refreshIcons();
+  try {
+    routeOrder = await invoke<string[]>("set_host_order", { routeIds: next });
+  } catch (error) {
+    routeOrder = previous;
+    showToast(t("toast.hostOrderFailed"), String(error), true);
+  }
+  renderSwitchPanel();
+  refreshIcons();
+}
+
+async function reloadHostOrder(): Promise<void> {
+  try {
+    routeOrder = await invoke<string[]>("get_host_order");
+    renderSwitchPanel();
+    refreshIcons();
+  } catch (error) {
+    showToast(t("toast.hostOrderFailed"), String(error), true);
+  }
+}
+
+function moveRouteBy(routeId: string, offset: number): void {
+  const order = currentRouteIds();
+  const index = order.indexOf(routeId);
+  if (index === -1) return;
+  const next = movedRoute(order, routeId, index + offset);
+  if (next.join() === order.join()) return;
+  void saveRouteOrder(next).then(() => {
+    document.querySelector<HTMLButtonElement>(`[data-move-route="${cssEscape(routeId)}"][data-move-offset="${offset}"]:not(:disabled)`)?.focus();
+  });
+}
+
+let draggedRouteId: string | null = null;
+
 function renderHostRoutes(shared: SharedMonitorStatus): void {
   const container = document.querySelector(`[data-host-route-grid="${cssEscape(shared.monitorKey)}"]`);
   if (!container) return;
@@ -1133,8 +1229,8 @@ function renderHostRoutes(shared: SharedMonitorStatus): void {
       input: peer.inputs.find((assignment) => sameFingerprint(assignment.monitor, shared.fingerprint))?.input ?? null,
       local: false,
     })),
-  ];
-  container.innerHTML = routes.map((route) => {
+  ].sort((left, right) => routeRank(left.id) - routeRank(right.id));
+  container.innerHTML = routes.map((route, index) => {
     const isActive = route.id === activeRouteId;
     const badgeText = route.local
       ? (route.platform === "mac" ? t("dashboard.localMacOs") : t("dashboard.localWindowsBadge"))
@@ -1145,7 +1241,11 @@ function renderHostRoutes(shared: SharedMonitorStatus): void {
     const iconName = route.platform === "mac" ? "laptop" : "computer";
 
     return `
-      <article class="host-route-card ${route.local ? "is-local" : ""}">
+      <article class="host-route-card ${route.local ? "is-local" : ""}" draggable="true" data-route-card="${escapeHtml(route.id)}">
+        <div class="host-order-controls" title="${escapeHtml(t("dashboard.dragToReorder"))}">
+          <button type="button" class="host-order-button" data-move-route="${escapeHtml(route.id)}" data-move-offset="-1" aria-label="${escapeHtml(t("action.moveHostEarlier", { name: route.name }))}" title="${escapeHtml(t("action.moveHostEarlier", { name: route.name }))}" ${index === 0 ? "disabled" : ""}><i data-lucide="chevron-left"></i></button>
+          <button type="button" class="host-order-button" data-move-route="${escapeHtml(route.id)}" data-move-offset="1" aria-label="${escapeHtml(t("action.moveHostLater", { name: route.name }))}" title="${escapeHtml(t("action.moveHostLater", { name: route.name }))}" ${index === routes.length - 1 ? "disabled" : ""}><i data-lucide="chevron-right"></i></button>
+        </div>
         <div class="host-card-header">
           <div class="host-icon ${route.platform}">
             <i data-lucide="${iconName}"></i>
@@ -1620,6 +1720,7 @@ async function bootstrap(): Promise<void> {
   if (!isPreview) {
     try {
       await listen(ACTIVE_ROUTE_CHANGED_EVENT, () => void reloadActiveRoutes());
+      await listen(HOST_ORDER_CHANGED_EVENT, () => void reloadHostOrder());
     } catch (error) {
       showToast(t("toast.activeHostSyncFailed"), String(error), true);
     }
