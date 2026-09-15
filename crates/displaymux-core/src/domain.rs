@@ -36,6 +36,15 @@ impl MonitorFingerprint {
         }
     }
 
+    /// Whether both fingerprints name the same monitor model. Hosts read the
+    /// serial number differently (EDID text on Windows, IOKit's number or
+    /// nothing on macOS), so this is how two hosts can agree on a display.
+    pub fn is_same_model(&self, other: &Self) -> bool {
+        self.manufacturer_id
+            .eq_ignore_ascii_case(&other.manufacturer_id)
+            && self.product_code.eq_ignore_ascii_case(&other.product_code)
+    }
+
     pub fn matches_exactly(&self, actual: &Self) -> bool {
         self.manufacturer_id
             .eq_ignore_ascii_case(&actual.manufacturer_id)
@@ -191,6 +200,19 @@ pub struct DisplayMuxProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_model_ignores_how_each_host_reads_the_serial_number() {
+        let from_edid = MonitorFingerprint::new("MSI", "3CF0", Some("CF0H246200009"));
+        let without_serial = MonitorFingerprint::new("msi", "3cf0", None::<String>);
+        let numeric_serial = MonitorFingerprint::new("MSI", "3CF0", Some("576726074"));
+        let other_model = MonitorFingerprint::new("MSI", "3CF1", Some("CF0H246200009"));
+
+        assert!(from_edid.is_same_model(&without_serial));
+        assert!(from_edid.is_same_model(&numeric_serial));
+        assert!(!from_edid.is_same_model(&other_model));
+        assert!(!from_edid.matches_exactly(&without_serial));
+    }
 
     #[test]
     fn maps_standard_mccs_input_values() {
