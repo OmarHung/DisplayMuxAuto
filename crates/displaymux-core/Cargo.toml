@@ -25,3 +25,6 @@ wmi.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 ddc = "0.2.2"
 ddc-macos = "0.2.2"
+# Already pulled in by ddc-macos; used directly to read display port topology.
+core-foundation = "0.10"
+io-kit-sys = "0.4"

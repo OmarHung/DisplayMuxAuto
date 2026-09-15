@@ -4,8 +4,10 @@ use ddc::Ddc;
 use ddc_macos::Monitor;
 
 use crate::{
-    capabilities, edid, DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor,
-    MonitorFingerprint, MonitorId, MonitorResolution,
+    capabilities, edid,
+    macos_connection::{self, DisplayLink},
+    DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor, MonitorFingerprint,
+    MonitorId, MonitorResolution,
 };
 
 const INPUT_SELECT_VCP_CODE: u8 = 0x60;
@@ -62,9 +64,11 @@ impl Default for MacOsMonitorController {
 
 impl MonitorControl for MacOsMonitorController {
     fn enumerate(&self) -> Result<Vec<MonitorDescriptor>, DisplayMuxError> {
-        Ok(enumerate_external_online_monitors()?
-            .into_iter()
-            .map(|monitor| descriptor(&monitor))
+        let monitors = enumerate_external_online_monitors()?;
+        let links = macos_connection::display_links();
+        Ok(monitors
+            .iter()
+            .map(|monitor| descriptor(monitor, &links))
             .collect())
     }
 
@@ -171,11 +175,14 @@ fn enumerate_external_online_monitors() -> Result<Vec<Monitor>, DisplayMuxError>
         .collect())
 }
 
-fn descriptor(monitor: &Monitor) -> MonitorDescriptor {
+fn descriptor(monitor: &Monitor, links: &[DisplayLink]) -> MonitorDescriptor {
     let raw_edid = monitor.edid();
     let fingerprint = fingerprint(monitor, raw_edid.as_deref());
     let (max_resolution, resolution_source) =
         edid::preferred_resolution(raw_edid.as_deref(), core_graphics_resolution(monitor));
+    let connection = macos_connection::connection_for(links, &fingerprint, |edid| {
+        fingerprint_from_edid(edid).ok()
+    });
 
     MonitorDescriptor {
         id: id_for(&fingerprint),
@@ -185,6 +192,7 @@ fn descriptor(monitor: &Monitor) -> MonitorDescriptor {
         built_in: false,
         max_resolution,
         resolution_source,
+        connection,
     }
 }
 

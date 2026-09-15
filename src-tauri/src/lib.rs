@@ -340,6 +340,8 @@ struct SharedMonitorStatus {
     name: String,
     ddc_available: bool,
     status_text: String,
+    connection: Option<displaymux_core::MonitorConnection>,
+    connection_input_conflict: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -349,6 +351,7 @@ struct DashboardState {
     local_host: DestinationHost,
     agent_configured: bool,
     monitors: Vec<MonitorDescriptor>,
+    uncontrollable_monitors: Vec<MonitorDescriptor>,
     shared: Vec<SharedMonitorStatus>,
     selection_notices: Vec<String>,
 }
@@ -848,57 +851,60 @@ async fn install_update(
 #[tauri::command]
 fn get_dashboard_state(state: State<'_, AppRuntime>) -> Result<DashboardState, String> {
     let mut settings = read_settings(&state)?;
-    let (monitors, shared, selection_notices) = match enumerate_monitor_inventory() {
-        Ok(inventory) => {
-            let changes = reconcile_monitor_selection(
-                &mut settings,
-                &inventory.detected,
-                &inventory.controllable,
-            );
-            if !changes.is_empty() {
-                for change in &changes {
-                    if let MonitorSelectionChange::RemovedMissingMonitor { fingerprint, .. } =
-                        change
-                    {
-                        for peer in &mut settings.peers {
-                            peer.set_input_for(fingerprint, None);
-                        }
-                    }
-                }
-                if let Ok(controller) = platform_controller() {
-                    for selected in &mut settings.shared_monitors {
-                        if let Some(current) = inventory.controllable.iter().find(|monitor| {
-                            selected.fingerprint.matches_exactly(&monitor.fingerprint)
-                        }) {
-                            if let Err(error) =
-                                refresh_selected_input_data(&controller, current, selected)
-                            {
-                                tracing::warn!(
-                                    monitor_id = current.id.as_str(),
-                                    error = %error,
-                                    "unable to record input data for automatically selected display"
-                                );
+    let (monitors, uncontrollable_monitors, shared, selection_notices) =
+        match enumerate_monitor_inventory() {
+            Ok(inventory) => {
+                let changes = reconcile_monitor_selection(
+                    &mut settings,
+                    &inventory.detected,
+                    &inventory.controllable,
+                );
+                if !changes.is_empty() {
+                    for change in &changes {
+                        if let MonitorSelectionChange::RemovedMissingMonitor {
+                            fingerprint, ..
+                        } = change
+                        {
+                            for peer in &mut settings.peers {
+                                peer.set_input_for(fingerprint, None);
                             }
                         }
                     }
+                    if let Ok(controller) = platform_controller() {
+                        for selected in &mut settings.shared_monitors {
+                            if let Some(current) = inventory.controllable.iter().find(|monitor| {
+                                selected.fingerprint.matches_exactly(&monitor.fingerprint)
+                            }) {
+                                if let Err(error) =
+                                    refresh_selected_input_data(&controller, current, selected)
+                                {
+                                    tracing::warn!(
+                                        monitor_id = current.id.as_str(),
+                                        error = %error,
+                                        "unable to record input data for automatically selected display"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    store_settings(&state, settings.clone())?;
                 }
-                store_settings(&state, settings.clone())?;
-            }
-            let selection_notices = changes
-                .into_iter()
-                .filter_map(selection_notice_text)
-                .collect();
-            let shared =
-                settings
+                let selection_notices = changes
+                    .into_iter()
+                    .filter_map(selection_notice_text)
+                    .collect();
+                let shared = settings
                     .shared_monitors
                     .iter()
                     .map(|selected| {
                         let target_found = inventory.controllable.iter().any(|monitor| {
                             selected.fingerprint.matches_exactly(&monitor.fingerprint)
                         });
-                        let target_detected = inventory.detected.iter().any(|monitor| {
+                        let detected = inventory.detected.iter().find(|monitor| {
                             selected.fingerprint.matches_exactly(&monitor.fingerprint)
                         });
+                        let target_detected = detected.is_some();
+                        let connection = detected.and_then(|monitor| monitor.connection.clone());
                         SharedMonitorStatus {
                             monitor_key: monitor_key(&selected.fingerprint),
                             fingerprint: selected.fingerprint.clone(),
@@ -909,32 +915,46 @@ fn get_dashboard_state(state: State<'_, AppRuntime>) -> Result<DashboardState, S
                                 target_found,
                                 target_detected,
                             ),
+                            connection_input_conflict: connection_input_conflict(
+                                selected,
+                                connection.as_ref(),
+                            ),
+                            connection,
                         }
                     })
                     .collect();
-            (inventory.controllable, shared, selection_notices)
-        }
-        Err(error) => {
-            let message = core_user_error(error);
-            let shared = settings
-                .shared_monitors
-                .iter()
-                .map(|selected| SharedMonitorStatus {
-                    monitor_key: monitor_key(&selected.fingerprint),
-                    fingerprint: selected.fingerprint.clone(),
-                    name: selected.name.clone(),
-                    ddc_available: false,
-                    status_text: message.clone(),
-                })
-                .collect();
-            (Vec::new(), shared, Vec::new())
-        }
-    };
+                let uncontrollable = uncontrollable_monitors(&inventory);
+                (
+                    inventory.controllable,
+                    uncontrollable,
+                    shared,
+                    selection_notices,
+                )
+            }
+            Err(error) => {
+                let message = core_user_error(error);
+                let shared = settings
+                    .shared_monitors
+                    .iter()
+                    .map(|selected| SharedMonitorStatus {
+                        monitor_key: monitor_key(&selected.fingerprint),
+                        fingerprint: selected.fingerprint.clone(),
+                        name: selected.name.clone(),
+                        ddc_available: false,
+                        status_text: message.clone(),
+                        connection: None,
+                        connection_input_conflict: false,
+                    })
+                    .collect();
+                (Vec::new(), Vec::new(), shared, Vec::new())
+            }
+        };
     Ok(DashboardState {
         platform: std::env::consts::OS,
         local_host: settings.local_host,
         agent_configured: has_valid_shared_key(&settings.shared_key),
         monitors,
+        uncontrollable_monitors,
         shared,
         selection_notices,
     })
@@ -2217,6 +2237,41 @@ fn monitor_inventory<C: MonitorControl>(
     })
 }
 
+/// External monitors the OS reports but whose DDC/CI input cannot be read.
+fn uncontrollable_monitors(inventory: &MonitorInventory) -> Vec<MonitorDescriptor> {
+    inventory
+        .detected
+        .iter()
+        .filter(|monitor| {
+            !monitor.built_in
+                && !inventory
+                    .controllable
+                    .iter()
+                    .any(|controllable| controllable.id == monitor.id)
+        })
+        .cloned()
+        .collect()
+}
+
+/// True when the input recorded for this host is of a different kind than
+/// the physical connection (e.g. DP recorded on an HDMI link), which usually
+/// means the monitor was showing another host when the input was read.
+fn connection_input_conflict(
+    selected: &SelectedMonitor,
+    connection: Option<&displaymux_core::MonitorConnection>,
+) -> bool {
+    if selected.vendor_indexed_inputs {
+        return false;
+    }
+    let (Some(input), Some(sink)) = (
+        selected.local_input,
+        connection.and_then(|connection| connection.sink_interface),
+    ) else {
+        return false;
+    };
+    displaymux_core::input_matches_sink(sink, input) == Some(false)
+}
+
 fn common_input_sources() -> Vec<DisplayInput> {
     [0x01, 0x03, 0x0f, 0x11, 0x12, 0x1b]
         .into_iter()
@@ -2756,7 +2811,68 @@ mod tests {
             built_in: false,
             max_resolution: Some(displaymux_core::MonitorResolution::new(2560, 1440)),
             resolution_source: Some(ResolutionSource::WindowsDisplayMode),
+            connection: None,
         }
+    }
+
+    #[test]
+    fn uncontrollable_monitors_list_detected_externals_that_ddc_cannot_reach() {
+        let external = monitor("external");
+        let mut internal = monitor("internal");
+        internal.built_in = true;
+        let unreachable = monitor("unreachable");
+        let controller = SelectionController {
+            monitors: vec![internal, unreachable.clone(), external.clone()],
+            controllable: HashSet::from(["internal".to_owned(), external.id.as_str().to_owned()]),
+        };
+        let inventory = monitor_inventory(&controller).unwrap();
+
+        assert_eq!(uncontrollable_monitors(&inventory), vec![unreachable]);
+    }
+
+    fn hdmi_connection() -> displaymux_core::MonitorConnection {
+        displaymux_core::MonitorConnection::classify(
+            Some(displaymux_core::HostOutput::UsbC),
+            None,
+            Some(displaymux_core::SinkInterface::Hdmi),
+            false,
+        )
+    }
+
+    fn selected_with_input(value: u32, vendor_indexed: bool) -> SelectedMonitor {
+        let mut selected = SelectedMonitor::from(&monitor("shared"));
+        selected.local_input = DisplayInput::new(value).ok();
+        selected.vendor_indexed_inputs = vendor_indexed;
+        selected
+    }
+
+    #[test]
+    fn recorded_displayport_input_on_an_hdmi_connection_is_flagged() {
+        let connection = hdmi_connection();
+        assert!(connection_input_conflict(
+            &selected_with_input(0x0f, false),
+            Some(&connection)
+        ));
+        assert!(!connection_input_conflict(
+            &selected_with_input(0x11, false),
+            Some(&connection)
+        ));
+    }
+
+    #[test]
+    fn input_conflict_is_never_guessed_from_vague_data() {
+        let connection = hdmi_connection();
+        // Private index values, missing connection data, or no recorded input.
+        assert!(!connection_input_conflict(
+            &selected_with_input(0x0f, true),
+            Some(&connection)
+        ));
+        assert!(!connection_input_conflict(
+            &selected_with_input(0x0f, false),
+            None
+        ));
+        let unset = SelectedMonitor::from(&monitor("shared"));
+        assert!(!connection_input_conflict(&unset, Some(&connection)));
     }
 
     #[test]

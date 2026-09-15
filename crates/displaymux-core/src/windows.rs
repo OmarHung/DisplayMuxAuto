@@ -19,8 +19,8 @@ use windows_sys::Win32::{
 use wmi::WMIConnection;
 
 use crate::{
-    capabilities, DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor,
-    MonitorFingerprint, MonitorId, MonitorResolution, ResolutionSource,
+    capabilities, windows_connection, DisplayInput, DisplayMuxError, MonitorControl,
+    MonitorDescriptor, MonitorFingerprint, MonitorId, MonitorResolution, ResolutionSource,
 };
 
 const INPUT_SOURCE_VCP_CODE: u8 = 0x60;
@@ -50,6 +50,11 @@ impl WindowsMonitorController {
                     ))
                 })?;
             let physical_monitors = physical_monitors(logical)?;
+            let raw_edid = windows_connection::read_cached_edid(&identity.wmi_instance_key);
+            let connection = windows_connection::connection(
+                wmi_monitor.video_output_technology,
+                raw_edid.as_deref(),
+            );
 
             for (index, physical) in physical_monitors.into_iter().enumerate() {
                 let description_buffer = physical.szPhysicalMonitorDescription;
@@ -77,6 +82,7 @@ impl WindowsMonitorController {
                         resolution_source: details
                             .max_resolution
                             .map(|_| ResolutionSource::WindowsDisplayMode),
+                        connection: connection.clone(),
                     },
                     handle: physical.hPhysicalMonitor,
                 });
@@ -212,6 +218,8 @@ struct WmiMonitorId {
     user_friendly_name: Vec<u16>,
     #[serde(skip)]
     built_in: bool,
+    #[serde(skip)]
+    video_output_technology: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -245,9 +253,10 @@ fn query_wmi_monitors() -> Result<HashMap<String, WmiMonitorId>, DisplayMuxError
         .into_iter()
         .map(|mut monitor| {
             let key = normalize_wmi_instance(&monitor.instance_name);
-            monitor.built_in = connection_types
-                .get(&key)
-                .is_some_and(|technology| is_internal_output(*technology));
+            monitor.video_output_technology = connection_types.get(&key).copied();
+            monitor.built_in = monitor
+                .video_output_technology
+                .is_some_and(is_internal_output);
             (key, monitor)
         })
         .collect())

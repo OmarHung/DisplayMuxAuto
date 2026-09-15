@@ -1,6 +1,6 @@
 use std::net::IpAddr;
 
-use crate::DisplayMuxError;
+use crate::{DisplayMuxError, MonitorConnection};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -100,6 +100,8 @@ pub struct MonitorDescriptor {
     pub max_resolution: Option<MonitorResolution>,
     #[serde(default)]
     pub resolution_source: Option<ResolutionSource>,
+    #[serde(default)]
+    pub connection: Option<MonitorConnection>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
