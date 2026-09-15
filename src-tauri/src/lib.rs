@@ -364,9 +364,39 @@ struct SharedMonitorStatus {
     fingerprint: MonitorFingerprint,
     name: String,
     ddc_available: bool,
+    display_state: SharedDisplayState,
     status_text: String,
     connection: Option<displaymux_core::MonitorConnection>,
     connection_input_conflict: bool,
+}
+
+/// Whether this computer can use a shared display right now, and if not, why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum SharedDisplayState {
+    /// This computer reads the display's input over DDC/CI.
+    Ready,
+    /// The display is showing a paired host. Some displays (the MSI MPG 274U
+    /// over USB-C, for one) stop answering DDC/CI on inputs they are not
+    /// showing, so this is expected rather than a fault; switching back falls
+    /// back to asking the paired host.
+    OnOtherHost,
+    /// Missing, or unreadable with no known reason.
+    Unavailable,
+}
+
+fn shared_display_state(
+    ddc_readable: bool,
+    detected: bool,
+    active_route: Option<&str>,
+) -> SharedDisplayState {
+    if ddc_readable {
+        SharedDisplayState::Ready
+    } else if detected && active_route.is_some_and(|route| route != host_order::LOCAL_ROUTE_ID) {
+        SharedDisplayState::OnOtherHost
+    } else {
+        SharedDisplayState::Unavailable
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -965,15 +995,30 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
                         });
                         let target_detected = detected.is_some();
                         let connection = detected.and_then(|monitor| monitor.connection.clone());
+                        let display_state = shared_display_state(
+                            target_found,
+                            target_detected,
+                            selected.active_route.as_deref(),
+                        );
+                        let showing_host = selected
+                            .active_route
+                            .as_deref()
+                            .and_then(|route| settings.peers.iter().find(|peer| peer.id == route))
+                            .map(|peer| {
+                                host_alias::alias_for(&settings.host_aliases, &peer.id)
+                                    .unwrap_or(&peer.name)
+                            });
                         SharedMonitorStatus {
                             monitor_key: monitor_key(&selected.fingerprint),
                             fingerprint: selected.fingerprint.clone(),
                             name: selected.name.clone(),
                             ddc_available: target_found,
+                            display_state,
                             status_text: shared_monitor_status_text(
                                 &selected.name,
-                                target_found,
+                                display_state,
                                 target_detected,
+                                showing_host,
                             ),
                             connection_input_conflict: connection_input_conflict(
                                 selected,
@@ -1001,6 +1046,7 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
                         fingerprint: selected.fingerprint.clone(),
                         name: selected.name.clone(),
                         ddc_available: false,
+                        display_state: SharedDisplayState::Unavailable,
                         status_text: message.clone(),
                         connection: None,
                         connection_input_conflict: false,
@@ -1044,8 +1090,24 @@ fn selection_notice_text(change: MonitorSelectionChange) -> Option<String> {
     }
 }
 
-fn shared_monitor_status_text(name: &str, target_found: bool, target_detected: bool) -> String {
-    if target_found {
+fn shared_monitor_status_text(
+    name: &str,
+    state: SharedDisplayState,
+    target_detected: bool,
+    showing_host: Option<&str>,
+) -> String {
+    if state == SharedDisplayState::OnOtherHost {
+        let host = showing_host.unwrap_or(ui_text("另一台主機", "another host"));
+        return match UiLocale::current() {
+            UiLocale::TraditionalChinese => format!(
+                "{name} 目前顯示 {host}；顯示其他主機時，這台螢幕不回應這台電腦的 DDC/CI"
+            ),
+            UiLocale::English => format!(
+                "{name} is showing {host}. While it shows another host, it does not answer this computer's DDC/CI"
+            ),
+        };
+    }
+    if state == SharedDisplayState::Ready {
         return match UiLocale::current() {
             UiLocale::TraditionalChinese => format!("已鎖定共用螢幕：{name}"),
             UiLocale::English => format!("Shared display locked: {name}"),
@@ -4189,6 +4251,32 @@ mod tests {
         assert_eq!(
             shared_monitor_index_for_peer(&settings.shared_monitors, &right.fingerprint),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn display_state_explains_an_unreadable_display_that_another_host_is_showing() {
+        let peer = Some("2cf05de0c029-windows");
+
+        assert_eq!(
+            shared_display_state(true, true, peer),
+            SharedDisplayState::Ready
+        );
+        assert_eq!(
+            shared_display_state(false, true, peer),
+            SharedDisplayState::OnOtherHost
+        );
+        assert_eq!(
+            shared_display_state(false, true, Some("local")),
+            SharedDisplayState::Unavailable
+        );
+        assert_eq!(
+            shared_display_state(false, true, None),
+            SharedDisplayState::Unavailable
+        );
+        assert_eq!(
+            shared_display_state(false, false, peer),
+            SharedDisplayState::Unavailable
         );
     }
 

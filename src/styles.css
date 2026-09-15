@@ -398,6 +398,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   color: #4b6357;
 }
 
+/* The display is fine; it is showing a paired host and cannot be read from here. */
+.status-badge.is-elsewhere {
+  background: #eef1f7;
+  color: #3e5a8a;
+}
+
 .flat-monitor-wrap {
   display: flex;
   justify-content: center;
@@ -1775,6 +1781,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 :root[data-theme="dark"] body { background: var(--canvas); }
 :root[data-theme="dark"] .topbar { background: rgba(19, 27, 23, 0.96); }
 :root[data-theme="dark"] .status-badge.subtle { background: #192821; color: #8fa59b; }
+:root[data-theme="dark"] .status-badge.is-elsewhere { background: #1c2433; color: #9fb4dc; }
 :root[data-theme="dark"] .active-route-state { background: #162e24; border-color: #244d3c; color: #52c79b; }
 :root[data-theme="dark"] .field input, :root[data-theme="dark"] .field select { background: #1a2520; color: #e5ece8; border-color: #2d3e35; }
 :root[data-theme="dark"] .field input:disabled, :root[data-theme="dark"] .field select:disabled { background: #141c18; color: #6a7c74; }
