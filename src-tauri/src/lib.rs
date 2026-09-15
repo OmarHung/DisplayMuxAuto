@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
@@ -373,6 +374,8 @@ enum MonitorSelectionChange {
 struct MonitorInventory {
     detected: Vec<MonitorDescriptor>,
     controllable: Vec<MonitorDescriptor>,
+    /// The input each controllable display reported while it was probed.
+    current_inputs: HashMap<displaymux_core::MonitorId, DisplayInput>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -906,6 +909,9 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
                             }
                         }
                     }
+                }
+                let routes_changed = sync_active_routes_with_live_inputs(&mut settings, &inventory);
+                if !changes.is_empty() || routes_changed {
                     store_settings(state, settings.clone())?;
                 }
                 let selection_notices = changes
@@ -2235,25 +2241,74 @@ fn monitor_inventory<C: MonitorControl>(
     controller: &C,
 ) -> Result<MonitorInventory, DisplayMuxError> {
     let detected = controller.enumerate()?;
-    let controllable = detected
+    let current_inputs: HashMap<_, _> = detected
         .iter()
-        .filter(|monitor| match controller.read_input(&monitor.id) {
-            Ok(_) => true,
+        .filter_map(|monitor| match controller.read_input(&monitor.id) {
+            Ok(input) => Some((monitor.id.clone(), input)),
             Err(error) => {
                 tracing::debug!(
                     monitor_id = monitor.id.as_str(),
                     error = %error,
                     "display does not expose a controllable DDC/CI input"
                 );
-                false
+                None
             }
         })
+        .collect();
+    let controllable = detected
+        .iter()
+        .filter(|monitor| current_inputs.contains_key(&monitor.id))
         .cloned()
         .collect();
     Ok(MonitorInventory {
         detected,
         controllable,
+        current_inputs,
     })
+}
+
+/// Re-derives each shared display's active route from the input it just
+/// reported, so a switch made outside this app (from another host, the
+/// display's own buttons, or a cable swap) shows up on the next refresh.
+/// Only an input owned by exactly one route is trusted; an unreadable display
+/// or an unrecognized or ambiguous input keeps the last confirmed route.
+/// Returns whether any route changed.
+fn sync_active_routes_with_live_inputs(
+    settings: &mut AppSettings,
+    inventory: &MonitorInventory,
+) -> bool {
+    let peers = &settings.peers;
+    let mut changed = false;
+    for selected in &mut settings.shared_monitors {
+        let Some(current) = inventory
+            .controllable
+            .iter()
+            .find(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
+            .and_then(|monitor| inventory.current_inputs.get(&monitor.id))
+        else {
+            continue;
+        };
+        let local = (selected.local_input == Some(*current)).then_some("local");
+        let owners: Vec<&str> = local
+            .into_iter()
+            .chain(
+                peers
+                    .iter()
+                    .filter(|peer| peer.input_for(&selected.fingerprint) == Some(*current))
+                    .map(|peer| peer.id.as_str()),
+            )
+            .collect();
+        let [owner] = owners.as_slice() else {
+            continue;
+        };
+        // An unset route is rendered as this host, so it already agrees.
+        let shown = selected.active_route.as_deref().unwrap_or("local");
+        if shown != *owner {
+            selected.active_route = Some((*owner).to_owned());
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// External monitors the OS reports but whose DDC/CI input cannot be read.
@@ -3411,6 +3466,159 @@ mod tests {
             &mut settings,
             &missing.fingerprint,
             "peer"
+        ));
+        assert_eq!(settings.shared_monitors[0].active_route, None);
+    }
+
+    fn peer_using_input(id: &str, monitor: &MonitorDescriptor, input: u32) -> HostRoute {
+        HostRoute {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            platform: DestinationHost::Windows,
+            address: "192.168.1.30".to_owned(),
+            port: DEFAULT_AGENT_PORT,
+            mac_address: String::new(),
+            inputs: vec![MonitorInputAssignment {
+                monitor: monitor.fingerprint.clone(),
+                input: DisplayInput::new(input).unwrap(),
+            }],
+        }
+    }
+
+    fn routed_settings(
+        shared: &MonitorDescriptor,
+        local_input: u32,
+        peer_input: u32,
+        active_route: Option<&str>,
+    ) -> AppSettings {
+        AppSettings {
+            shared_monitors: vec![SelectedMonitor {
+                local_input: DisplayInput::new(local_input).ok(),
+                active_route: active_route.map(str::to_owned),
+                ..SelectedMonitor::from(shared)
+            }],
+            peers: vec![peer_using_input("peer", shared, peer_input)],
+            ..AppSettings::default()
+        }
+    }
+
+    fn inventory_reading(monitor: &MonitorDescriptor, input: u32) -> MonitorInventory {
+        MonitorInventory {
+            detected: vec![monitor.clone()],
+            controllable: vec![monitor.clone()],
+            current_inputs: HashMap::from([(
+                monitor.id.clone(),
+                DisplayInput::new(input).unwrap(),
+            )]),
+        }
+    }
+
+    #[test]
+    fn monitor_inventory_keeps_the_input_each_controllable_display_reported() {
+        let external = monitor("external");
+        let unreachable = monitor("unreachable");
+        let controller = SelectionController {
+            monitors: vec![unreachable.clone(), external.clone()],
+            controllable: HashSet::from([external.id.as_str().to_owned()]),
+        };
+
+        let inventory = monitor_inventory(&controller).unwrap();
+
+        assert_eq!(
+            inventory.current_inputs.get(&external.id),
+            Some(&DisplayInput::new(0x0f).unwrap())
+        );
+        assert!(!inventory.current_inputs.contains_key(&unreachable.id));
+    }
+
+    #[test]
+    fn live_input_moves_active_route_to_the_peer_that_owns_it() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, Some("local"));
+
+        let changed =
+            sync_active_routes_with_live_inputs(&mut settings, &inventory_reading(&shared, 0x07));
+
+        assert!(changed);
+        assert_eq!(
+            settings.shared_monitors[0].active_route.as_deref(),
+            Some("peer")
+        );
+    }
+
+    #[test]
+    fn live_input_moves_active_route_back_to_this_host_after_an_external_switch() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, Some("peer"));
+
+        let changed =
+            sync_active_routes_with_live_inputs(&mut settings, &inventory_reading(&shared, 0x08));
+
+        assert!(changed);
+        assert_eq!(
+            settings.shared_monitors[0].active_route.as_deref(),
+            Some("local")
+        );
+    }
+
+    #[test]
+    fn live_input_matching_no_route_keeps_the_last_confirmed_route() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, Some("peer"));
+
+        let changed =
+            sync_active_routes_with_live_inputs(&mut settings, &inventory_reading(&shared, 0x03));
+
+        assert!(!changed);
+        assert_eq!(
+            settings.shared_monitors[0].active_route.as_deref(),
+            Some("peer")
+        );
+    }
+
+    #[test]
+    fn live_input_shared_by_several_routes_keeps_the_last_confirmed_route() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x07, 0x07, Some("peer"));
+
+        let changed =
+            sync_active_routes_with_live_inputs(&mut settings, &inventory_reading(&shared, 0x07));
+
+        assert!(!changed);
+        assert_eq!(
+            settings.shared_monitors[0].active_route.as_deref(),
+            Some("peer")
+        );
+    }
+
+    #[test]
+    fn unreadable_display_keeps_the_last_confirmed_route() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, Some("peer"));
+        let inventory = MonitorInventory {
+            detected: vec![shared.clone()],
+            controllable: Vec::new(),
+            current_inputs: HashMap::new(),
+        };
+
+        assert!(!sync_active_routes_with_live_inputs(
+            &mut settings,
+            &inventory
+        ));
+        assert_eq!(
+            settings.shared_monitors[0].active_route.as_deref(),
+            Some("peer")
+        );
+    }
+
+    #[test]
+    fn unset_active_route_already_means_this_host() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, None);
+
+        assert!(!sync_active_routes_with_live_inputs(
+            &mut settings,
+            &inventory_reading(&shared, 0x08)
         ));
         assert_eq!(settings.shared_monitors[0].active_route, None);
     }
