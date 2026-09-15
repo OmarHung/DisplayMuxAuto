@@ -1970,9 +1970,9 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                             receive_host_aliases_notice(app, aliases).await
                         }
                         AgentAction::Ping => {
-                            let display_routes = live_settings
-                                .read()
-                                .ok()
+                            let snapshot = live_settings.read().ok().map(|settings| settings.clone());
+                            let display_routes = snapshot
+                                .as_ref()
                                 .map(|settings| {
                                     settings
                                         .shared_monitors
@@ -1986,6 +1986,15 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                         .collect::<Vec<_>>()
                                 })
                                 .unwrap_or_default();
+                            let (host_order, host_order_updated_at_ms, host_aliases) = snapshot
+                                .map(|settings| {
+                                    (
+                                        settings.host_order,
+                                        settings.host_order_updated_at_ms,
+                                        host_alias::shareable_aliases(&settings.host_aliases),
+                                    )
+                                })
+                                .unwrap_or_default();
                             AgentResponse {
                                 ready: true,
                                 message: ui_text(
@@ -1996,6 +2005,9 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                 display_route: display_routes.first().cloned(),
                                 display_routes,
                                 protocol_version: AGENT_PROTOCOL_VERSION,
+                                host_order,
+                                host_order_updated_at_ms,
+                                host_aliases,
                             }
                         }
                         AgentAction::SwitchInput { monitor, input } => {
@@ -2037,6 +2049,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                         display_route: None,
                                         display_routes: Vec::new(),
                                         protocol_version: AGENT_PROTOCOL_VERSION,
+                                        ..AgentResponse::default()
                                     };
                                 }
                                 None => {
@@ -2050,6 +2063,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                         display_route: None,
                                         display_routes: Vec::new(),
                                         protocol_version: AGENT_PROTOCOL_VERSION,
+                                        ..AgentResponse::default()
                                     };
                                 }
                             };
@@ -2073,6 +2087,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                     display_route: None,
                                     display_routes: Vec::new(),
                                     protocol_version: AGENT_PROTOCOL_VERSION,
+                                    ..AgentResponse::default()
                                 },
                                 Ok(Err(error)) => AgentResponse {
                                     ready: false,
@@ -2080,6 +2095,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                     display_route: None,
                                     display_routes: Vec::new(),
                                     protocol_version: AGENT_PROTOCOL_VERSION,
+                                    ..AgentResponse::default()
                                 },
                                 Err(error) => AgentResponse {
                                     ready: false,
@@ -2094,6 +2110,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                     display_route: None,
                                     display_routes: Vec::new(),
                                     protocol_version: AGENT_PROTOCOL_VERSION,
+                                    ..AgentResponse::default()
                                 },
                             }
                         }
@@ -2211,6 +2228,115 @@ fn apply_host_order_notice(
     settings.host_order = order;
     settings.host_order_updated_at_ms = updated_at_ms;
     true
+}
+
+/// Whether a paired host whose order changed at `theirs_updated_at_ms` is
+/// behind ours.
+fn host_order_is_newer_than(settings: &AppSettings, theirs_updated_at_ms: u64) -> bool {
+    !settings.host_order.is_empty() && settings.host_order_updated_at_ms > theirs_updated_at_ms
+}
+
+/// Minimum gap between exchanges of host names and order with paired hosts.
+const HOST_LAYOUT_EXCHANGE_INTERVAL_MS: u64 = 30_000;
+static LAST_HOST_LAYOUT_EXCHANGE_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Catches up with changes a host missed while it was offline. Called when the
+/// app starts and when the dashboard refreshes, at most every 30 seconds.
+#[tauri::command]
+fn exchange_host_layout(state: State<'_, AppRuntime>, app: AppHandle) {
+    exchange_host_layout_with_peers(&state, &app);
+}
+
+/// Asks every paired host for its host names and order, adopts whatever is
+/// newer, and sends back whatever that host is missing. Runs in the background.
+fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
+    let now_ms = unix_time_ms();
+    let last_ms = LAST_HOST_LAYOUT_EXCHANGE_MS.load(Ordering::Relaxed);
+    if now_ms.saturating_sub(last_ms) < HOST_LAYOUT_EXCHANGE_INTERVAL_MS
+        || LAST_HOST_LAYOUT_EXCHANGE_MS
+            .compare_exchange(last_ms, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+    {
+        return;
+    }
+    let Ok(settings) = read_settings(state) else {
+        return;
+    };
+    if !has_valid_shared_key(&settings.shared_key) {
+        return;
+    }
+    let settings = Arc::new(settings);
+    for index in 0..settings.peers.len() {
+        let settings = Arc::clone(&settings);
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let peer = &settings.peers[index];
+            let theirs = match request_peer(&settings, peer, AgentAction::Ping).await {
+                Ok(response) => response,
+                Err(error) => {
+                    tracing::debug!(peer = peer.name.as_str(), error = %error, "paired host unavailable for host layout exchange");
+                    return;
+                }
+            };
+            let their_order_updated_at_ms = theirs.host_order_updated_at_ms;
+            let their_aliases = theirs.host_aliases.clone();
+            let app_for_adopt = app.clone();
+            let adopted = run_display_task(app_for_adopt.clone(), move |state| {
+                let mut latest = read_settings(state)?;
+                let order_changed = apply_host_order_notice(
+                    &mut latest,
+                    theirs.host_order,
+                    theirs.host_order_updated_at_ms,
+                );
+                let merged = host_alias::merged_aliases(&latest.host_aliases, &theirs.host_aliases);
+                let names_changed = merged.is_some();
+                if let Some(merged) = merged {
+                    latest.host_aliases = merged;
+                }
+                let latest = if order_changed || names_changed {
+                    store_settings(state, latest)?
+                } else {
+                    latest
+                };
+                for (changed, event) in [
+                    (order_changed, HOST_ORDER_CHANGED_EVENT),
+                    (names_changed, HOST_NAMES_CHANGED_EVENT),
+                ] {
+                    if changed {
+                        if let Err(error) = app_for_adopt.emit(event, ()) {
+                            tracing::warn!(error = %error, event, "unable to notify windows of a host layout change");
+                        }
+                    }
+                }
+                Ok(latest)
+            })
+            .await;
+            let latest = match adopted {
+                Ok(latest) => latest,
+                Err(error) => {
+                    tracing::warn!(peer = peer.name.as_str(), error = %error, "unable to adopt a paired host's host layout");
+                    return;
+                }
+            };
+            if host_order_is_newer_than(&latest, their_order_updated_at_ms) {
+                let action = AgentAction::HostOrderChanged {
+                    order: latest.host_order.clone(),
+                    updated_at_ms: latest.host_order_updated_at_ms,
+                };
+                if let Err(error) = request_peer(&latest, peer, action).await {
+                    tracing::info!(peer = peer.name.as_str(), error = %error, "paired host did not accept the host order");
+                }
+            }
+            if host_alias::has_newer_entries(&latest.host_aliases, &their_aliases) {
+                let action = AgentAction::HostAliasesChanged {
+                    aliases: host_alias::shareable_aliases(&latest.host_aliases),
+                };
+                if let Err(error) = request_peer(&latest, peer, action).await {
+                    tracing::info!(peer = peer.name.as_str(), error = %error, "paired host did not accept the host names");
+                }
+            }
+        });
+    }
 }
 
 fn peer_ids(settings: &AppSettings) -> Vec<&str> {
@@ -2422,6 +2548,7 @@ fn agent_notice_response(applied: Result<Result<(), String>, tauri::Error>) -> A
         display_route: None,
         display_routes: Vec::new(),
         protocol_version: AGENT_PROTOCOL_VERSION,
+        ..AgentResponse::default()
     }
 }
 
@@ -3328,6 +3455,7 @@ pub fn run() -> anyhow::Result<()> {
                     if let Err(error) = restart_agent(&runtime, &handle).await {
                         tracing::warn!(error = %error, "unable to start DisplayMux agent");
                     }
+                    exchange_host_layout_with_peers(&runtime, &handle);
                 }
             });
             Ok(())
@@ -3345,6 +3473,7 @@ pub fn run() -> anyhow::Result<()> {
             set_host_order,
             get_host_names,
             set_host_name,
+            exchange_host_layout,
             hide_host_switcher,
             check_host_switcher_shortcut,
             complete_onboarding,
@@ -4323,6 +4452,20 @@ mod tests {
         assert!(changed);
         assert_eq!(settings.host_order, vec!["pc-b", "mac-a"]);
         assert_eq!(settings.host_order_updated_at_ms, 200);
+    }
+
+    #[test]
+    fn a_peer_needs_our_host_order_only_when_ours_is_newer() {
+        let settings = AppSettings {
+            host_order: vec!["mac-a".to_owned(), "pc-b".to_owned()],
+            host_order_updated_at_ms: 200,
+            ..AppSettings::default()
+        };
+
+        assert!(host_order_is_newer_than(&settings, 0));
+        assert!(host_order_is_newer_than(&settings, 199));
+        assert!(!host_order_is_newer_than(&settings, 200));
+        assert!(!host_order_is_newer_than(&AppSettings::default(), 0));
     }
 
     #[test]

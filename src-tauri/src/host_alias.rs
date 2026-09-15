@@ -103,6 +103,11 @@ pub fn merged_aliases(current: &[HostAlias], incoming: &[HostAlias]) -> Option<V
     changed.then_some(merged)
 }
 
+/// Whether a paired host holding `theirs` would gain anything from our entries.
+pub fn has_newer_entries(ours: &[HostAlias], theirs: &[HostAlias]) -> bool {
+    merged_aliases(theirs, &shareable_aliases(ours)).is_some()
+}
+
 /// The newest entries that fit in one notice.
 pub fn shareable_aliases(aliases: &[HostAlias]) -> Vec<HostAlias> {
     let mut newest = aliases.to_vec();
@@ -220,6 +225,20 @@ mod tests {
             .map(|index| alias(&format!("host-{index}"), "名稱", 1))
             .collect();
         assert_eq!(merged_aliases(&current, &too_many), None);
+    }
+
+    #[test]
+    fn a_peer_needs_our_names_only_when_we_hold_something_newer() {
+        let ours = vec![alias(PC_ID, "遊戲電腦", 200), alias(MAC_ID, "工作 Mac", 50)];
+
+        assert!(has_newer_entries(&ours, &[]));
+        assert!(has_newer_entries(&ours, &[alias(PC_ID, "舊名稱", 100)]));
+        assert!(!has_newer_entries(&ours, &ours));
+        assert!(!has_newer_entries(
+            &ours,
+            &[alias(PC_ID, "對方較新", 300), alias(MAC_ID, "工作 Mac", 50)]
+        ));
+        assert!(!has_newer_entries(&[], &[alias(PC_ID, "遊戲電腦", 1)]));
     }
 
     #[test]
