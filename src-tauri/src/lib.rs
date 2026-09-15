@@ -848,9 +848,28 @@ async fn install_update(
     app.restart()
 }
 
+/// Serializes dashboard scans. As a synchronous command the scan was implicitly
+/// serialized on the main thread; overlapping refreshes would otherwise issue
+/// concurrent DDC/CI requests and race on writing reconciled settings.
+static DASHBOARD_SCAN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[tauri::command]
-fn get_dashboard_state(state: State<'_, AppRuntime>) -> Result<DashboardState, String> {
-    let mut settings = read_settings(&state)?;
+async fn get_dashboard_state(app: AppHandle) -> Result<DashboardState, String> {
+    // Monitor enumeration and DDC/CI reads block for hundreds of milliseconds up
+    // to seconds (capabilities strings, retries). Keep them off the main thread so
+    // the window stays responsive while displays are scanned.
+    tauri::async_runtime::spawn_blocking(move || {
+        let _scan = DASHBOARD_SCAN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        build_dashboard_state(&app.state::<AppRuntime>())
+    })
+    .await
+    .map_err(user_error)?
+}
+
+fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
+    let mut settings = read_settings(state)?;
     let (monitors, uncontrollable_monitors, shared, selection_notices) =
         match enumerate_monitor_inventory() {
             Ok(inventory) => {
@@ -887,7 +906,7 @@ fn get_dashboard_state(state: State<'_, AppRuntime>) -> Result<DashboardState, S
                             }
                         }
                     }
-                    store_settings(&state, settings.clone())?;
+                    store_settings(state, settings.clone())?;
                 }
                 let selection_notices = changes
                     .into_iter()
