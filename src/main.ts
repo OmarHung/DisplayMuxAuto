@@ -149,6 +149,7 @@ let isRecordingShortcut = false;
 let shortcutStatus: { kind: "checking" | "available" | "conflict"; text: string } | null = null;
 
 const releaseHistoryFallback = [
+  { date: "2026-09-15", version: "v0.1.7", url: "https://github.com/OmarHung/DisplayMuxAuto/releases/tag/v0.1.7" },
   { date: "2026-09-14", version: "v0.1.6", url: "https://github.com/HenryHsu/DisplayMux/releases/tag/v0.1.6" },
   { date: "2026-09-14", version: "v0.1.5", url: "https://github.com/HenryHsu/DisplayMux/releases/tag/v0.1.5" },
   { date: "2026-09-14", version: "v0.1.4", url: "https://github.com/HenryHsu/DisplayMux/releases/tag/v0.1.4" },
@@ -158,7 +159,7 @@ const releaseHistoryFallback = [
   { date: "2026-09-11", version: "v0.1.0", url: "https://github.com/HenryHsu/DisplayMux/releases/tag/v0.1.0" },
 ] satisfies ReleaseHistoryItem[];
 
-const releaseUrl = (version: string) => `https://github.com/HenryHsu/DisplayMux/releases/tag/${version}`;
+const releaseUrl = (version: string) => `https://github.com/OmarHung/DisplayMuxAuto/releases/tag/${version}`;
 
 const onboardingSteps = [
   {
@@ -390,7 +391,7 @@ app.innerHTML = `
               </div>
               <div class="about-item">
                 <dt><i data-lucide="github"></i>GitHub</dt>
-                <dd><a href="https://github.com/HenryHsu/DisplayMux" data-external-url>HenryHsu/DisplayMux<i data-lucide="external-link"></i></a></dd>
+                <dd><a href="https://github.com/OmarHung/DisplayMuxAuto" data-external-url>OmarHung/DisplayMuxAuto<i data-lucide="external-link"></i></a></dd>
               </div>
               <div class="about-item">
                 <dt><i data-lucide="activity"></i>${t("about.version")}</dt>
@@ -531,7 +532,7 @@ function releaseHistoryRows(releases: ReleaseHistoryItem[]): string {
 
 async function refreshReleaseHistory(): Promise<void> {
   try {
-    const response = await fetch("https://api.github.com/repos/HenryHsu/DisplayMux/releases?per_page=30", {
+    const response = await fetch("https://api.github.com/repos/OmarHung/DisplayMuxAuto/releases?per_page=30", {
       headers: { Accept: "application/vnd.github+json" },
     });
     if (!response.ok) throw new Error(`GitHub Releases API returned ${response.status}`);
@@ -572,8 +573,9 @@ function compareReleaseVersions(left: string, right: string): number {
 async function openExternalUrl(value: string): Promise<void> {
   try {
     const url = new URL(value);
-    const repositoryPath = "/HenryHsu/DisplayMux";
-    if (url.protocol !== "https:" || url.hostname !== "github.com" || (url.pathname !== repositoryPath && !url.pathname.startsWith(`${repositoryPath}/`))) {
+    const repositoryPaths = ["/OmarHung/DisplayMuxAuto", "/HenryHsu/DisplayMux"];
+    const isAllowedPath = repositoryPaths.some((path) => url.pathname === path || url.pathname.startsWith(`${path}/`));
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || !isAllowedPath) {
       throw new Error("unsupported external URL");
     }
     if (isPreview) {

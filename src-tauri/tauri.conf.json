@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "DisplayMux",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "identifier": "com.displaymux.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -61,9 +61,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkyRkNGQTE5NEZFQkEzRjAKUldUd28rdFBHZnI4a3Y0N055amROWjlBMUp4aGFmbUZENHg0YUp2c2RIQS8rOHFyWGo2T2VBV3AK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU2OEE1NEVBMTA3MzZFRjEKUldUeGJuTVE2bFNLNWxaUUhNZHRWNlRpQnlLTWExUGpmTi9qa2NSN3VpMDJyT25hZXJONDBHK1kK",
       "endpoints": [
-        "https://github.com/HenryHsu/DisplayMux/releases/latest/download/latest.json"
+        "https://github.com/OmarHung/DisplayMuxAuto/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"
