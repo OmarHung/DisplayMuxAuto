@@ -6,6 +6,7 @@ import {
 } from "lucide";
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import packageMetadata from "../package.json";
 import { locale, localePreference, setLocalePreference, t, type MessageKey } from "./i18n";
@@ -632,7 +633,16 @@ async function loadInputOptionsByMonitor(monitorKeys: string[]): Promise<Record<
   return Object.fromEntries(entries);
 }
 
+/** Minimum gap between automatic rescans; each one issues DDC/CI reads. */
+const FOCUS_REFRESH_INTERVAL_MS = 10_000;
+/** Emitted by the backend when a paired host reports a switch. */
+const ACTIVE_ROUTE_CHANGED_EVENT = "active-route-changed";
+let isRefreshing = false;
+let lastRefreshAt = 0;
+
 async function refresh(): Promise<void> {
+  isRefreshing = true;
+  lastRefreshAt = Date.now();
   document.querySelector("#refresh-button svg")?.classList.add("is-spinning");
   try {
     dashboard = await invoke<DashboardState>("get_dashboard_state");
@@ -644,10 +654,37 @@ async function refresh(): Promise<void> {
     isPreview = false;
   } catch {
     dashboard = previewDashboard; settings = previewSettings; inputOptionsByMonitor = {}; discoveredPeers = []; isPreview = true;
-  } finally { document.querySelector("#refresh-button svg")?.classList.remove("is-spinning"); }
+  } finally {
+    isRefreshing = false;
+    document.querySelector("#refresh-button svg")?.classList.remove("is-spinning");
+  }
   renderState();
   if (!isPreview && dashboard.selectionNotices.length) {
     showToast(t("toast.selectionUpdated"), dashboard.selectionNotices.join(" "));
+  }
+}
+
+/**
+ * Rescans when the window comes back into view, so a switch made from the
+ * display's own buttons shows up without pressing refresh. Only the dashboard
+ * rescans: a full render would discard unsaved edits on the settings page.
+ */
+function refreshOnReturn(): void {
+  if (isPreview || isRefreshing || document.visibilityState !== "visible") return;
+  if (!document.querySelector("#dashboard-page")?.classList.contains("is-active")) return;
+  if (Date.now() - lastRefreshAt < FOCUS_REFRESH_INTERVAL_MS) return;
+  void refresh();
+}
+
+/** Re-reads only which host is active; no DDC scan and no settings form re-render. */
+async function reloadActiveRoutes(): Promise<void> {
+  try {
+    const latest = await invoke<AppSettings>("get_settings");
+    settings = { ...settings, sharedMonitors: latest.sharedMonitors };
+    renderSwitchPanel();
+    refreshIcons();
+  } catch (error) {
+    showToast(t("toast.activeHostSyncFailed"), String(error), true);
   }
 }
 
@@ -1580,6 +1617,15 @@ async function bootstrap(): Promise<void> {
     try { await invoke("set_locale", { locale }); } catch { /* Preview mode has no Tauri backend. */ }
   }
   await Promise.all([refresh(), renderAppVersion()]);
+  if (!isPreview) {
+    try {
+      await listen(ACTIVE_ROUTE_CHANGED_EVENT, () => void reloadActiveRoutes());
+    } catch (error) {
+      showToast(t("toast.activeHostSyncFailed"), String(error), true);
+    }
+    window.addEventListener("focus", refreshOnReturn);
+    document.addEventListener("visibilitychange", refreshOnReturn);
+  }
   void refreshReleaseHistory();
   if (!settings.onboardingCompleted) showOnboarding(0);
   if (settings.checkUpdates && !isPreview) window.setTimeout(() => void checkForUpdates(false), 1800);

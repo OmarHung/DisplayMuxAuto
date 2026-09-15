@@ -85,6 +85,7 @@ const zhTW: Record<keyof typeof en, string> = {
   "toast.probeFailed": "連線測試失敗", "toast.wakeFailed": "喚醒失敗", "toast.updateUnavailable": "無法檢查更新",
   "toast.updateUnavailableBody": "請從已安裝的 DisplayMux 執行更新檢查。", "toast.updateFailed": "無法檢查更新", "toast.installFailed": "更新未安裝",
   "toast.onboardingFailed": "無法儲存設定引導狀態", "toast.openLinkFailed": "無法開啟連結",
+  "toast.activeHostSyncFailed": "無法更新目前顯示的主機",
   "preview.monitorStatus": "請在設定頁選擇共用螢幕",
   "settings.ddcUnreachable": "已偵測到，但無法讀取 DDC/CI",
   "settings.inputConflict": "記錄的輸入與連接方式不符，可能是在螢幕顯示其他電腦時讀取的，請確認。",
