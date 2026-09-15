@@ -546,6 +546,7 @@ document.querySelector("#monitor-strip")?.addEventListener("click", (event) => {
   activeMonitorKey = button.dataset.monitorKey;
   renderMonitorStrip();
   renderSwitchPanel();
+  refreshIcons();
 });
 const switchPanel = document.querySelector<HTMLElement>("#switch-panel");
 switchPanel?.addEventListener("click", (event) => {
