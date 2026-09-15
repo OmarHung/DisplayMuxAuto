@@ -49,6 +49,8 @@ let switching = false;
 const HOST_ORDER_CHANGED_EVENT = "host-order-changed";
 /** Emitted by the backend when this or a paired host renames a host. */
 const HOST_NAMES_CHANGED_EVENT = "host-names-changed";
+/** Emitted by the backend when this or a paired host changes an input note. */
+const INPUT_LABELS_CHANGED_EVENT = "input-labels-changed";
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({
@@ -202,6 +204,7 @@ async function initialize(): Promise<void> {
   try {
     await listen(HOST_ORDER_CHANGED_EVENT, () => void reloadState());
     await listen(HOST_NAMES_CHANGED_EVENT, () => void reloadState());
+    await listen(INPUT_LABELS_CHANGED_EVENT, () => void reloadState());
   } catch {
     // Preview mode has no Tauri backend; the static preview order never changes.
     return;

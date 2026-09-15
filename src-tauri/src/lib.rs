@@ -1,5 +1,6 @@
 mod host_alias;
 mod host_order;
+mod input_label;
 
 use std::{
     collections::HashMap,
@@ -17,9 +18,9 @@ use std::{
 use displaymux_core::{
     AgentAction, AgentClient, AgentDisplayRoute, AgentResponse, AgentServer, DestinationHost,
     DiscoveredPeer, DisplayInput, DisplayMuxError, DisplayMuxProfile, DisplayMuxService, HostAlias,
-    LocalHostIdentity, MacAddress, MdnsPeerDiscovery, MonitorControl, MonitorDescriptor,
-    MonitorFingerprint, PeerDiscovery, PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome,
-    WakeTarget, AGENT_PROTOCOL_VERSION, DEFAULT_AGENT_PORT,
+    InputLabel, LocalHostIdentity, MacAddress, MdnsPeerDiscovery, MonitorControl,
+    MonitorDescriptor, MonitorFingerprint, PeerDiscovery, PeerEndpoint, ResolutionSource,
+    SwitchMode, SwitchOutcome, WakeTarget, AGENT_PROTOCOL_VERSION, DEFAULT_AGENT_PORT,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
@@ -76,6 +77,22 @@ fn input_label(vendor_indexed: bool, input: DisplayInput) -> String {
     match UiLocale::current() {
         UiLocale::TraditionalChinese => format!("輸入 {}", input.value()),
         UiLocale::English => format!("Input {}", input.value()),
+    }
+}
+
+/// An input's name with the user's note in front, e.g. "USB-C（輸入 8）".
+fn noted_input_label(
+    settings: &AppSettings,
+    selected: &SelectedMonitor,
+    input: DisplayInput,
+) -> String {
+    let base = input_label(selected.vendor_indexed_inputs, input);
+    match input_label::label_for(&settings.input_labels, &selected.fingerprint, input) {
+        Some(note) => match UiLocale::current() {
+            UiLocale::TraditionalChinese => format!("{note}（{base}）"),
+            UiLocale::English => format!("{note} ({base})"),
+        },
+        None => base,
     }
 }
 
@@ -243,6 +260,9 @@ struct AppSettings {
     /// Custom host names shared with paired hosts (see `host_alias`).
     /// Backend-owned like `host_order`.
     host_aliases: Vec<HostAlias>,
+    /// Notes for shared display inputs, shared with paired hosts (see
+    /// `input_label`). Backend-owned like `host_order`.
+    input_labels: Vec<InputLabel>,
 }
 
 impl Default for AppSettings {
@@ -263,6 +283,7 @@ impl Default for AppSettings {
             host_order: Vec::new(),
             host_order_updated_at_ms: 0,
             host_aliases: Vec::new(),
+            input_labels: Vec::new(),
         }
     }
 }
@@ -385,14 +406,10 @@ enum SharedDisplayState {
     Unavailable,
 }
 
-fn shared_display_state(
-    ddc_readable: bool,
-    detected: bool,
-    active_route: Option<&str>,
-) -> SharedDisplayState {
+fn shared_display_state(ddc_readable: bool, active_route: Option<&str>) -> SharedDisplayState {
     if ddc_readable {
         SharedDisplayState::Ready
-    } else if detected && active_route.is_some_and(|route| route != host_order::LOCAL_ROUTE_ID) {
+    } else if active_route.is_some_and(|route| route != host_order::LOCAL_ROUTE_ID) {
         SharedDisplayState::OnOtherHost
     } else {
         SharedDisplayState::Unavailable
@@ -436,7 +453,12 @@ struct MonitorInventory {
 #[serde(rename_all = "camelCase")]
 struct InputOption {
     value: u32,
+    /// The name to show, including the user's note when there is one.
     name: String,
+    /// The name the display's input data gives, without the note.
+    base_name: String,
+    /// The user's note, or empty.
+    label: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -696,7 +718,9 @@ fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherS
                     .unwrap_or(ui_text("這台電腦", "This computer"))
                     .to_owned(),
                 platform: settings.local_host,
-                input_name: selected.local_input.map(localized_input_name),
+                input_name: selected
+                    .local_input
+                    .map(|input| noted_input_label(&settings, selected, input)),
                 is_local: true,
                 available: selected.local_input.is_some(),
             });
@@ -708,7 +732,7 @@ fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherS
                         .unwrap_or(&peer.name)
                         .to_owned(),
                     platform: peer.platform,
-                    input_name: input.map(localized_input_name),
+                    input_name: input.map(|input| noted_input_label(&settings, selected, input)),
                     is_local: false,
                     available: input.is_some(),
                 }
@@ -796,7 +820,11 @@ fn get_input_options(
     state: State<'_, AppRuntime>,
 ) -> Result<Vec<InputOption>, String> {
     let settings = read_settings(&state)?;
-    let selected = find_shared_monitor(&settings, &monitor_id)?;
+    input_options(&settings, &monitor_id)
+}
+
+fn input_options(settings: &AppSettings, monitor_id: &str) -> Result<Vec<InputOption>, String> {
+    let selected = find_shared_monitor(settings, monitor_id)?;
     let inputs = selected
         .supported_inputs
         .clone()
@@ -806,7 +834,11 @@ fn get_input_options(
         .into_iter()
         .map(|input| InputOption {
             value: input.value(),
-            name: input_label(selected.vendor_indexed_inputs, input),
+            name: noted_input_label(settings, selected, input),
+            base_name: input_label(selected.vendor_indexed_inputs, input),
+            label: input_label::label_for(&settings.input_labels, &selected.fingerprint, input)
+                .unwrap_or_default()
+                .to_owned(),
         })
         .collect())
 }
@@ -845,6 +877,7 @@ async fn save_settings(
     settings.host_order = protected.host_order.clone();
     settings.host_order_updated_at_ms = protected.host_order_updated_at_ms;
     settings.host_aliases = protected.host_aliases.clone();
+    settings.input_labels = protected.input_labels.clone();
     validate_settings(&settings).map_err(core_user_error)?;
     let enable_autostart = settings.autostart;
     update_host_switcher_shortcut(&app, &protected, &settings)?;
@@ -1021,11 +1054,8 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
                         });
                         let target_detected = detected.is_some();
                         let connection = detected.and_then(|monitor| monitor.connection.clone());
-                        let display_state = shared_display_state(
-                            target_found,
-                            target_detected,
-                            selected.active_route.as_deref(),
-                        );
+                        let display_state =
+                            shared_display_state(target_found, selected.active_route.as_deref());
                         let showing_host = selected
                             .active_route
                             .as_deref()
@@ -1241,11 +1271,9 @@ async fn switch_host(
         Ok(outcome) => {
             record_active_route(&state, &selected.fingerprint, &target_id)?;
             announce_active_input(&state, &selected.fingerprint, input);
-            Ok(outcome_result(
-                outcome,
-                &preparation,
-                selected.vendor_indexed_inputs,
-            ))
+            Ok(outcome_result(outcome, &preparation, |input| {
+                noted_input_label(&settings, &selected, input)
+            }))
         }
         Err(local_error) => {
             let local_error = core_user_error(local_error);
@@ -1300,11 +1328,11 @@ async fn switch_host(
                 detail: match UiLocale::current() {
                     UiLocale::TraditionalChinese => format!(
                         "遠端主機已切換至 {}。",
-                        input_label(selected.vendor_indexed_inputs, input)
+                        noted_input_label(&settings, &selected, input)
                     ),
                     UiLocale::English => format!(
                         "The remote host switched to {}.",
-                        input_label(selected.vendor_indexed_inputs, input)
+                        noted_input_label(&settings, &selected, input)
                     ),
                 },
                 peer_woken: preparation.peer_woken(),
@@ -1353,9 +1381,8 @@ fn plan_switch_input(
 fn outcome_result(
     outcome: SwitchOutcome,
     preparation: &NetworkPreparation,
-    vendor_indexed: bool,
+    label: impl Fn(DisplayInput) -> String,
 ) -> OperationResult {
-    let label = |input: DisplayInput| input_label(vendor_indexed, input);
     let mut result = match outcome {
         SwitchOutcome::DryRun { .. } => OperationResult {
             title: ui_text("檢查完成", "Check complete").to_owned(),
@@ -1969,6 +1996,9 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                         AgentAction::HostAliasesChanged { aliases } => {
                             receive_host_aliases_notice(app, aliases).await
                         }
+                        AgentAction::InputLabelsChanged { labels } => {
+                            receive_input_labels_notice(app, labels).await
+                        }
                         AgentAction::Ping => {
                             let snapshot = live_settings.read().ok().map(|settings| settings.clone());
                             let display_routes = snapshot
@@ -1986,12 +2016,13 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                         .collect::<Vec<_>>()
                                 })
                                 .unwrap_or_default();
-                            let (host_order, host_order_updated_at_ms, host_aliases) = snapshot
+                            let (host_order, host_order_updated_at_ms, host_aliases, input_labels) = snapshot
                                 .map(|settings| {
                                     (
                                         settings.host_order,
                                         settings.host_order_updated_at_ms,
                                         host_alias::shareable_aliases(&settings.host_aliases),
+                                        input_label::shareable_labels(&settings.input_labels),
                                     )
                                 })
                                 .unwrap_or_default();
@@ -2008,6 +2039,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                 host_order,
                                 host_order_updated_at_ms,
                                 host_aliases,
+                                input_labels,
                             }
                         }
                         AgentAction::SwitchInput { monitor, input } => {
@@ -2280,6 +2312,7 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
             };
             let their_order_updated_at_ms = theirs.host_order_updated_at_ms;
             let their_aliases = theirs.host_aliases.clone();
+            let their_labels = theirs.input_labels.clone();
             let app_for_adopt = app.clone();
             let adopted = run_display_task(app_for_adopt.clone(), move |state| {
                 let mut latest = read_settings(state)?;
@@ -2293,7 +2326,8 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
                 if let Some(merged) = merged {
                     latest.host_aliases = merged;
                 }
-                let latest = if order_changed || names_changed {
+                let labels_changed = adopt_input_labels(&mut latest, &theirs.input_labels);
+                let latest = if order_changed || names_changed || labels_changed {
                     store_settings(state, latest)?
                 } else {
                     latest
@@ -2301,6 +2335,7 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
                 for (changed, event) in [
                     (order_changed, HOST_ORDER_CHANGED_EVENT),
                     (names_changed, HOST_NAMES_CHANGED_EVENT),
+                    (labels_changed, INPUT_LABELS_CHANGED_EVENT),
                 ] {
                     if changed {
                         if let Err(error) = app_for_adopt.emit(event, ()) {
@@ -2333,6 +2368,15 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
                 };
                 if let Err(error) = request_peer(&latest, peer, action).await {
                     tracing::info!(peer = peer.name.as_str(), error = %error, "paired host did not accept the host names");
+                }
+            }
+            let their_labels = labels_on_local_monitors(&latest, &their_labels);
+            if input_label::has_newer_entries(&latest.input_labels, &their_labels) {
+                let action = AgentAction::InputLabelsChanged {
+                    labels: input_label::shareable_labels(&latest.input_labels),
+                };
+                if let Err(error) = request_peer(&latest, peer, action).await {
+                    tracing::info!(peer = peer.name.as_str(), error = %error, "paired host did not accept the input notes");
                 }
             }
         });
@@ -2528,6 +2572,105 @@ async fn receive_host_aliases_notice(app: AppHandle, aliases: Vec<HostAlias>) ->
             store_settings(&state, settings)?;
             if let Err(error) = app.emit(HOST_NAMES_CHANGED_EVENT, ()) {
                 tracing::warn!(error = %error, "unable to notify windows of a host name change");
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await;
+    agent_notice_response(applied)
+}
+
+/// Frontend event telling windows to re-read input names and notes.
+const INPUT_LABELS_CHANGED_EVENT: &str = "input-labels-changed";
+
+/// `labels` from a paired host with each display mapped to this host's shared
+/// display, since hosts can read the same display's serial number differently.
+fn labels_on_local_monitors(settings: &AppSettings, labels: &[InputLabel]) -> Vec<InputLabel> {
+    input_label::with_local_monitors(labels, |monitor| {
+        shared_monitor_index_for_peer(&settings.shared_monitors, monitor)
+            .map(|index| settings.shared_monitors[index].fingerprint.clone())
+    })
+}
+
+/// Merges a paired host's input notes into `settings`. Returns whether any changed.
+fn adopt_input_labels(settings: &mut AppSettings, incoming: &[InputLabel]) -> bool {
+    let incoming = labels_on_local_monitors(settings, incoming);
+    match input_label::merged_labels(&settings.input_labels, &incoming) {
+        Some(merged) => {
+            settings.input_labels = merged;
+            true
+        }
+        None => false,
+    }
+}
+
+/// Sets the note for one input of a shared display (empty clears it) and
+/// shares every note with paired hosts. Returns that display's input options.
+#[tauri::command]
+fn set_input_label(
+    monitor_id: String,
+    input: u32,
+    label: String,
+    state: State<'_, AppRuntime>,
+    app: AppHandle,
+) -> Result<Vec<InputOption>, String> {
+    let mut settings = read_settings(&state)?;
+    let fingerprint = find_shared_monitor(&settings, &monitor_id)?
+        .fingerprint
+        .clone();
+    let input = DisplayInput::new(input).map_err(core_user_error)?;
+    let label = input_label::normalize_label(&label).map_err(label_error_text)?;
+    settings.input_labels = input_label::with_label(
+        &settings.input_labels,
+        &fingerprint,
+        input,
+        label,
+        unix_time_ms(),
+    );
+    let settings = store_settings(&state, settings)?;
+    if let Err(error) = app.emit(INPUT_LABELS_CHANGED_EVENT, ()) {
+        tracing::warn!(error = %error, "unable to notify windows of an input note change");
+    }
+    broadcast_to_peers(
+        &state,
+        &AgentAction::InputLabelsChanged {
+            labels: input_label::shareable_labels(&settings.input_labels),
+        },
+    );
+    input_options(&settings, &monitor_id)
+}
+
+fn label_error_text(error: input_label::LabelError) -> String {
+    match error {
+        input_label::LabelError::TooLong => match UiLocale::current() {
+            UiLocale::TraditionalChinese => {
+                format!("輸入備註最多 {} 個字", input_label::MAX_LABEL_CHARS)
+            }
+            UiLocale::English => format!(
+                "Input notes can be at most {} characters",
+                input_label::MAX_LABEL_CHARS
+            ),
+        },
+        input_label::LabelError::ControlCharacter => ui_text(
+            "輸入備註不能包含換行或控制字元",
+            "Input notes cannot contain line breaks or control characters",
+        )
+        .to_owned(),
+    }
+}
+
+async fn receive_input_labels_notice(app: AppHandle, labels: Vec<InputLabel>) -> AgentResponse {
+    let applied = tauri::async_runtime::spawn_blocking(move || {
+        // Serialize with dashboard scans, which write back a settings snapshot.
+        let _scan = DASHBOARD_SCAN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = app.state::<AppRuntime>();
+        let mut settings = read_settings(&state)?;
+        if adopt_input_labels(&mut settings, &labels) {
+            store_settings(&state, settings)?;
+            if let Err(error) = app.emit(INPUT_LABELS_CHANGED_EVENT, ()) {
+                tracing::warn!(error = %error, "unable to notify windows of an input note change");
             }
         }
         Ok::<(), String>(())
@@ -2764,6 +2907,7 @@ fn migrate_single_monitor_settings(value: serde_json::Value) -> AppSettings {
         host_order: Vec::new(),
         host_order_updated_at_ms: 0,
         host_aliases: Vec::new(),
+        input_labels: Vec::new(),
     }
 }
 
@@ -2802,6 +2946,7 @@ fn migrate_legacy_settings(legacy: LegacySettings) -> AppSettings {
         host_order: Vec::new(),
         host_order_updated_at_ms: 0,
         host_aliases: Vec::new(),
+        input_labels: Vec::new(),
     }
 }
 
@@ -3081,10 +3226,18 @@ fn vendor_index_inputs(maximum: u32, current: DisplayInput) -> Vec<DisplayInput>
         .collect()
 }
 
+/// Whether the display was last switched to a host that is still paired.
+fn is_showing_paired_host(settings: &AppSettings, selected: &SelectedMonitor) -> bool {
+    selected.active_route.as_deref().is_some_and(|route| {
+        route != host_order::LOCAL_ROUTE_ID && settings.peers.iter().any(|peer| peer.id == route)
+    })
+}
+
 /// Reconciles every currently selected monitor against fresh enumeration
 /// results. Never reassigns a missing selection to a different physical
-/// monitor — a disappeared monitor is only ever removed, matching the
-/// exact-fingerprint safety guarantee in product-facts.md. Auto-select only
+/// monitor — a disappeared monitor is only ever removed (unless a paired host
+/// is showing it), matching the exact-fingerprint safety guarantee in
+/// product-facts.md. Auto-select only
 /// fires from an empty selection; once at least one monitor is selected, a
 /// newly appeared monitor is never added automatically.
 fn reconcile_monitor_selection(
@@ -3127,6 +3280,12 @@ fn reconcile_monitor_selection(
         {
             // Transient DDC failure (e.g. the monitor is asleep); keep the
             // selection rather than dropping it.
+            index += 1;
+            continue;
+        }
+        if is_showing_paired_host(settings, selected) {
+            // Many displays drop the link to inputs they are not showing, so
+            // a display switched to a paired host vanishes from this host.
             index += 1;
             continue;
         }
@@ -3473,6 +3632,7 @@ pub fn run() -> anyhow::Result<()> {
             set_host_order,
             get_host_names,
             set_host_name,
+            set_input_label,
             exchange_host_layout,
             hide_host_switcher,
             check_host_switcher_shortcut,
@@ -4413,24 +4573,17 @@ mod tests {
     fn display_state_explains_an_unreadable_display_that_another_host_is_showing() {
         let peer = Some("2cf05de0c029-windows");
 
+        assert_eq!(shared_display_state(true, peer), SharedDisplayState::Ready);
         assert_eq!(
-            shared_display_state(true, true, peer),
-            SharedDisplayState::Ready
-        );
-        assert_eq!(
-            shared_display_state(false, true, peer),
+            shared_display_state(false, peer),
             SharedDisplayState::OnOtherHost
         );
         assert_eq!(
-            shared_display_state(false, true, Some("local")),
+            shared_display_state(false, Some("local")),
             SharedDisplayState::Unavailable
         );
         assert_eq!(
-            shared_display_state(false, true, None),
-            SharedDisplayState::Unavailable
-        );
-        assert_eq!(
-            shared_display_state(false, false, peer),
+            shared_display_state(false, None),
             SharedDisplayState::Unavailable
         );
     }
@@ -4650,6 +4803,82 @@ mod tests {
     }
 
     #[test]
+    fn a_paired_host_input_note_names_this_host_shared_display_input() {
+        let ours = MonitorFingerprint::new("MSI", "3CF0", None::<String>);
+        let theirs = MonitorFingerprint::new("MSI", "3CF0", Some("PC-SERIAL".to_owned()));
+        let mut selected = SelectedMonitor::from(&monitor("mpg"));
+        selected.fingerprint = ours.clone();
+        selected.vendor_indexed_inputs = true;
+        let mut settings = AppSettings {
+            shared_monitors: vec![selected.clone()],
+            ..AppSettings::default()
+        };
+        let input = DisplayInput::new(8).unwrap();
+        let notice = [InputLabel {
+            monitor: theirs,
+            input,
+            label: "USB-C".to_owned(),
+            updated_at_ms: 10,
+        }];
+
+        assert!(adopt_input_labels(&mut settings, &notice));
+        assert!(!adopt_input_labels(&mut settings, &notice));
+
+        assert_eq!(settings.input_labels[0].monitor, ours);
+        let name = noted_input_label(&settings, &selected, input);
+        assert!(name.starts_with("USB-C"));
+        assert!(name.contains(&input_label(true, input)));
+        assert_eq!(
+            noted_input_label(&settings, &selected, DisplayInput::new(7).unwrap()),
+            input_label(true, DisplayInput::new(7).unwrap())
+        );
+    }
+
+    #[test]
+    fn keeps_a_missing_selection_that_a_paired_host_is_showing() {
+        let switched_away = monitor("switched-away");
+        let stays = monitor("stays");
+        let mut selected = SelectedMonitor::from(&switched_away);
+        selected.active_route = Some("peer-a".to_owned());
+        let mut settings = AppSettings {
+            shared_monitors: vec![selected.clone(), SelectedMonitor::from(&stays)],
+            peers: vec![peer_using_input("peer-a", &switched_away, 0x0f)],
+            ..AppSettings::default()
+        };
+        let monitors = [stays.clone()];
+
+        let changes = reconcile_monitor_selection(&mut settings, &monitors, &monitors);
+
+        assert!(changes.is_empty());
+        assert_eq!(
+            settings.shared_monitors,
+            vec![selected, SelectedMonitor::from(&stays)]
+        );
+    }
+
+    #[test]
+    fn removes_a_missing_selection_whose_active_host_is_no_longer_paired() {
+        let disconnected = monitor("disconnected");
+        let mut selected = SelectedMonitor::from(&disconnected);
+        selected.active_route = Some("removed-peer".to_owned());
+        let mut settings = AppSettings {
+            shared_monitors: vec![selected],
+            ..AppSettings::default()
+        };
+
+        let changes = reconcile_monitor_selection(&mut settings, &[], &[]);
+
+        assert_eq!(
+            changes,
+            vec![MonitorSelectionChange::RemovedMissingMonitor {
+                name: "disconnected".to_owned(),
+                fingerprint: disconnected.fingerprint,
+            }]
+        );
+        assert!(settings.shared_monitors.is_empty());
+    }
+
+    #[test]
     fn never_guesses_between_multiple_controllable_monitors() {
         let mut settings = AppSettings::default();
         let monitors = [monitor("first"), monitor("second")];
@@ -4792,7 +5021,7 @@ mod tests {
         let result = outcome_result(
             SwitchOutcome::AlreadySelected { target, input },
             &preparation,
-            false,
+            |input| input_label(false, input),
         );
 
         assert!(result.warning);

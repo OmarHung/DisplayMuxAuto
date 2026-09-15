@@ -122,7 +122,8 @@ interface DiscoveredPeer {
   macAddress: string | null;
 }
 
-interface InputOption { value: number; name: string; }
+/** `name` includes the user's note; `baseName` and `label` are its parts. */
+interface InputOption { value: number; name: string; baseName?: string; label?: string; }
 interface OperationResult { title: string; detail: string; peerWoken: boolean; warning: boolean; }
 interface ShortcutCheckResult { available: boolean; message: string; }
 interface UpdateInfo { available: boolean; currentVersion: string; version: string | null; notes: string | null; }
@@ -272,6 +273,7 @@ app.innerHTML = `
     <main class="workspace">
       <header class="topbar">
         <h1 id="page-title">${t("page.dashboard")}</h1>
+        <div class="switch-all-bar" id="switch-all-bar" hidden></div>
         <div class="topbar-actions">
           <div class="agent-pill" id="agent-pill"><span class="status-dot"></span><span>${t("dashboard.agentMissing")}</span></div>
           <button class="icon-button" id="update-button" title="${t("action.checkUpdates")}"><i data-lucide="download"></i></button>
@@ -312,6 +314,14 @@ app.innerHTML = `
                   <strong>${t("settings.localInput")}</strong>
                 </div>
                 <div class="local-input-summary" id="local-input-summary"></div>
+              </div>
+
+              <div class="form-section">
+                <div class="pairing-heading">
+                  <strong>${t("settings.inputLabels")}</strong>
+                </div>
+                <small class="section-hint">${t("settings.inputLabelsHint")}</small>
+                <div class="input-labels" id="input-labels"></div>
               </div>
 
               <div class="form-section pairing-section">
@@ -541,6 +551,31 @@ document.querySelector("#paired-routes")?.addEventListener("click", (event) => {
   if (button?.dataset.wakeId) void peerCommand("wake_peer", button.dataset.wakeId);
 });
 document.querySelector("#paired-routes")?.addEventListener("input", renderInputHints);
+const inputLabels = document.querySelector<HTMLElement>("#input-labels");
+inputLabels?.addEventListener("change", (event) => {
+  const field = (event.target as HTMLElement).closest<HTMLInputElement>("[data-label-input]");
+  if (field) void commitInputLabel(field);
+});
+inputLabels?.addEventListener("keydown", (event) => {
+  const field = (event.target as HTMLElement).closest<HTMLInputElement>("[data-label-input]");
+  if (!field) return;
+  if (event.key === "Enter") {
+    // Inside the settings form, Enter would otherwise submit every setting.
+    event.preventDefault();
+    field.blur();
+  } else if (event.key === "Escape") {
+    field.value = inputOptionsByMonitor[field.dataset.labelMonitor ?? ""]?.find((option) => option.value === Number(field.dataset.labelInput))?.label ?? "";
+    field.blur();
+  }
+});
+inputLabels?.addEventListener("toggle", (event) => {
+  const group = event.target as HTMLDetailsElement;
+  const monitorKey = group.dataset.labelGroup;
+  if (!monitorKey) return;
+  const next = new Set(openInputLabelGroups);
+  if (group.open) next.add(monitorKey); else next.delete(monitorKey);
+  openInputLabelGroups = next;
+}, true);
 document.querySelector("#monitor-strip")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-monitor-key]");
   if (!button?.dataset.monitorKey || button.dataset.monitorKey === activeMonitorKey) return;
@@ -607,6 +642,10 @@ switchPanel?.addEventListener("dragend", () => {
   draggedRouteId = null;
   switchPanel.querySelectorAll(".is-dragging, .is-drop-target").forEach((item) => item.classList.remove("is-dragging", "is-drop-target"));
 });
+document.querySelector("#switch-all-bar")?.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-all-id]");
+  if (button?.dataset.switchAllId) void switchAllToHost(button.dataset.switchAllId);
+});
 switchPanel?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-id]");
   if (!button?.dataset.switchId) return;
@@ -619,6 +658,8 @@ function showPage(page: string): void {
   document.querySelector(`#${page}-page`)?.classList.add("is-active");
   document.querySelectorAll(".nav-button").forEach((item) => item.classList.toggle("is-active", (item as HTMLElement).dataset.page === page));
   setText("#page-title", pageTitles[page] ?? pageTitles.dashboard);
+  renderSwitchAllBar();
+  refreshIcons();
 }
 
 function releaseHistoryRows(releases: ReleaseHistoryItem[]): string {
@@ -706,6 +747,12 @@ const HOST_ORDER_CHANGED_EVENT = "host-order-changed";
 let routeOrder: string[] = [];
 /** Emitted by the backend when this or a paired host renames a host. */
 const HOST_NAMES_CHANGED_EVENT = "host-names-changed";
+/** Emitted by the backend when this or a paired host changes an input note. */
+const INPUT_LABELS_CHANGED_EVENT = "input-labels-changed";
+/** Longest input note the backend accepts, in characters. */
+const MAX_INPUT_LABEL_CHARS = 24;
+/** Shared displays whose input note list is expanded, by monitor key. */
+let openInputLabelGroups = new Set<string>();
 /** Longest custom host name the backend accepts, in characters. */
 const MAX_HOST_NAME_CHARS = 32;
 /** Custom host names by route id; hosts using their default name are absent. */
@@ -933,6 +980,7 @@ function displayStateBadge(shared: SharedMonitorStatus): string {
 }
 
 function renderSwitchPanel(): void {
+  renderSwitchAllBar();
   const container = document.querySelector("#switch-panel");
   if (!container) return;
   const shared = dashboard.shared.find((item) => item.monitorKey === activeMonitorKey);
@@ -992,7 +1040,7 @@ function renderState(): void {
   renderShortcutSetting();
   keepActiveMonitorSelected();
   renderMonitorStrip(); renderSwitchPanel();
-  renderMonitors(); renderPeerList(); renderPairedRoutes(); renderLocalInputSummary(); renderInputHints(); refreshIcons();
+  renderMonitors(); renderPeerList(); renderPairedRoutes(); renderLocalInputSummary(); renderInputLabels(); renderInputHints(); refreshIcons();
 }
 
 function shortcutDisplay(value: string): string {
@@ -1192,6 +1240,84 @@ function renderLocalInputSummary(): void {
   }).join("");
 }
 
+/** Hosts whose saved input for `shared` is `value`, by display name. */
+function inputUsers(shared: SharedMonitorStatus, value: number): string[] {
+  const localUser = selectedMonitorFor(shared)?.localInput === value ? [routeDisplayName("local")] : [];
+  const peerUsers = settings.peers
+    .filter((peer) => peer.inputs.some((assignment) => assignment.input === value && sameFingerprint(assignment.monitor, shared.fingerprint)))
+    .map((peer) => routeDisplayName(peer.id));
+  return [...localUser, ...peerUsers];
+}
+
+/**
+ * One note field per input of each shared display. Left alone while a field
+ * has focus, so a sync from a paired host never replaces what is being typed.
+ */
+function renderInputLabels(): void {
+  const container = document.querySelector<HTMLElement>("#input-labels");
+  if (!container || container.contains(document.activeElement)) return;
+  if (!dashboard.shared.length) {
+    container.innerHTML = `<p class="peer-empty">${t("settings.noMonitors")}</p>`;
+    return;
+  }
+  const listFormat = new Intl.ListFormat(locale, { type: "conjunction" });
+  container.innerHTML = dashboard.shared.map((shared) => {
+    const rows = (inputOptionsByMonitor[shared.monitorKey] ?? []).map((option) => {
+      const baseName = option.baseName ?? option.name;
+      const users = inputUsers(shared, option.value);
+      return `<label class="input-label-row">
+        <span class="input-label-base">
+          <strong>${escapeHtml(baseName)}</strong>
+          ${users.length ? `<small>${escapeHtml(t("settings.inputUsedBy", { hosts: listFormat.format(users) }))}</small>` : ""}
+        </span>
+        <input class="input-label-field" data-label-monitor="${escapeHtml(shared.monitorKey)}" data-label-input="${option.value}" value="${escapeHtml(option.label ?? "")}" placeholder="${escapeHtml(t("settings.inputLabelPlaceholder"))}" maxlength="${MAX_INPUT_LABEL_CHARS}" aria-label="${escapeHtml(t("settings.inputLabelAria", { monitor: shared.name, input: baseName }))}" />
+      </label>`;
+    }).join("");
+    return `<details class="input-label-group" data-label-group="${escapeHtml(shared.monitorKey)}" ${openInputLabelGroups.has(shared.monitorKey) ? "open" : ""}>
+      <summary>${escapeHtml(shared.name)}</summary>
+      <div class="input-label-rows">${rows}</div>
+    </details>`;
+  }).join("");
+}
+
+/** Redraws every place that shows input names. */
+function renderInputNames(): void {
+  renderLocalInputSummary();
+  renderInputHints();
+  renderInputLabels();
+  renderSwitchPanel();
+  refreshIcons();
+}
+
+async function reloadInputOptions(): Promise<void> {
+  try {
+    inputOptionsByMonitor = await loadInputOptionsByMonitor(dashboard.shared.map((shared) => shared.monitorKey));
+    renderInputNames();
+  } catch (error) {
+    showToast(t("toast.inputLabelFailed"), String(error), true);
+  }
+}
+
+async function commitInputLabel(field: HTMLInputElement): Promise<void> {
+  const monitorKey = field.dataset.labelMonitor ?? "";
+  const input = Number(field.dataset.labelInput);
+  const saved = inputOptionsByMonitor[monitorKey]?.find((option) => option.value === input)?.label ?? "";
+  const label = field.value.trim();
+  if (label === saved) {
+    field.value = saved;
+    return;
+  }
+  try {
+    const options = await invoke<InputOption[]>("set_input_label", { monitorId: monitorKey, input, label });
+    inputOptionsByMonitor = { ...inputOptionsByMonitor, [monitorKey]: options };
+    field.value = options.find((option) => option.value === input)?.label ?? "";
+    renderInputNames();
+  } catch (error) {
+    field.value = saved;
+    showToast(t("toast.inputLabelFailed"), String(error), true);
+  }
+}
+
 function renderPeerList(): void {
   const list = document.querySelector("#peer-list");
   if (!list) return;
@@ -1367,6 +1493,59 @@ async function commitRename(routeId: string): Promise<void> {
   }
 }
 
+/**
+ * Two overlapping displays, drawn on Lucide's 24px grid and stroke so it sits
+ * with the other icons. Lucide has no multi-display icon.
+ */
+const ALL_DISPLAYS_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <path d="M7 7V5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3"/>
+  <rect width="15" height="10" x="2" y="7" rx="2"/>
+  <path d="M9.5 17v4"/>
+  <path d="M6 21h7"/>
+</svg>`;
+
+/** A host's name as its card shows it: the custom name, else the default. */
+function routeDisplayName(routeId: string): string {
+  const custom = hostNames[routeId];
+  if (custom) return custom;
+  if (routeId === "local") return dashboard.localHost === "windows" ? t("dashboard.localWindows") : t("dashboard.localMac");
+  return settings.peers.find((peer) => peer.id === routeId)?.name ?? routeId;
+}
+
+/**
+ * One button per host that switches every shared display at once. Sits beside
+ * the dashboard title because it acts on all displays, not the selected one.
+ */
+function renderSwitchAllBar(): void {
+  const container = document.querySelector<HTMLElement>("#switch-all-bar");
+  if (!container) return;
+  const hasMultipleDisplays = dashboard.shared.length > 1;
+  container.hidden = !hasMultipleDisplays || !document.querySelector("#dashboard-page")?.classList.contains("is-active");
+  if (!hasMultipleDisplays) {
+    container.innerHTML = "";
+    return;
+  }
+  const buttons = currentRouteIds().map((routeId) => {
+    const name = routeDisplayName(routeId);
+    const platform = routeId === "local" ? dashboard.localHost : settings.peers.find((peer) => peer.id === routeId)?.platform;
+    const icon = platform === "mac" ? "laptop" : "computer";
+    const isAllShowing = dashboard.shared.every((shared) => (selectedMonitorFor(shared)?.activeRoute ?? "local") === routeId);
+    if (isAllShowing) {
+      return `<div class="switch-all-host is-showing" title="${escapeHtml(`${name} · ${t("dashboard.allDisplayed")}`)}">
+        <i data-lucide="${icon}"></i><span class="switch-all-name">${escapeHtml(name)}</span>
+        <span class="switch-all-state"><span class="active-route-dot" aria-hidden="true"></span><span class="switch-all-state-text">${t("dashboard.allDisplayed")}</span></span>
+      </div>`;
+    }
+    const label = escapeHtml(t("action.switchAllToHost", { name }));
+    return `<button type="button" class="switch-all-host" data-switch-all-id="${escapeHtml(routeId)}" aria-label="${label}" title="${label}" ${switchAllTargets(routeId).length === 0 ? "disabled" : ""}>
+      <i data-lucide="${icon}"></i><span class="switch-all-name">${escapeHtml(name)}</span>
+    </button>`;
+  }).join("");
+  container.innerHTML = `
+    <span class="switch-all-label" title="${escapeHtml(t("dashboard.switchAllLabel"))}">${ALL_DISPLAYS_ICON}<span>${t("dashboard.switchAllLabel")}</span></span>
+    <div class="switch-all-hosts">${buttons}</div>`;
+}
+
 function renderHostRoutes(shared: SharedMonitorStatus): void {
   const container = document.querySelector(`[data-host-route-grid="${cssEscape(shared.monitorKey)}"]`);
   if (!container) return;
@@ -1510,24 +1689,33 @@ async function saveSettings(event: SubmitEvent): Promise<void> {
   } catch (error) { showToast(t("toast.settingsFailed"), String(error), true); }
 }
 
-async function switchHost(monitorKey: string, targetId: string): Promise<void> {
-  showOperation(t("operation.preparingTitle"), t("operation.preparingBody"));
+function switchProgressText(event: SwitchProgressEvent): { title: string; detail: string } {
+  if (event.event === "waking") return { title: t("operation.wakingTitle", { name: event.peerName }), detail: t("operation.wakingBody") };
+  if (event.event === "checking") return { title: t("operation.checkingTitle", { name: event.peerName }), detail: t("operation.checkingBody") };
+  if (event.event === "waiting") return { title: t("operation.waitingTitle", { name: event.peerName }), detail: t("operation.waitingBody", { seconds: event.seconds }) };
+  if (event.event === "remoteFallback") return { title: t("operation.remoteTitle", { name: event.peerName }), detail: t("operation.remoteBody") };
+  return { title: t("operation.switchingTitle"), detail: t("operation.switchingBody") };
+}
+
+/**
+ * Runs one backend switch and mirrors its progress in the operation dialog.
+ * With a `step` label, the dialog keeps that label as its title so a batch
+ * shows which display it is on.
+ */
+async function requestSwitch(monitorKey: string, targetId: string, step?: string): Promise<OperationResult> {
   const onEvent = new Channel<SwitchProgressEvent>();
   onEvent.onmessage = (event) => {
-    if (event.event === "waking") {
-      showOperation(t("operation.wakingTitle", { name: event.peerName }), t("operation.wakingBody"));
-    } else if (event.event === "checking") {
-      showOperation(t("operation.checkingTitle", { name: event.peerName }), t("operation.checkingBody"));
-    } else if (event.event === "waiting") {
-      showOperation(t("operation.waitingTitle", { name: event.peerName }), t("operation.waitingBody", { seconds: event.seconds }));
-    } else if (event.event === "remoteFallback") {
-      showOperation(t("operation.remoteTitle", { name: event.peerName }), t("operation.remoteBody"));
-    } else {
-      showOperation(t("operation.switchingTitle"), t("operation.switchingBody"));
-    }
+    const { title, detail } = switchProgressText(event);
+    if (step) showOperation(step, title);
+    else showOperation(title, detail);
   };
+  return invoke<OperationResult>("switch_host", { monitorId: monitorKey, targetId, onEvent });
+}
+
+async function switchHost(monitorKey: string, targetId: string): Promise<void> {
+  showOperation(t("operation.preparingTitle"), t("operation.preparingBody"));
   try {
-    const result = await invoke<OperationResult>("switch_host", { monitorId: monitorKey, targetId, onEvent });
+    const result = await requestSwitch(monitorKey, targetId);
     showToast(result.title, result.detail, result.warning);
     await refresh();
     scheduleSettledRescans();
@@ -1536,6 +1724,56 @@ async function switchHost(monitorKey: string, targetId: string): Promise<void> {
   } finally {
     hideOperation();
   }
+}
+
+/** The display input a host uses on a shared display, or null when it is not configured. */
+function routeInputFor(shared: SharedMonitorStatus, routeId: string): number | null {
+  if (routeId === "local") return selectedMonitorFor(shared)?.localInput ?? null;
+  const peer = settings.peers.find((item) => item.id === routeId);
+  return peer?.inputs.find((assignment) => sameFingerprint(assignment.monitor, shared.fingerprint))?.input ?? null;
+}
+
+/** Shared displays that switching everything to this host would change. */
+function switchAllTargets(routeId: string): SharedMonitorStatus[] {
+  return dashboard.shared.filter((shared) =>
+    (selectedMonitorFor(shared)?.activeRoute ?? "local") !== routeId
+    && routeInputFor(shared, routeId) != null
+    && (shared.ddcAvailable || dashboard.agentConfigured));
+}
+
+/**
+ * Switches every shared display to one host, one display at a time: the first
+ * switch wakes a sleeping host, so later ones find it ready. A failed display
+ * does not stop the rest.
+ */
+async function switchAllToHost(targetId: string): Promise<void> {
+  const hostName = routeDisplayName(targetId);
+  const targets = switchAllTargets(targetId);
+  if (!targets.length) return;
+  const problems: string[] = [];
+  let switched = 0;
+  showOperation(t("operation.preparingTitle"), t("operation.preparingBody"));
+  try {
+    for (const [index, shared] of targets.entries()) {
+      const step = t("operation.switchAllStep", { current: index + 1, total: targets.length, name: shared.name });
+      showOperation(step, t("operation.preparingBody"));
+      try {
+        const result = await requestSwitch(shared.monitorKey, targetId, step);
+        switched += 1;
+        if (result.warning) problems.push(`${shared.name}: ${result.detail}`);
+      } catch (error) {
+        problems.push(`${shared.name}: ${String(error)}`);
+      }
+    }
+  } finally {
+    hideOperation();
+  }
+  const title = switched === targets.length
+    ? t("toast.switchAllDone", { count: switched, name: hostName })
+    : t("toast.switchAllPartial", { count: switched, total: targets.length, name: hostName });
+  showToast(switched === 0 ? t("toast.switchFailed") : title, problems.join(" "), problems.length > 0);
+  await refresh();
+  scheduleSettledRescans();
 }
 
 async function peerCommand(command: "probe_peer" | "wake_peer", peerId: string): Promise<void> {
@@ -1879,6 +2117,7 @@ async function bootstrap(): Promise<void> {
       await listen(ACTIVE_ROUTE_CHANGED_EVENT, () => void reloadActiveRoutes());
       await listen(HOST_ORDER_CHANGED_EVENT, () => void reloadHostOrder());
       await listen(HOST_NAMES_CHANGED_EVENT, () => void reloadHostNames());
+      await listen(INPUT_LABELS_CHANGED_EVENT, () => void reloadInputOptions());
     } catch (error) {
       showToast(t("toast.activeHostSyncFailed"), String(error), true);
     }

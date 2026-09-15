@@ -383,6 +383,11 @@ pub enum AgentAction {
     HostAliasesChanged {
         aliases: Vec<HostAlias>,
     },
+    /// Best-effort notice of every input note a paired host knows. Receivers
+    /// merge entry by entry, keeping the newer `updated_at_ms`.
+    InputLabelsChanged {
+        labels: Vec<InputLabel>,
+    },
 }
 
 /// A user-chosen display name for a host, keyed by `LocalHostIdentity::id`.
@@ -393,6 +398,19 @@ pub enum AgentAction {
 pub struct HostAlias {
     pub host_id: String,
     pub name: String,
+    pub updated_at_ms: u64,
+}
+
+/// A user note for one input of a shared display, such as "USB-C" for a display
+/// that only reports input numbers. `monitor` is the sender's fingerprint for
+/// the display; receivers map it to their own. An empty `label` records that
+/// the note was cleared, like `HostAlias`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputLabel {
+    pub monitor: MonitorFingerprint,
+    pub input: DisplayInput,
+    pub label: String,
     pub updated_at_ms: u64,
 }
 
@@ -468,6 +486,9 @@ pub struct AgentResponse {
     /// The responder's custom host names, for the same catch-up.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub host_aliases: Vec<HostAlias>,
+    /// The responder's input notes, for the same catch-up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_labels: Vec<InputLabel>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -829,6 +850,35 @@ mod tests {
             serde_json::from_str::<AgentAction>(&serialized).unwrap(),
             action
         );
+    }
+
+    #[test]
+    fn input_labels_changed_notice_round_trips_with_every_entry() {
+        let action = AgentAction::InputLabelsChanged {
+            labels: vec![InputLabel {
+                monitor: MonitorFingerprint::new("MSI", "3CF0", None::<String>),
+                input: DisplayInput::new(8).unwrap(),
+                label: "USB-C".to_owned(),
+                updated_at_ms: 1_757_000_000_000,
+            }],
+        };
+
+        let serialized = serde_json::to_string(&action).unwrap();
+
+        assert!(serialized.contains(r#""type":"input_labels_changed""#));
+        assert!(serialized.contains(r#""updatedAtMs":1757000000000"#));
+        assert_eq!(
+            serde_json::from_str::<AgentAction>(&serialized).unwrap(),
+            action
+        );
+    }
+
+    #[test]
+    fn a_response_from_an_agent_without_input_labels_still_deserializes() {
+        let response: AgentResponse =
+            serde_json::from_str(r#"{"ready":true,"message":"ok"}"#).unwrap();
+
+        assert!(response.input_labels.is_empty());
     }
 
     #[test]

@@ -297,6 +297,101 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   width: 100%;
 }
 
+/* Dashboard switch-all bar: centered in the top bar, switches every shared display. */
+.topbar {
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr);
+  column-gap: 16px;
+}
+
+#page-title { grid-column: 1; white-space: nowrap; }
+.topbar > .switch-all-bar { grid-column: 2; }
+.topbar > .topbar-actions { grid-column: 3; justify-self: end; }
+
+.switch-all-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 38px;
+  padding: 3px 3px 3px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-bg);
+}
+
+.switch-all-bar[hidden] { display: none; }
+
+.switch-all-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.switch-all-label svg { width: 15px; height: 15px; flex: 0 0 auto; }
+
+.switch-all-hosts {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.switch-all-host {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease;
+}
+
+button.switch-all-host:hover { background: var(--accent-light); border-color: var(--accent); }
+
+button.switch-all-host:disabled {
+  border-color: var(--line);
+  color: var(--subtle);
+  background: var(--card-bg);
+  cursor: not-allowed;
+}
+
+.switch-all-host svg { width: 15px; height: 15px; flex: 0 0 auto; }
+.switch-all-name { overflow: hidden; text-overflow: ellipsis; }
+
+.switch-all-host.is-showing {
+  background: #f2f7f4;
+  border-color: #c9ded5;
+  cursor: default;
+}
+
+.switch-all-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 2px;
+  font-size: 12px;
+}
+
+.switch-all-state .active-route-dot { width: 8px; height: 8px; }
+
+/* Narrow windows: keep the hosts, drop the words around them. */
+@media (max-width: 1280px) {
+  .switch-all-label span, .switch-all-state-text { display: none; }
+  .switch-all-bar { padding-left: 10px; }
+}
+
 /* Dashboard Monitor Strip (screen picker) */
 .monitor-strip {
   display: flex;
@@ -988,6 +1083,72 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 }
 
 .local-input-row span { color: var(--muted); }
+
+/* Input notes: one collapsible list of note fields per shared display. */
+.section-hint {
+  display: block;
+  margin: -6px 0 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.input-labels {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.input-label-group {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.input-label-group > summary {
+  padding: 10px 16px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.input-label-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 16px 14px;
+}
+
+.input-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.input-label-base {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.input-label-base strong { color: var(--ink); font-weight: 800; }
+.input-label-base small { color: var(--accent); font-size: 11.5px; font-weight: 700; }
+
+.input-label-field {
+  flex: 0 0 200px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #cad4cf;
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.input-label-field:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .local-input-row strong { color: var(--ink); font-weight: 800; }
 
 .peer-identity {
@@ -1079,7 +1240,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 }
 
 .paired-input-field {
-  width: 132px;
+  width: 176px;
   height: 36px;
   padding: 0 10px;
   border-radius: 8px;
@@ -1788,8 +1949,16 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 :root[data-theme="dark"] .status-badge.subtle { background: #192821; color: #8fa59b; }
 :root[data-theme="dark"] .status-badge.is-elsewhere { background: #1c2433; color: #9fb4dc; }
 :root[data-theme="dark"] .active-route-state { background: #162e24; border-color: #244d3c; color: #52c79b; }
+:root[data-theme="dark"] .switch-all-bar { background: #1a2520; border-color: #293830; }
+:root[data-theme="dark"] .switch-all-host { background: transparent; border-color: #2e5947; color: #52c79b; }
+:root[data-theme="dark"] button.switch-all-host:hover { background: #162e24; border-color: #52c79b; }
+:root[data-theme="dark"] button.switch-all-host:disabled { border-color: #293830; color: #4a6358; }
+:root[data-theme="dark"] .switch-all-host.is-showing { background: #162e24; border-color: #244d3c; }
 :root[data-theme="dark"] .field input, :root[data-theme="dark"] .field select { background: #1a2520; color: #e5ece8; border-color: #2d3e35; }
 :root[data-theme="dark"] .field input:disabled, :root[data-theme="dark"] .field select:disabled { background: #141c18; color: #6a7c74; }
+:root[data-theme="dark"] .input-label-group { background: #1c2722; border-color: #293830; }
+:root[data-theme="dark"] .input-label-field { background: #1a2520; color: #e5ece8; border-color: #2d3e35; }
+:root[data-theme="dark"] .input-label-base small { color: #52c79b; }
 :root[data-theme="dark"] .peer-row, :root[data-theme="dark"] .paired-route-card, :root[data-theme="dark"] .monitor-card-item, :root[data-theme="dark"] .monitor-strip-card, :root[data-theme="dark"] .local-input-row { background: #1c2722; border-color: #293830; }
 :root[data-theme="dark"] .monitor-card-item.is-selected, :root[data-theme="dark"] .monitor-strip-card.is-active { background: #172d24; border-color: #2e5947; }
 :root[data-theme="dark"] .monitor-card-item.is-unreachable .monitor-item-icon { background: #232e29; }
