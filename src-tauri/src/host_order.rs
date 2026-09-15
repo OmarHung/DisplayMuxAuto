@@ -86,14 +86,19 @@ pub fn host_order_from_route_ids(
 pub fn is_valid_shared_host_order(order: &[String]) -> bool {
     let mut seen = HashSet::new();
     order.len() <= MAX_SHARED_HOSTS
-        && order.iter().all(|host| {
-            !host.is_empty()
-                && host.len() <= MAX_HOST_ID_LEN
-                && host
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
-                && seen.insert(host.as_str())
-        })
+        && order
+            .iter()
+            .all(|host| is_valid_host_id(host) && seen.insert(host.as_str()))
+}
+
+/// Whether `host` looks like a discovery id: bounded and limited to the
+/// characters `LocalHostIdentity` produces.
+pub fn is_valid_host_id(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= MAX_HOST_ID_LEN
+        && host
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
 }
 
 #[cfg(test)]

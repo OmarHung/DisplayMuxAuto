@@ -1,3 +1,4 @@
+mod host_alias;
 mod host_order;
 
 use std::{
@@ -15,7 +16,7 @@ use std::{
 
 use displaymux_core::{
     AgentAction, AgentClient, AgentDisplayRoute, AgentResponse, AgentServer, DestinationHost,
-    DiscoveredPeer, DisplayInput, DisplayMuxError, DisplayMuxProfile, DisplayMuxService,
+    DiscoveredPeer, DisplayInput, DisplayMuxError, DisplayMuxProfile, DisplayMuxService, HostAlias,
     LocalHostIdentity, MacAddress, MdnsPeerDiscovery, MonitorControl, MonitorDescriptor,
     MonitorFingerprint, PeerDiscovery, PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome,
     WakeTarget, AGENT_PROTOCOL_VERSION, DEFAULT_AGENT_PORT,
@@ -233,6 +234,9 @@ struct AppSettings {
     /// When `host_order` last changed (Unix milliseconds), so the newest order
     /// wins when several hosts reorder.
     host_order_updated_at_ms: u64,
+    /// Custom host names shared with paired hosts (see `host_alias`).
+    /// Backend-owned like `host_order`.
+    host_aliases: Vec<HostAlias>,
 }
 
 impl Default for AppSettings {
@@ -252,6 +256,7 @@ impl Default for AppSettings {
             host_switcher_shortcut: DEFAULT_HOST_SWITCHER_SHORTCUT.to_owned(),
             host_order: Vec::new(),
             host_order_updated_at_ms: 0,
+            host_aliases: Vec::new(),
         }
     }
 }
@@ -618,7 +623,9 @@ fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherS
             let mut hosts = Vec::with_capacity(settings.peers.len() + 1);
             hosts.push(HostSwitcherOption {
                 id: "local".to_owned(),
-                name: ui_text("這台電腦", "This computer").to_owned(),
+                name: host_alias::alias_for(&settings.host_aliases, &state.local_host_id)
+                    .unwrap_or(ui_text("這台電腦", "This computer"))
+                    .to_owned(),
                 platform: settings.local_host,
                 input_name: selected.local_input.map(localized_input_name),
                 is_local: true,
@@ -628,7 +635,9 @@ fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherS
                 let input = peer.input_for(&selected.fingerprint);
                 HostSwitcherOption {
                     id: peer.id.clone(),
-                    name: peer.name.clone(),
+                    name: host_alias::alias_for(&settings.host_aliases, &peer.id)
+                        .unwrap_or(&peer.name)
+                        .to_owned(),
                     platform: peer.platform,
                     input_name: input.map(localized_input_name),
                     is_local: false,
@@ -766,6 +775,7 @@ async fn save_settings(
     // A settings form opened before a paired host reordered must not revert it.
     settings.host_order = protected.host_order.clone();
     settings.host_order_updated_at_ms = protected.host_order_updated_at_ms;
+    settings.host_aliases = protected.host_aliases.clone();
     validate_settings(&settings).map_err(core_user_error)?;
     let enable_autostart = settings.autostart;
     update_host_switcher_shortcut(&app, &protected, &settings)?;
@@ -1839,6 +1849,9 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                             order,
                             updated_at_ms,
                         } => receive_host_order_notice(app, order, updated_at_ms).await,
+                        AgentAction::HostAliasesChanged { aliases } => {
+                            receive_host_aliases_notice(app, aliases).await
+                        }
                         AgentAction::Ping => {
                             let display_routes = live_settings
                                 .read()
@@ -2167,6 +2180,113 @@ async fn receive_host_order_notice(
     agent_notice_response(applied)
 }
 
+/// Frontend event telling windows to re-read custom host names.
+const HOST_NAMES_CHANGED_EVENT: &str = "host-names-changed";
+
+/// Custom names by route id ("local" and peer ids); hosts without one are omitted.
+fn route_host_names(state: &AppRuntime, settings: &AppSettings) -> HashMap<String, String> {
+    std::iter::once((host_order::LOCAL_ROUTE_ID, state.local_host_id.as_str()))
+        .chain(
+            settings
+                .peers
+                .iter()
+                .map(|peer| (peer.id.as_str(), peer.id.as_str())),
+        )
+        .filter_map(|(route, host_id)| {
+            host_alias::alias_for(&settings.host_aliases, host_id)
+                .map(|name| (route.to_owned(), name.to_owned()))
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn get_host_names(state: State<'_, AppRuntime>) -> Result<HashMap<String, String>, String> {
+    let settings = read_settings(&state)?;
+    Ok(route_host_names(&state, &settings))
+}
+
+/// Gives the host behind `route_id` a custom name (empty restores the default)
+/// and shares every custom name with paired hosts. Returns names by route id.
+#[tauri::command]
+fn set_host_name(
+    route_id: String,
+    name: String,
+    state: State<'_, AppRuntime>,
+    app: AppHandle,
+) -> Result<HashMap<String, String>, String> {
+    let mut settings = read_settings(&state)?;
+    let host_id = if route_id == host_order::LOCAL_ROUTE_ID {
+        state.local_host_id.clone()
+    } else {
+        settings
+            .peers
+            .iter()
+            .find(|peer| peer.id == route_id)
+            .map(|peer| peer.id.clone())
+            .ok_or_else(|| {
+                ui_text(
+                    "找不到這台主機，請重新整理後再試一次",
+                    "This host was not found. Refresh and try again.",
+                )
+                .to_owned()
+            })?
+    };
+    let name = host_alias::normalize_alias(&name).map_err(alias_error_text)?;
+    settings.host_aliases =
+        host_alias::with_alias(&settings.host_aliases, &host_id, name, unix_time_ms());
+    let settings = store_settings(&state, settings)?;
+    if let Err(error) = app.emit(HOST_NAMES_CHANGED_EVENT, ()) {
+        tracing::warn!(error = %error, "unable to notify the host switcher of a host name change");
+    }
+    broadcast_to_peers(
+        &state,
+        &AgentAction::HostAliasesChanged {
+            aliases: host_alias::shareable_aliases(&settings.host_aliases),
+        },
+    );
+    Ok(route_host_names(&state, &settings))
+}
+
+fn alias_error_text(error: host_alias::AliasError) -> String {
+    match error {
+        host_alias::AliasError::TooLong => match UiLocale::current() {
+            UiLocale::TraditionalChinese => {
+                format!("主機名稱最多 {} 個字", host_alias::MAX_ALIAS_CHARS)
+            }
+            UiLocale::English => format!(
+                "Host names can be at most {} characters",
+                host_alias::MAX_ALIAS_CHARS
+            ),
+        },
+        host_alias::AliasError::ControlCharacter => ui_text(
+            "主機名稱不能包含換行或控制字元",
+            "Host names cannot contain line breaks or control characters",
+        )
+        .to_owned(),
+    }
+}
+
+async fn receive_host_aliases_notice(app: AppHandle, aliases: Vec<HostAlias>) -> AgentResponse {
+    let applied = tauri::async_runtime::spawn_blocking(move || {
+        // Serialize with dashboard scans, which write back a settings snapshot.
+        let _scan = DASHBOARD_SCAN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = app.state::<AppRuntime>();
+        let mut settings = read_settings(&state)?;
+        if let Some(merged) = host_alias::merged_aliases(&settings.host_aliases, &aliases) {
+            settings.host_aliases = merged;
+            store_settings(&state, settings)?;
+            if let Err(error) = app.emit(HOST_NAMES_CHANGED_EVENT, ()) {
+                tracing::warn!(error = %error, "unable to notify windows of a host name change");
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await;
+    agent_notice_response(applied)
+}
+
 fn agent_notice_response(applied: Result<Result<(), String>, tauri::Error>) -> AgentResponse {
     let (ready, message) = match applied {
         Ok(Ok(())) => (true, ui_text("已同步設定", "Settings synced").to_owned()),
@@ -2389,6 +2509,7 @@ fn migrate_single_monitor_settings(value: serde_json::Value) -> AppSettings {
         host_switcher_shortcut: old.host_switcher_shortcut,
         host_order: Vec::new(),
         host_order_updated_at_ms: 0,
+        host_aliases: Vec::new(),
     }
 }
 
@@ -2426,6 +2547,7 @@ fn migrate_legacy_settings(legacy: LegacySettings) -> AppSettings {
         host_switcher_shortcut: DEFAULT_HOST_SWITCHER_SHORTCUT.to_owned(),
         host_order: Vec::new(),
         host_order_updated_at_ms: 0,
+        host_aliases: Vec::new(),
     }
 }
 
@@ -3069,6 +3191,8 @@ pub fn run() -> anyhow::Result<()> {
             get_host_switcher_state,
             get_host_order,
             set_host_order,
+            get_host_names,
+            set_host_name,
             hide_host_switcher,
             check_host_switcher_shortcut,
             complete_onboarding,

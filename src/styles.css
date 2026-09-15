@@ -472,7 +472,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   box-shadow: 0 0 0 3px var(--accent-light), var(--shadow-card);
 }
 
-.host-order-controls {
+.host-card-tools {
   position: absolute;
   top: 12px;
   right: 12px;
@@ -482,12 +482,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   transition: opacity .16s ease;
 }
 
-.host-route-card:hover .host-order-controls,
-.host-order-controls:focus-within {
+.host-route-card:hover .host-card-tools,
+.host-card-tools:focus-within {
   opacity: 1;
 }
 
-.host-order-button {
+.host-tool-button {
   display: grid;
   place-items: center;
   width: 28px;
@@ -500,25 +500,46 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   cursor: pointer;
 }
 
-.host-order-button:hover:not(:disabled) {
+.host-tool-button:hover:not(:disabled) {
   border-color: var(--accent-border);
   color: var(--accent);
 }
 
-.host-order-button:focus-visible {
+.host-tool-button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.host-order-button:disabled {
+.host-tool-button:disabled {
   opacity: .35;
   cursor: default;
 }
 
-.host-order-button svg { width: 15px; height: 15px; }
+.host-tool-button svg { width: 15px; height: 15px; }
+
+.host-card-tools.is-hidden { display: none; }
+
+.host-title-input {
+  width: 100%;
+  min-width: 0;
+  margin: 0 0 2px;
+  padding: 2px 8px;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.host-title-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 
 @media (hover: none) {
-  .host-order-controls { opacity: 1; }
+  .host-card-tools { opacity: 1; }
 }
 
 .host-card-header {

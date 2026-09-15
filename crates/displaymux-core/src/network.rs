@@ -378,6 +378,22 @@ pub enum AgentAction {
         order: Vec<String>,
         updated_at_ms: u64,
     },
+    /// Best-effort notice of every custom host name a paired host knows.
+    /// Receivers merge entry by entry, keeping the newer `updated_at_ms`.
+    HostAliasesChanged {
+        aliases: Vec<HostAlias>,
+    },
+}
+
+/// A user-chosen display name for a host, keyed by `LocalHostIdentity::id`.
+/// An empty `name` records that the custom name was cleared, so the clear
+/// reaches paired hosts instead of being undone by their older entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostAlias {
+    pub host_id: String,
+    pub name: String,
+    pub updated_at_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -758,6 +774,26 @@ mod tests {
         };
         let serialized = serde_json::to_value(&action).unwrap();
         assert!(serialized.get("monitor").is_some());
+    }
+
+    #[test]
+    fn host_aliases_changed_notice_round_trips_with_every_entry() {
+        let action = AgentAction::HostAliasesChanged {
+            aliases: vec![HostAlias {
+                host_id: "2cf05de0c029-windows".to_owned(),
+                name: "遊戲電腦".to_owned(),
+                updated_at_ms: 1_757_000_000_000,
+            }],
+        };
+
+        let serialized = serde_json::to_string(&action).unwrap();
+
+        assert!(serialized.contains(r#""type":"host_aliases_changed""#));
+        assert!(serialized.contains(r#""hostId":"2cf05de0c029-windows""#));
+        assert_eq!(
+            serde_json::from_str::<AgentAction>(&serialized).unwrap(),
+            action
+        );
     }
 
     #[test]

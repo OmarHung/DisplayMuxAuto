@@ -1,7 +1,7 @@
 import "@fontsource-variable/manrope";
 import {
   Activity, ArrowLeftRight, CircleHelp, Computer, createIcons, Download, KeyRound, Laptop,
-  ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Github, Languages, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
+  ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Pencil, Github, Languages, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
   ShieldCheck, SunMoon, Trash2, UserRound, Zap,
 } from "lucide";
 import { getVersion } from "@tauri-apps/api/app";
@@ -463,7 +463,7 @@ app.innerHTML = `
   <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
 `;
 
-const iconSet = { Activity, ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, SunMoon, Trash2, UserRound, Zap };
+const iconSet = { Activity, ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Pencil, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, SunMoon, Trash2, UserRound, Zap };
 const refreshIcons = () => createIcons({ icons: iconSet });
 refreshIcons();
 
@@ -550,6 +550,29 @@ switchPanel?.addEventListener("click", (event) => {
   if (moveButton?.dataset.moveRoute) {
     moveRouteBy(moveButton.dataset.moveRoute, Number(moveButton.dataset.moveOffset));
   }
+  const renameButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-rename-route]");
+  if (renameButton?.dataset.renameRoute) startRenaming(renameButton.dataset.renameRoute);
+});
+switchPanel?.addEventListener("input", (event) => {
+  const field = event.target as HTMLInputElement;
+  if (field.dataset.renameInput && renaming?.routeId === field.dataset.renameInput) {
+    renaming = { ...renaming, draft: field.value };
+  }
+});
+switchPanel?.addEventListener("keydown", (event) => {
+  const field = event.target as HTMLInputElement;
+  if (!field.dataset.renameInput) return;
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void commitRename(field.dataset.renameInput);
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    stopRenaming(field.dataset.renameInput);
+  }
+});
+switchPanel?.addEventListener("focusout", (event) => {
+  const field = event.target as HTMLInputElement;
+  if (field.dataset.renameInput) void commitRename(field.dataset.renameInput);
 });
 switchPanel?.addEventListener("dragstart", (event) => {
   const card = (event.target as HTMLElement).closest<HTMLElement>("[data-route-card]");
@@ -676,6 +699,14 @@ const ACTIVE_ROUTE_CHANGED_EVENT = "active-route-changed";
 const HOST_ORDER_CHANGED_EVENT = "host-order-changed";
 /** Route ids ("local" and peer ids) in the saved host card order. */
 let routeOrder: string[] = [];
+/** Emitted by the backend when this or a paired host renames a host. */
+const HOST_NAMES_CHANGED_EVENT = "host-names-changed";
+/** Longest custom host name the backend accepts, in characters. */
+const MAX_HOST_NAME_CHARS = 32;
+/** Custom host names by route id; hosts using their default name are absent. */
+let hostNames: Record<string, string> = {};
+/** The host card whose name is being edited, and the unsaved text. */
+let renaming: { routeId: string; draft: string } | null = null;
 let isRefreshing = false;
 let lastRefreshAt = 0;
 
@@ -685,10 +716,11 @@ async function refresh(): Promise<void> {
   document.querySelector("#refresh-button svg")?.classList.add("is-spinning");
   try {
     dashboard = await invoke<DashboardState>("get_dashboard_state");
-    [settings, inputOptionsByMonitor, routeOrder] = await Promise.all([
+    [settings, inputOptionsByMonitor, routeOrder, hostNames] = await Promise.all([
       invoke<AppSettings>("get_settings"),
       loadInputOptionsByMonitor(dashboard.shared.map((shared) => shared.monitorKey)),
       invoke<string[]>("get_host_order"),
+      invoke<Record<string, string>>("get_host_names"),
     ]);
     try { discoveredPeers = await invoke<DiscoveredPeer[]>("discover_peers"); } catch { discoveredPeers = []; }
     isPreview = false;
@@ -1119,7 +1151,7 @@ function renderPairedRoutes(): void {
   }).join("");
   container.innerHTML = discoveryNote + (settings.peers.length ? `<p class="field-title">${t("settings.addedHosts")}</p>` + settings.peers.map((peer) => `<article class="paired-route-card">
     <div class="peer-identity">
-      <strong>${escapeHtml(peer.name)}</strong>
+      <strong>${escapeHtml(hostNames[peer.id] ?? peer.name)}</strong>
       <span>${platformName(peer.platform)} · ${escapeHtml(peer.address)}</span>
       <div class="peer-diagnostic-actions" aria-label="${escapeHtml(t("settings.diagnosticAria", { name: peer.name }))}">
         <button class="text-button" type="button" data-probe-id="${escapeHtml(peer.id)}">${t("action.testConnection")}</button>
@@ -1217,6 +1249,52 @@ function moveRouteBy(routeId: string, offset: number): void {
 
 let draggedRouteId: string | null = null;
 
+async function reloadHostNames(): Promise<void> {
+  try {
+    hostNames = await invoke<Record<string, string>>("get_host_names");
+    renderSwitchPanel();
+    refreshIcons();
+  } catch (error) {
+    showToast(t("toast.hostNameFailed"), String(error), true);
+  }
+}
+
+function startRenaming(routeId: string): void {
+  const shownTitle = document.querySelector<HTMLElement>(`[data-route-card="${cssEscape(routeId)}"] .host-title`);
+  renaming = { routeId, draft: shownTitle?.textContent ?? hostNames[routeId] ?? "" };
+  renderSwitchPanel();
+  refreshIcons();
+  const field = document.querySelector<HTMLInputElement>(`[data-rename-input="${cssEscape(routeId)}"]`);
+  field?.focus();
+  field?.select();
+}
+
+function stopRenaming(routeId: string): void {
+  if (renaming?.routeId !== routeId) return;
+  renaming = null;
+  renderSwitchPanel();
+  refreshIcons();
+  document.querySelector<HTMLButtonElement>(`[data-rename-route="${cssEscape(routeId)}"]`)?.focus();
+}
+
+async function commitRename(routeId: string): Promise<void> {
+  if (renaming?.routeId !== routeId) return;
+  const { draft } = renaming;
+  const defaultName = document.querySelector<HTMLInputElement>(`[data-rename-input="${cssEscape(routeId)}"]`)?.placeholder ?? "";
+  const currentName = hostNames[routeId] ?? defaultName;
+  stopRenaming(routeId);
+  const name = draft.trim();
+  if (name === currentName) return;
+  try {
+    // Typing the default name back is the same as clearing the custom one.
+    hostNames = await invoke<Record<string, string>>("set_host_name", { routeId, name: name === defaultName ? "" : name });
+    renderSwitchPanel();
+    refreshIcons();
+  } catch (error) {
+    showToast(t("toast.hostNameFailed"), String(error), true);
+  }
+}
+
 function renderHostRoutes(shared: SharedMonitorStatus): void {
   const container = document.querySelector(`[data-host-route-grid="${cssEscape(shared.monitorKey)}"]`);
   if (!container) return;
@@ -1232,6 +1310,11 @@ function renderHostRoutes(shared: SharedMonitorStatus): void {
   ].sort((left, right) => routeRank(left.id) - routeRank(right.id));
   container.innerHTML = routes.map((route, index) => {
     const isActive = route.id === activeRouteId;
+    const displayName = hostNames[route.id] ?? route.name;
+    const isRenaming = renaming?.routeId === route.id;
+    const title = isRenaming
+      ? `<input class="host-title-input" data-rename-input="${escapeHtml(route.id)}" value="${escapeHtml(renaming?.draft ?? displayName)}" placeholder="${escapeHtml(route.name)}" maxlength="${MAX_HOST_NAME_CHARS}" aria-label="${escapeHtml(t("dashboard.hostNameLabel"))}" />`
+      : `<h2 class="host-title">${escapeHtml(displayName)}</h2>`;
     const badgeText = route.local
       ? (route.platform === "mac" ? t("dashboard.localMacOs") : t("dashboard.localWindowsBadge"))
       : (route.platform === "mac" ? t("dashboard.connectedMacOs") : t("dashboard.connectedWindows"));
@@ -1241,10 +1324,11 @@ function renderHostRoutes(shared: SharedMonitorStatus): void {
     const iconName = route.platform === "mac" ? "laptop" : "computer";
 
     return `
-      <article class="host-route-card ${route.local ? "is-local" : ""}" draggable="true" data-route-card="${escapeHtml(route.id)}">
-        <div class="host-order-controls" title="${escapeHtml(t("dashboard.dragToReorder"))}">
-          <button type="button" class="host-order-button" data-move-route="${escapeHtml(route.id)}" data-move-offset="-1" aria-label="${escapeHtml(t("action.moveHostEarlier", { name: route.name }))}" title="${escapeHtml(t("action.moveHostEarlier", { name: route.name }))}" ${index === 0 ? "disabled" : ""}><i data-lucide="chevron-left"></i></button>
-          <button type="button" class="host-order-button" data-move-route="${escapeHtml(route.id)}" data-move-offset="1" aria-label="${escapeHtml(t("action.moveHostLater", { name: route.name }))}" title="${escapeHtml(t("action.moveHostLater", { name: route.name }))}" ${index === routes.length - 1 ? "disabled" : ""}><i data-lucide="chevron-right"></i></button>
+      <article class="host-route-card ${route.local ? "is-local" : ""}" draggable="${isRenaming ? "false" : "true"}" data-route-card="${escapeHtml(route.id)}">
+        <div class="host-card-tools ${isRenaming ? "is-hidden" : ""}" title="${escapeHtml(t("dashboard.dragToReorder"))}">
+          <button type="button" class="host-tool-button" data-rename-route="${escapeHtml(route.id)}" aria-label="${escapeHtml(t("action.renameHost", { name: displayName }))}" title="${escapeHtml(t("action.renameHost", { name: displayName }))}"><i data-lucide="pencil"></i></button>
+          <button type="button" class="host-tool-button" data-move-route="${escapeHtml(route.id)}" data-move-offset="-1" aria-label="${escapeHtml(t("action.moveHostEarlier", { name: displayName }))}" title="${escapeHtml(t("action.moveHostEarlier", { name: displayName }))}" ${index === 0 ? "disabled" : ""}><i data-lucide="chevron-left"></i></button>
+          <button type="button" class="host-tool-button" data-move-route="${escapeHtml(route.id)}" data-move-offset="1" aria-label="${escapeHtml(t("action.moveHostLater", { name: displayName }))}" title="${escapeHtml(t("action.moveHostLater", { name: displayName }))}" ${index === routes.length - 1 ? "disabled" : ""}><i data-lucide="chevron-right"></i></button>
         </div>
         <div class="host-card-header">
           <div class="host-icon ${route.platform}">
@@ -1252,7 +1336,7 @@ function renderHostRoutes(shared: SharedMonitorStatus): void {
           </div>
           <div class="host-copy">
             <span class="host-label ${route.local ? "is-local" : ""}">${badgeText}</span>
-            <h2 class="host-title">${escapeHtml(route.name)}</h2>
+            ${title}
             <p class="host-input-desc">${inputDesc}</p>
           </div>
         </div>
@@ -1721,6 +1805,7 @@ async function bootstrap(): Promise<void> {
     try {
       await listen(ACTIVE_ROUTE_CHANGED_EVENT, () => void reloadActiveRoutes());
       await listen(HOST_ORDER_CHANGED_EVENT, () => void reloadHostOrder());
+      await listen(HOST_NAMES_CHANGED_EVENT, () => void reloadHostNames());
     } catch (error) {
       showToast(t("toast.activeHostSyncFailed"), String(error), true);
     }
