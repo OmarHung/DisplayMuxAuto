@@ -569,9 +569,10 @@ document.querySelector<HTMLButtonElement>("#shortcut-recorder")?.addEventListene
 document.addEventListener("keydown", captureShortcut, true);
 document.querySelector("#monitor-picker")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-monitor-id]");
-  if (!button?.dataset.monitorId) return;
-  if (button.dataset.monitorSelected === "true") void removeSharedMonitor(button.dataset.monitorId);
-  else void addSharedMonitor(button.dataset.monitorId);
+  const monitorId = button?.dataset.monitorId;
+  if (!button || !monitorId) return;
+  const selected = button.dataset.monitorSelected === "true";
+  void withBusyButton(button, () => (selected ? removeSharedMonitor(monitorId) : addSharedMonitor(monitorId)));
 });
 document.querySelector("#local-host-name")?.addEventListener("change", (event) => {
   void renameLocalHost((event.target as HTMLInputElement).value);
@@ -583,12 +584,17 @@ document.querySelector(".settings-main")?.addEventListener("click", (event) => {
 document.querySelector("#monitor-merge")?.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
   const undo = target.closest<HTMLButtonElement>("[data-unmerge-alias]");
-  if (undo?.dataset.unmergeAlias) { void unmergeSharedMonitor(undo.dataset.unmergeAlias); return; }
+  const undoAlias = undo?.dataset.unmergeAlias;
+  if (undo && undoAlias) {
+    void withBusyButton(undo, () => unmergeSharedMonitor(undoAlias));
+    return;
+  }
   const button = target.closest<HTMLButtonElement>("[data-merge-alias]");
   const aliasId = button?.dataset.mergeAlias;
-  if (!aliasId) return;
+  if (!button || !aliasId) return;
   const select = document.querySelector<HTMLSelectElement>(`[data-merge-target="${CSS.escape(aliasId)}"]`);
-  if (select?.value) void mergeSharedMonitor(aliasId, select.value);
+  const primaryId = select?.value;
+  if (primaryId) void withBusyButton(button, () => mergeSharedMonitor(aliasId, primaryId));
 });
 document.querySelector("#peer-list")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-add-peer]");
@@ -1789,6 +1795,20 @@ async function scanPeers(): Promise<void> {
     if (!discoveredPeers.length) showToast(t("toast.noPeersTitle"), t("toast.noPeersBody"), true);
   } catch (error) { showToast(t("toast.scanFailed"), String(error), true); }
   finally { if (button) { button.disabled = false; button.textContent = t("action.searchAgain"); } }
+}
+
+/** Marks a button as working until its command settles. Re-rendering replaces
+ *  the element, so restoring it afterwards is harmless when that happens. */
+async function withBusyButton(button: HTMLButtonElement, run: () => Promise<void>): Promise<void> {
+  if (button.disabled) return;
+  button.disabled = true;
+  button.classList.add("is-busy");
+  try {
+    await run();
+  } finally {
+    button.disabled = false;
+    button.classList.remove("is-busy");
+  }
 }
 
 async function addSharedMonitor(monitorId: string): Promise<void> {

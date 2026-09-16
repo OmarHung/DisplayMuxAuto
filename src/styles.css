@@ -41,6 +41,10 @@
   --accent-light: #eaf5f0;
   --accent-border: #92c9b4;
   --warning: #a35b18;
+  --busy: #55635d;
+  --busy-ink: #ffffff;
+  --danger: #b3423c;
+  --danger-soft: rgba(179, 66, 60, 0.1);
   --shadow-card: 0 4px 18px rgba(25, 38, 33, 0.04);
   --shadow-window: 0 16px 40px rgba(20, 35, 28, 0.08);
 }
@@ -883,6 +887,64 @@ button.switch-all-host:disabled {
   gap: 10px;
 }
 
+/* A display command queues behind the dashboard scan, which reads capabilities
+   and retries DDC, so it can take seconds. The button has to keep saying so for
+   all of it, or the click reads as missed. */
+.monitor-select-btn.is-busy,
+.reset-button.is-busy {
+  pointer-events: none;
+}
+
+.monitor-select-btn.is-busy,
+.monitor-select-btn.is-selected.is-busy {
+  /* The label stays: a button emptied of its text reads as broken rather than
+     busy. The fill leaves the accent entirely, because a darker green is not a
+     different state at a glance — it is the same button, slightly off. */
+  background: var(--busy);
+  color: var(--busy-ink);
+}
+
+.monitor-select-btn.is-busy::before,
+.reset-button.is-busy::after {
+  content: "";
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  /* The button's own text colour, so the spinner contrasts with whatever that
+     button's background is. A fixed accent colour disappeared on the filled
+     green button, which is the one this matters most on. */
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: monitor-btn-spin .6s linear infinite;
+}
+
+.monitor-select-btn.is-busy::before {
+  margin-inline-end: 8px;
+  vertical-align: -2px;
+}
+
+.reset-button.is-busy {
+  position: relative;
+  border-color: var(--busy);
+  color: var(--busy);
+}
+
+.reset-button.is-busy::after {
+  position: absolute;
+  top: 14px;
+  inset-inline-end: 14px;
+}
+
+@keyframes monitor-btn-spin { to { transform: rotate(360deg); } }
+
+/* Without motion the ring still reads as a state, because the label and the
+   dimmed fill carry it. */
+@media (prefers-reduced-motion: reduce) {
+  .monitor-select-btn.is-busy::before,
+  .reset-button.is-busy::after { animation: none; }
+}
+
 .reset-section {
   margin-top: 22px;
 }
@@ -1060,10 +1122,21 @@ button.switch-all-host:disabled {
 }
 
 .monitor-select-btn:hover { background: var(--accent-hover); }
+/* Already shared: an outline reads as "this is on, press to turn it off",
+   where a second solid accent button read as the same action as "add". The
+   hover state says which way it goes, because removing also discards the
+   inputs every paired host had for that display. */
 .monitor-select-btn.is-selected {
-  background: var(--accent);
-  color: #ffffff;
-  cursor: default;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  cursor: pointer;
+}
+
+.monitor-select-btn.is-selected:hover {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 /* Form Fields */
@@ -2038,6 +2111,10 @@ button.switch-all-host:disabled {
   --accent-hover: #40b086;
   --accent-light: #183327;
   --accent-border: #285542;
+  --busy: #44544d;
+  --busy-ink: #dbe5e0;
+  --danger: #e2807a;
+  --danger-soft: rgba(226, 128, 122, 0.14);
   --shadow-card: 0 4px 18px rgba(0, 0, 0, 0.25);
   --shadow-window: 0 16px 40px rgba(0, 0, 0, 0.4);
 }
