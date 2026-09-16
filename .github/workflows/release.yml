@@ -68,6 +68,11 @@ jobs:
       - name: Test Rust workspace
         run: cargo test --locked --all-targets
 
+      - name: Classify release channel
+        id: channel
+        shell: bash
+        run: node -p '"prerelease=" + require("./src-tauri/tauri.conf.json").version.includes("-")' >> "$GITHUB_OUTPUT"
+
       - name: Build signed draft release
         uses: tauri-apps/tauri-action@2d793bf2c8c505b9b76211601b09aab48922225d # v1.0.0
         env:
@@ -78,7 +83,7 @@ jobs:
           tagName: v__VERSION__
           releaseName: DisplayMux v__VERSION__
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ steps.channel.outputs.prerelease }}
           generateReleaseNotes: true
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
@@ -101,6 +106,11 @@ jobs:
         id: app_version
         shell: bash
         run: node -p '"version=" + require("./src-tauri/tauri.conf.json").version' >> "$GITHUB_OUTPUT"
+
+      - name: Classify release channel
+        id: channel
+        shell: bash
+        run: node -p '"prerelease=" + require("./src-tauri/tauri.conf.json").version.includes("-")' >> "$GITHUB_OUTPUT"
 
       - name: Compose bilingual release notes
         shell: bash
@@ -129,6 +139,15 @@ jobs:
           gh release upload "$tag" updater-manifest/latest.json --clobber
 
       - name: Publish signed release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "v${{ steps.app_version.outputs.version }}" --notes-file release-notes.md --draft=false --latest
+        run: |
+          tag="v${{ steps.app_version.outputs.version }}"
+          if [ "${{ steps.channel.outputs.prerelease }}" = "true" ]; then
+            # A pre-release must never become the updater's latest.json source, so
+            # existing installations keep resolving to the newest stable release.
+            gh release edit "$tag" --notes-file release-notes.md --draft=false --prerelease --latest=false
+          else
+            gh release edit "$tag" --notes-file release-notes.md --draft=false --prerelease=false --latest
+          fi
