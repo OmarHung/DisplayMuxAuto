@@ -89,6 +89,13 @@ interface AppSettings {
   onboardingCompleted: boolean;
   hostSwitcherEnabled: boolean;
   hostSwitcherShortcut: string;
+  monitorIdentityLinks?: MonitorIdentityLink[];
+}
+
+interface MonitorIdentityLink {
+  alias: Fingerprint;
+  primary: Fingerprint | null;
+  updatedAtMs: number;
 }
 
 interface SharedMonitorStatus {
@@ -304,6 +311,7 @@ app.innerHTML = `
                   <strong>${t("settings.stepMonitor")}</strong>
                 </div>
                 <div class="monitor-picker" id="monitor-picker"></div>
+                <div class="monitor-merge" id="monitor-merge"></div>
               </div>
 
               <div class="form-section two-columns">
@@ -540,6 +548,13 @@ document.querySelector("#monitor-picker")?.addEventListener("click", (event) => 
   if (!button?.dataset.monitorId) return;
   if (button.dataset.monitorSelected === "true") void removeSharedMonitor(button.dataset.monitorId);
   else void addSharedMonitor(button.dataset.monitorId);
+});
+document.querySelector("#monitor-merge")?.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-merge-alias]");
+  const aliasId = button?.dataset.mergeAlias;
+  if (!aliasId) return;
+  const select = document.querySelector<HTMLSelectElement>(`[data-merge-target="${CSS.escape(aliasId)}"]`);
+  if (select?.value) void mergeSharedMonitor(aliasId, select.value);
 });
 document.querySelector("#peer-list")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-add-peer]");
@@ -962,7 +977,7 @@ function resolutionFor(shared: SharedMonitorStatus): { resolution: MonitorResolu
   let resolution = selectedMonitor?.maxResolution ?? null;
   let source = selectedMonitor?.resolutionSource ?? null;
   if (!resolution) {
-    const match = dashboard.monitors.find((m) => sameFingerprint(m.fingerprint, shared.fingerprint));
+    const match = dashboard.monitors.find((m) => sameDisplay(m.fingerprint, shared.fingerprint));
     if (match?.maxResolution) {
       resolution = match.maxResolution;
       source = match.resolutionSource ?? null;
@@ -1062,7 +1077,7 @@ function renderState(): void {
   renderShortcutSetting();
   keepActiveMonitorSelected();
   renderMonitorStrip(); renderSwitchPanel();
-  renderMonitors(); renderPeerList(); renderPairedRoutes(); renderLocalInputSummary(); renderInputLabels(); renderInputHints(); refreshIcons();
+  renderMonitors(); renderMonitorMerge(); renderPeerList(); renderPairedRoutes(); renderLocalInputSummary(); renderInputLabels(); renderInputHints(); refreshIcons();
 }
 
 function shortcutDisplay(value: string): string {
@@ -1176,7 +1191,7 @@ function renderMonitors(): void {
   // A shared display showing another host can't be read from here, but it is
   // still this computer's shared display, so list it with the controllable ones.
   const isOnOtherHost = (monitor: MonitorDescriptor) => dashboard.shared.some((shared) =>
-    shared.displayState === "onOtherHost" && sameFingerprint(shared.fingerprint, monitor.fingerprint));
+    shared.displayState === "onOtherHost" && sameDisplay(shared.fingerprint, monitor.fingerprint));
   const uncontrollable = dashboard.uncontrollableMonitors ?? [];
   const elsewhere = uncontrollable.filter(isOnOtherHost);
   const unreachable = uncontrollable.filter((monitor) => !isOnOtherHost(monitor));
@@ -1200,8 +1215,46 @@ function renderMonitors(): void {
   }).join("");
 }
 
+/// Offers to merge a shared display that cannot be identified right now into
+/// another one. A display that reports a different identifier per display mode
+/// looks like a second display, and only the user can say they are one panel.
+function renderMonitorMerge(): void {
+  const container = document.querySelector("#monitor-merge");
+  if (!container) return;
+  const unidentified = dashboard.shared.filter((shared) => shared.displayState === "unavailable");
+  const targets = dashboard.shared.filter((shared) => shared.displayState !== "unavailable");
+  if (!unidentified.length || !targets.length) { container.innerHTML = ""; return; }
+
+  const describe = (shared: SharedMonitorStatus) =>
+    `${shared.name} (${shared.fingerprint.manufacturer_id}/${shared.fingerprint.product_code})`;
+  container.innerHTML = `
+    <div class="pairing-heading"><strong>${t("settings.mergeTitle")}</strong></div>
+    <p class="peer-empty">${t("settings.mergeIntro")}</p>
+    ${unidentified.map((shared) => `
+      <article class="monitor-card-item">
+        <div class="monitor-item-left">
+          <div class="monitor-item-icon"><i data-lucide="monitor-off"></i></div>
+          <div class="monitor-identity">
+            <strong>${escapeHtml(describe(shared))}</strong>
+            <span>${escapeHtml(t("settings.mergeUnidentified"))}</span>
+          </div>
+        </div>
+        <label class="field">
+          <span>${t("settings.mergeSelect")}</span>
+          <select data-merge-target="${escapeHtml(shared.monitorKey)}">
+            ${targets.map((target) => `<option value="${escapeHtml(target.monitorKey)}">${escapeHtml(describe(target))}</option>`).join("")}
+          </select>
+        </label>
+        <button type="button" class="monitor-select-btn" data-merge-alias="${escapeHtml(shared.monitorKey)}">
+          ${t("settings.mergeAction")}
+        </button>
+      </article>
+    `).join("")}
+  `;
+}
+
 function selectableMonitorCard(monitor: MonitorDescriptor, statusLabel: string): string {
-  const isSelected = settings.sharedMonitors.some((sm) => sameFingerprint(sm.fingerprint, monitor.fingerprint));
+  const isSelected = isSharedDisplay(monitor.fingerprint);
   const fp = monitor.fingerprint;
   const res = monitor.maxResolution;
   const resText = res
@@ -1266,7 +1319,7 @@ function renderLocalInputSummary(): void {
 function inputUsers(shared: SharedMonitorStatus, value: number): string[] {
   const localUser = selectedMonitorFor(shared)?.localInput === value ? [routeDisplayName("local")] : [];
   const peerUsers = settings.peers
-    .filter((peer) => peer.inputs.some((assignment) => assignment.input === value && sameFingerprint(assignment.monitor, shared.fingerprint)))
+    .filter((peer) => peer.inputs.some((assignment) => assignment.input === value && sameDisplay(assignment.monitor, shared.fingerprint)))
     .map((peer) => routeDisplayName(peer.id));
   return [...localUser, ...peerUsers];
 }
@@ -1382,7 +1435,7 @@ function renderPairedRoutes(): void {
     <div class="paired-route-right">
       ${dashboard.shared.map((shared) => `<label class="paired-input-wrap">
         <span>${escapeHtml(shared.name)} ${t("settings.inputValue")}</span>
-        <select class="paired-input-field" data-route-input="${escapeHtml(peer.id)}" data-route-monitor="${escapeHtml(shared.monitorKey)}">${renderInputOptions(peer.id, shared.monitorKey, peer.inputs.find((assignment) => sameFingerprint(assignment.monitor, shared.fingerprint))?.input ?? null)}</select>
+        <select class="paired-input-field" data-route-input="${escapeHtml(peer.id)}" data-route-monitor="${escapeHtml(shared.monitorKey)}">${renderInputOptions(peer.id, shared.monitorKey, peer.inputs.find((assignment) => sameDisplay(assignment.monitor, shared.fingerprint))?.input ?? null)}</select>
       </label>`).join("")}
       <button class="delete-button" type="button" data-remove-peer="${escapeHtml(peer.id)}" title="${t("action.remove")}"><i data-lucide="trash-2"></i></button>
     </div>
@@ -1577,7 +1630,7 @@ function renderHostRoutes(shared: SharedMonitorStatus): void {
     { id: "local", name: dashboard.localHost === "windows" ? t("dashboard.localWindows") : t("dashboard.localMac"), platform: dashboard.localHost, input: selectedMonitor?.localInput ?? null, local: true },
     ...settings.peers.map((peer) => ({
       id: peer.id, name: peer.name, platform: peer.platform,
-      input: peer.inputs.find((assignment) => sameFingerprint(assignment.monitor, shared.fingerprint))?.input ?? null,
+      input: peer.inputs.find((assignment) => sameDisplay(assignment.monitor, shared.fingerprint))?.input ?? null,
       local: false,
     })),
   ].sort((left, right) => routeRank(left.id) - routeRank(right.id));
@@ -1666,6 +1719,18 @@ async function removeSharedMonitor(monitorId: string): Promise<void> {
   } catch (error) { showToast(t("toast.monitorSelectFailed"), String(error), true); }
 }
 
+async function mergeSharedMonitor(aliasId: string, primaryId: string): Promise<void> {
+  const primary = dashboard.shared.find((shared) => shared.monitorKey === primaryId);
+  try {
+    settings = await invoke<AppSettings>("set_monitor_identity_link", { aliasId, primaryId });
+    await refresh();
+    showToast(
+      t("settings.mergeAction"),
+      t("settings.mergedInto", { name: primary?.name ?? t("dashboard.sharedDisplay") }),
+    );
+  } catch (error) { showToast(t("toast.monitorSelectFailed"), String(error), true); }
+}
+
 async function addPeer(peerId: string): Promise<void> {
   try {
     const sharedKey = document.querySelector<HTMLInputElement>("#shared-key")?.value ?? "";
@@ -1673,7 +1738,7 @@ async function addPeer(peerId: string): Promise<void> {
     const added = settings.peers.find((peer) => peer.id === peerId);
     renderState();
     const detectedPorts = (added?.inputs ?? []).map((assignment) => {
-      const shared = dashboard.shared.find((item) => sameFingerprint(item.fingerprint, assignment.monitor));
+      const shared = dashboard.shared.find((item) => sameDisplay(item.fingerprint, assignment.monitor));
       return shared ? `${shared.name}: ${inputName(assignment.input, shared.monitorKey)}` : String(assignment.input);
     });
     showToast(t("toast.peerAdded"), detectedPorts.length ? t("toast.peerPortDetected", { port: detectedPorts.join(", ") }) : t("toast.peerAddedBody"));
@@ -1752,7 +1817,7 @@ async function switchHost(monitorKey: string, targetId: string): Promise<void> {
 function routeInputFor(shared: SharedMonitorStatus, routeId: string): number | null {
   if (routeId === "local") return selectedMonitorFor(shared)?.localInput ?? null;
   const peer = settings.peers.find((item) => item.id === routeId);
-  return peer?.inputs.find((assignment) => sameFingerprint(assignment.monitor, shared.fingerprint))?.input ?? null;
+  return peer?.inputs.find((assignment) => sameDisplay(assignment.monitor, shared.fingerprint))?.input ?? null;
 }
 
 /** Shared displays that switching everything to this host would change. */
@@ -2116,6 +2181,31 @@ function resolutionSourceName(value: ResolutionSource | null): string {
   if (value === "windowsDisplayMode") return t("resolution.windows");
   return t("resolution.unknown");
 }
+/** The identity a fingerprint resolves to, following the user's merges. Mirrors
+ *  `monitor_identity::primary_for`; the bound stops a malformed chain looping. */
+function primaryFingerprint(fingerprint: Fingerprint): Fingerprint {
+  let current = fingerprint;
+  for (let step = 0; step < 8; step += 1) {
+    const link = (settings.monitorIdentityLinks ?? []).find((entry) => sameFingerprint(entry.alias, current));
+    if (!link?.primary || sameFingerprint(link.primary, current)) return current;
+    current = link.primary;
+  }
+  return current;
+}
+
+/** Whether two identities name one physical display, following the user's
+ *  merges. Mirrors `monitor_identity::is_same_display`: being the same display
+ *  is an equivalence, so both sides are resolved — a stored selection can
+ *  itself be an alias. */
+function sameDisplay(left: Fingerprint, right: Fingerprint): boolean {
+  return sameFingerprint(primaryFingerprint(left), primaryFingerprint(right));
+}
+
+/** Whether a display present right now is one of this computer's shared displays. */
+function isSharedDisplay(fingerprint: Fingerprint): boolean {
+  return settings.sharedMonitors.some((sm) => sameDisplay(sm.fingerprint, fingerprint));
+}
+
 function sameFingerprint(left: Fingerprint, right: Fingerprint): boolean { return left.manufacturer_id.toUpperCase() === right.manufacturer_id.toUpperCase() && left.product_code.toUpperCase() === right.product_code.toUpperCase() && left.serial_number === right.serial_number; }
 function escapeHtml(value: string): string { return value.replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char] ?? char); }
 function cssEscape(value: string): string { return typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&"); }

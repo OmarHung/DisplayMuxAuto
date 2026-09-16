@@ -388,6 +388,11 @@ pub enum AgentAction {
     InputLabelsChanged {
         labels: Vec<InputLabel>,
     },
+    /// Best-effort notice of every display-identity claim a paired host knows.
+    /// Receivers merge entry by entry, keeping the newer `updated_at_ms`.
+    MonitorIdentitiesChanged {
+        links: Vec<MonitorIdentityLink>,
+    },
     /// Best-effort notice that the sender is on screen on `monitor` and reads
     /// `input` there, so `input` is the port the sender is plugged into.
     /// Receivers adopt it as that host's input without the user picking one.
@@ -412,6 +417,22 @@ pub enum AgentAction {
 pub struct HostAlias {
     pub host_id: String,
     pub name: String,
+    pub updated_at_ms: u64,
+}
+
+/// A user's claim that `alias` and `primary` are the same physical display.
+///
+/// Some displays publish a different EDID product code per display mode: the
+/// MSI MPG 274U reports `MSI:3CF0` at 3840x2160 and `MSI:7CF0` at 1920x1080,
+/// with no serial number in either EDID or the platform's own record. Nothing
+/// the display reports stays put across that switch, so the equivalence can
+/// only come from the user. Each entry carries its own timestamp, like
+/// `InputLabel`, and an empty `primary` records that the claim was withdrawn.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorIdentityLink {
+    pub alias: MonitorFingerprint,
+    pub primary: Option<MonitorFingerprint>,
     pub updated_at_ms: u64,
 }
 
@@ -503,6 +524,9 @@ pub struct AgentResponse {
     /// The responder's input notes, for the same catch-up.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_labels: Vec<InputLabel>,
+    /// The responder's display-identity claims, for the same catch-up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub monitor_identity_links: Vec<MonitorIdentityLink>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -795,6 +819,48 @@ mod tests {
         assert!(matches!(error, DisplayMuxError::PeerUnavailable(_)));
         assert!(!error.to_string().contains("EOF"));
         assert!(error.to_string().contains("配對密碼"));
+    }
+
+    #[test]
+    fn a_response_from_an_agent_without_identity_claims_still_deserializes() {
+        let response: AgentResponse =
+            serde_json::from_str(r#"{"ready":true,"message":"ok"}"#).unwrap();
+
+        assert!(response.monitor_identity_links.is_empty());
+    }
+
+    #[test]
+    fn monitor_identities_changed_notice_round_trips_with_every_entry() {
+        let action = AgentAction::MonitorIdentitiesChanged {
+            links: vec![MonitorIdentityLink {
+                alias: MonitorFingerprint::new("MSI", "7CF0", None::<String>),
+                primary: Some(MonitorFingerprint::new("MSI", "3CF0", None::<String>)),
+                updated_at_ms: 42,
+            }],
+        };
+
+        let encoded = serde_json::to_string(&action).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AgentAction>(&encoded).unwrap(),
+            action
+        );
+    }
+
+    #[test]
+    fn a_withdrawn_identity_claim_round_trips_as_an_absent_primary() {
+        let action = AgentAction::MonitorIdentitiesChanged {
+            links: vec![MonitorIdentityLink {
+                alias: MonitorFingerprint::new("MSI", "7CF0", None::<String>),
+                primary: None,
+                updated_at_ms: 42,
+            }],
+        };
+
+        let encoded = serde_json::to_string(&action).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AgentAction>(&encoded).unwrap(),
+            action
+        );
     }
 
     #[test]
