@@ -126,6 +126,7 @@ interface DashboardState {
   shared: SharedMonitorStatus[];
   selectionNotices: string[];
   monitorIdentityClaims?: MonitorIdentityClaim[];
+  localHostName?: string;
 }
 
 interface DiscoveredPeer {
@@ -323,7 +324,7 @@ app.innerHTML = `
               </div>
 
               <div class="form-section two-columns">
-                <label class="field"><span>${t("settings.localComputer")}</span><input id="local-host-name" disabled /></label>
+                <label class="field"><span>${t("settings.localComputer")}</span><input id="local-host-name" maxlength="24" /><small>${t("settings.localComputerHint")}</small></label>
               </div>
 
               <div class="form-section">
@@ -571,6 +572,9 @@ document.querySelector("#monitor-picker")?.addEventListener("click", (event) => 
   if (!button?.dataset.monitorId) return;
   if (button.dataset.monitorSelected === "true") void removeSharedMonitor(button.dataset.monitorId);
   else void addSharedMonitor(button.dataset.monitorId);
+});
+document.querySelector("#local-host-name")?.addEventListener("change", (event) => {
+  void renameLocalHost((event.target as HTMLInputElement).value);
 });
 document.querySelector(".settings-main")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-reset-scope]");
@@ -1101,7 +1105,7 @@ function renderState(): void {
   const pill = document.querySelector("#agent-pill");
   pill?.classList.toggle("is-ready", dashboard.agentConfigured);
   if (pill) pill.querySelector("span:last-child")!.textContent = isPreview ? t("dashboard.preview") : dashboard.agentConfigured ? t("dashboard.agentReady") : t("dashboard.agentMissing");
-  setInput("#local-host-name", dashboard.localHost === "windows" ? t("dashboard.localWindowsPc") : t("dashboard.localMac"));
+  setInput("#local-host-name", routeDisplayName("local"));
   setInput("#shared-key", settings.sharedKey);
   setInput("#wait-seconds", String(settings.waitSeconds));
   const autostart = document.querySelector<HTMLInputElement>("#autostart");
@@ -1664,7 +1668,10 @@ const ALL_DISPLAYS_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="24" he
 function routeDisplayName(routeId: string): string {
   const custom = hostNames[routeId];
   if (custom) return custom;
-  if (routeId === "local") return dashboard.localHost === "windows" ? t("dashboard.localWindows") : t("dashboard.localMac");
+  if (routeId === "local") {
+    return dashboard.localHostName
+      || (dashboard.localHost === "windows" ? t("dashboard.localWindows") : t("dashboard.localMac"));
+  }
   return settings.peers.find((peer) => peer.id === routeId)?.name ?? routeId;
 }
 
@@ -1708,7 +1715,7 @@ function renderHostRoutes(shared: SharedMonitorStatus): void {
   const selectedMonitor = selectedMonitorFor(shared);
   const activeRouteId = selectedMonitor?.activeRoute ?? "local";
   const routes = [
-    { id: "local", name: dashboard.localHost === "windows" ? t("dashboard.localWindows") : t("dashboard.localMac"), platform: dashboard.localHost, input: selectedMonitor?.localInput ?? null, local: true },
+    { id: "local", name: routeDisplayName("local"), platform: dashboard.localHost, input: selectedMonitor?.localInput ?? null, local: true },
     ...settings.peers.map((peer) => ({
       id: peer.id, name: peer.name, platform: peer.platform,
       input: peer.inputs.find((assignment) => sameDisplay(assignment.monitor, shared.fingerprint))?.input ?? null,
@@ -1717,7 +1724,7 @@ function renderHostRoutes(shared: SharedMonitorStatus): void {
   ].sort((left, right) => routeRank(left.id) - routeRank(right.id));
   container.innerHTML = routes.map((route, index) => {
     const isActive = route.id === activeRouteId;
-    const displayName = hostNames[route.id] ?? route.name;
+    const displayName = routeDisplayName(route.id);
     const isRenaming = renaming?.routeId === route.id;
     const title = isRenaming
       ? `<input class="host-title-input" data-rename-input="${escapeHtml(route.id)}" value="${escapeHtml(renaming?.draft ?? displayName)}" placeholder="${escapeHtml(route.name)}" maxlength="${MAX_HOST_NAME_CHARS}" aria-label="${escapeHtml(t("dashboard.hostNameLabel"))}" />`
@@ -1810,6 +1817,24 @@ async function mergeSharedMonitor(aliasId: string, primaryId: string): Promise<v
       t("settings.mergedInto", { name: primary?.name ?? t("dashboard.sharedDisplay") }),
     );
   } catch (error) { showToast(t("toast.monitorSelectFailed"), String(error), true); }
+}
+
+/** Renames this computer. An empty name, or the discovered one, clears the
+ *  custom name rather than storing a copy of the default. */
+async function renameLocalHost(value: string): Promise<void> {
+  const name = value.trim();
+  const fallback = dashboard.localHostName ?? "";
+  try {
+    hostNames = await invoke<Record<string, string>>("set_host_name", {
+      routeId: "local",
+      name: name === fallback ? "" : name,
+    });
+    renderState();
+    setInput("#local-host-name", routeDisplayName("local"));
+  } catch (error) {
+    showToast(t("toast.monitorSelectFailed"), String(error), true);
+    setInput("#local-host-name", routeDisplayName("local"));
+  }
 }
 
 let pendingReset: { scope: string; timer: number } | null = null;

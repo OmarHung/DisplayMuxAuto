@@ -111,6 +111,7 @@ const en = {
   "settings.mergeUndone": "Merge undone. The two identities count as separate displays again.",
   "settings.mergedInto": "Merged into {name}",
   "settings.notDetected": "Not detected right now",
+  "settings.localComputerHint": "This name appears in the switch centre and syncs to paired hosts. Leave it empty to go back to the discovered machine name.",
   "settings.resetTitle": "Reset",
   "settings.resetIntro": "A reset cannot be undone. Check what each one clears before using it.",
   "settings.resetDisplays": "Reset display setup",

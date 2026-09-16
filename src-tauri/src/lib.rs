@@ -395,6 +395,10 @@ struct AppRuntime {
     discovery: Option<MdnsPeerDiscovery>,
     /// This computer's discovery id, used to name it in the shared host order.
     local_host_id: String,
+    /// The machine name paired hosts discover this computer by. Used as the
+    /// default for its host card, so this computer reads the same on both
+    /// sides until the user renames it.
+    local_host_name: String,
     /// The input last announced to paired hosts per shared display, keyed by
     /// `monitor_key`, so a repeating scan announces a value only once.
     announced_inputs: std::sync::Mutex<HashMap<String, DisplayInput>>,
@@ -461,6 +465,9 @@ struct DashboardState {
     shared: Vec<SharedMonitorStatus>,
     selection_notices: Vec<String>,
     monitor_identity_claims: Vec<MonitorIdentityClaim>,
+    /// The name paired hosts discover this computer by, so its own card can
+    /// default to it rather than to a generic "this Mac".
+    local_host_name: String,
 }
 
 /// One "these two identities are the same display" claim, as the settings page
@@ -790,8 +797,14 @@ fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherS
             let mut hosts = Vec::with_capacity(settings.peers.len() + 1);
             hosts.push(HostSwitcherOption {
                 id: "local".to_owned(),
+                // Falls back to the name paired hosts discover this computer
+                // by, so every surface calls it the same thing.
                 name: host_alias::alias_for(&settings.host_aliases, &state.local_host_id)
-                    .unwrap_or(ui_text("這台電腦", "This computer"))
+                    .unwrap_or(if state.local_host_name.is_empty() {
+                        ui_text("這台電腦", "This computer")
+                    } else {
+                        state.local_host_name.as_str()
+                    })
                     .to_owned(),
                 platform: settings.local_host,
                 input_name: selected
@@ -1279,6 +1292,7 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
         shared,
         selection_notices,
         monitor_identity_claims: monitor_identity_claims(&settings),
+        local_host_name: state.local_host_name.clone(),
     })
 }
 
@@ -4263,6 +4277,7 @@ pub fn run() -> anyhow::Result<()> {
                 agent_task: Mutex::new(None),
                 discovery,
                 local_host_id: identity.id,
+                local_host_name: identity.name,
                 announced_inputs: std::sync::Mutex::new(HashMap::new()),
             });
             if let Some(runtime) = app.try_state::<AppRuntime>() {
