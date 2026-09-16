@@ -433,16 +433,8 @@ struct DashboardState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum MonitorSelectionChange {
-    SelectedOnlyMonitor {
-        name: String,
-    },
-    RemovedMissingMonitor {
-        name: String,
-        fingerprint: MonitorFingerprint,
-    },
-    RefreshedMetadata {
-        name: String,
-    },
+    SelectedOnlyMonitor { name: String },
+    RefreshedMetadata { name: String },
 }
 
 struct MonitorInventory {
@@ -1002,22 +994,8 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
     let (monitors, uncontrollable_monitors, shared, selection_notices) =
         match enumerate_monitor_inventory() {
             Ok(inventory) => {
-                let changes = reconcile_monitor_selection(
-                    &mut settings,
-                    &inventory.detected,
-                    &inventory.controllable,
-                );
+                let changes = reconcile_monitor_selection(&mut settings, &inventory.controllable);
                 if !changes.is_empty() {
-                    for change in &changes {
-                        if let MonitorSelectionChange::RemovedMissingMonitor {
-                            fingerprint, ..
-                        } = change
-                        {
-                            for peer in &mut settings.peers {
-                                peer.set_input_for(fingerprint, None);
-                            }
-                        }
-                    }
                     if let Ok(controller) = platform_controller() {
                         for selected in &mut settings.shared_monitors {
                             if let Some(current) = inventory.controllable.iter().find(|monitor| {
@@ -1136,16 +1114,6 @@ fn selection_notice_text(change: MonitorSelectionChange) -> Option<String> {
                 format!("Automatically selected the only controllable DDC/CI display: {name}")
             }
         }),
-        MonitorSelectionChange::RemovedMissingMonitor { name, .. } => {
-            Some(match UiLocale::current() {
-                UiLocale::TraditionalChinese => {
-                    format!("先前選取的 {name} 已消失，已自動移出共用螢幕清單")
-                }
-                UiLocale::English => format!(
-                    "Previously selected {name} disappeared and was automatically removed from the shared display list"
-                ),
-            })
-        }
         MonitorSelectionChange::RefreshedMetadata { .. } => None,
     }
 }
@@ -3511,75 +3479,51 @@ fn vendor_index_inputs(maximum: u32, current: DisplayInput) -> Vec<DisplayInput>
         .collect()
 }
 
-/// Whether the display was last switched to a host that is still paired.
-fn is_showing_paired_host(settings: &AppSettings, selected: &SelectedMonitor) -> bool {
-    selected.active_route.as_deref().is_some_and(|route| {
-        route != host_order::LOCAL_ROUTE_ID && settings.peers.iter().any(|peer| peer.id == route)
-    })
-}
-
 /// Reconciles every currently selected monitor against fresh enumeration
-/// results. Never reassigns a missing selection to a different physical
-/// monitor — a disappeared monitor is only ever removed (unless a paired host
-/// is showing it), matching the exact-fingerprint safety guarantee in
-/// product-facts.md. Auto-select only
-/// fires from an empty selection; once at least one monitor is selected, a
-/// newly appeared monitor is never added automatically.
+/// results. A selection is only ever refreshed from a monitor whose full EDID
+/// fingerprint matches it exactly, so it is never reassigned to a different
+/// physical monitor — the exact-fingerprint safety guarantee in
+/// product-facts.md, which governs which display may be *switched*.
+///
+/// Failing to match is not evidence the display is gone. It is asleep, showing
+/// a paired host that its other inputs cannot see past, or re-enumerated after
+/// a mode switch reporting a serial this host can no longer read the same way.
+/// Discarding the selection on any of those also discarded every paired host's
+/// input for it, so an unmatched selection is kept as it stands and reported as
+/// unavailable. Only the user removes a shared display.
+///
+/// Auto-select only fires from an empty selection; once at least one monitor is
+/// selected, a newly appeared monitor is never added automatically.
 fn reconcile_monitor_selection(
     settings: &mut AppSettings,
-    detected: &[MonitorDescriptor],
     controllable: &[MonitorDescriptor],
 ) -> Vec<MonitorSelectionChange> {
     // Auto-select is only for "nothing has ever been selected" (onboarding).
-    // Captured before the removal pass below so a monitor disappearing
-    // during this same call never triggers an auto-pick of a replacement.
     let had_no_selection = settings.shared_monitors.is_empty();
     let mut changes = Vec::new();
-    let mut index = 0;
-    while index < settings.shared_monitors.len() {
-        let selected = &settings.shared_monitors[index];
-        if let Some(current) = controllable
+    for selected in &mut settings.shared_monitors {
+        let Some(current) = controllable
             .iter()
             .find(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
-        {
-            let mut refreshed = SelectedMonitor::from(current);
-            refreshed.local_input = selected.local_input;
-            refreshed.supported_inputs = selected.supported_inputs.clone();
-            refreshed.vendor_indexed_inputs = selected.vendor_indexed_inputs;
-            refreshed.active_route = selected.active_route.clone();
-            refreshed.active_route_confirmed_at_ms = selected.active_route_confirmed_at_ms;
-            let metadata_changed = selected.name != refreshed.name
-                || selected.max_resolution != refreshed.max_resolution
-                || selected.resolution_source != refreshed.resolution_source;
-            if metadata_changed {
-                let name = refreshed.name.clone();
-                settings.shared_monitors[index] = refreshed;
-                changes.push(MonitorSelectionChange::RefreshedMetadata { name });
-            }
-            index += 1;
+        else {
+            // Unidentified this time round; keep the stored identity rather
+            // than adopting an unproven reading of it.
             continue;
+        };
+        let mut refreshed = SelectedMonitor::from(current);
+        refreshed.local_input = selected.local_input;
+        refreshed.supported_inputs = selected.supported_inputs.clone();
+        refreshed.vendor_indexed_inputs = selected.vendor_indexed_inputs;
+        refreshed.active_route = selected.active_route.clone();
+        refreshed.active_route_confirmed_at_ms = selected.active_route_confirmed_at_ms;
+        let metadata_changed = selected.name != refreshed.name
+            || selected.max_resolution != refreshed.max_resolution
+            || selected.resolution_source != refreshed.resolution_source;
+        if metadata_changed {
+            let name = refreshed.name.clone();
+            *selected = refreshed;
+            changes.push(MonitorSelectionChange::RefreshedMetadata { name });
         }
-        if detected
-            .iter()
-            .any(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
-        {
-            // Transient DDC failure (e.g. the monitor is asleep); keep the
-            // selection rather than dropping it.
-            index += 1;
-            continue;
-        }
-        if is_showing_paired_host(settings, selected) {
-            // Many displays drop the link to inputs they are not showing, so
-            // a display switched to a paired host vanishes from this host.
-            index += 1;
-            continue;
-        }
-        // Physically gone; remove, never reassign to a different monitor.
-        let removed = settings.shared_monitors.remove(index);
-        changes.push(MonitorSelectionChange::RemovedMissingMonitor {
-            name: removed.name,
-            fingerprint: removed.fingerprint,
-        });
     }
 
     if had_no_selection {
@@ -4263,11 +4207,7 @@ mod tests {
         assert_eq!(inventory.controllable.len(), 2);
         let mut settings = AppSettings::default();
 
-        let changes = reconcile_monitor_selection(
-            &mut settings,
-            &inventory.detected,
-            &inventory.controllable,
-        );
+        let changes = reconcile_monitor_selection(&mut settings, &inventory.controllable);
 
         assert_eq!(
             changes,
@@ -5242,7 +5182,31 @@ mod tests {
     }
 
     #[test]
-    fn removes_a_missing_selection_without_reassigning_to_a_different_monitor() {
+    fn a_selection_whose_serial_stops_being_readable_is_kept() {
+        // A display re-enumerated after a mode switch can report the same model
+        // with no serial at all (an unreadable EDID on macOS, an empty WMI
+        // SerialNumberID on Windows). That is a failure to identify it, not
+        // proof it is gone, so the user's selection has to survive it.
+        let selected_monitor = monitor("shared");
+        let mut reappeared = selected_monitor.clone();
+        reappeared.fingerprint = MonitorFingerprint::new("ACM", "shared", None::<String>);
+        let mut settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor::from(&selected_monitor)],
+            ..AppSettings::default()
+        };
+
+        let changes = reconcile_monitor_selection(&mut settings, std::slice::from_ref(&reappeared));
+
+        assert!(changes.is_empty());
+        assert_eq!(
+            settings.shared_monitors,
+            vec![SelectedMonitor::from(&selected_monitor)],
+            "the stored identity must not be rewritten from an unproven reading"
+        );
+    }
+
+    #[test]
+    fn a_selection_that_cannot_be_identified_is_kept_rather_than_reassigned() {
         let previous = monitor("disconnected");
         let replacement = monitor("replacement");
         let mut settings = AppSettings {
@@ -5250,20 +5214,15 @@ mod tests {
             ..AppSettings::default()
         };
 
-        let changes = reconcile_monitor_selection(
-            &mut settings,
-            std::slice::from_ref(&replacement),
-            std::slice::from_ref(&replacement),
-        );
+        let changes =
+            reconcile_monitor_selection(&mut settings, std::slice::from_ref(&replacement));
 
+        assert!(changes.is_empty());
         assert_eq!(
-            changes,
-            vec![MonitorSelectionChange::RemovedMissingMonitor {
-                name: "disconnected".to_owned(),
-                fingerprint: previous.fingerprint,
-            }]
+            settings.shared_monitors,
+            vec![SelectedMonitor::from(&previous)],
+            "an unidentified selection is never reassigned to a different monitor"
         );
-        assert!(settings.shared_monitors.is_empty());
     }
 
     #[test]
@@ -5311,7 +5270,7 @@ mod tests {
         };
         let monitors = [stays.clone()];
 
-        let changes = reconcile_monitor_selection(&mut settings, &monitors, &monitors);
+        let changes = reconcile_monitor_selection(&mut settings, &monitors);
 
         assert!(changes.is_empty());
         assert_eq!(
@@ -5321,25 +5280,19 @@ mod tests {
     }
 
     #[test]
-    fn removes_a_missing_selection_whose_active_host_is_no_longer_paired() {
+    fn a_missing_selection_is_kept_even_when_its_active_host_is_no_longer_paired() {
         let disconnected = monitor("disconnected");
         let mut selected = SelectedMonitor::from(&disconnected);
         selected.active_route = Some("removed-peer".to_owned());
         let mut settings = AppSettings {
-            shared_monitors: vec![selected],
+            shared_monitors: vec![selected.clone()],
             ..AppSettings::default()
         };
 
-        let changes = reconcile_monitor_selection(&mut settings, &[], &[]);
+        let changes = reconcile_monitor_selection(&mut settings, &[]);
 
-        assert_eq!(
-            changes,
-            vec![MonitorSelectionChange::RemovedMissingMonitor {
-                name: "disconnected".to_owned(),
-                fingerprint: disconnected.fingerprint,
-            }]
-        );
-        assert!(settings.shared_monitors.is_empty());
+        assert!(changes.is_empty());
+        assert_eq!(settings.shared_monitors, vec![selected]);
     }
 
     #[test]
@@ -5347,12 +5300,12 @@ mod tests {
         let mut settings = AppSettings::default();
         let monitors = [monitor("first"), monitor("second")];
 
-        assert!(reconcile_monitor_selection(&mut settings, &monitors, &monitors).is_empty());
+        assert!(reconcile_monitor_selection(&mut settings, &monitors).is_empty());
         assert!(settings.shared_monitors.is_empty());
     }
 
     #[test]
-    fn missing_selection_is_removed_and_not_replaced_when_multiple_candidates_remain() {
+    fn missing_selection_is_kept_and_not_replaced_when_multiple_candidates_remain() {
         let disconnected = monitor("disconnected");
         let mut settings = AppSettings {
             shared_monitors: vec![SelectedMonitor::from(&disconnected)],
@@ -5360,16 +5313,13 @@ mod tests {
         };
         let monitors = [monitor("first"), monitor("second")];
 
-        let changes = reconcile_monitor_selection(&mut settings, &monitors, &monitors);
+        let changes = reconcile_monitor_selection(&mut settings, &monitors);
 
+        assert!(changes.is_empty());
         assert_eq!(
-            changes,
-            vec![MonitorSelectionChange::RemovedMissingMonitor {
-                name: "disconnected".to_owned(),
-                fingerprint: disconnected.fingerprint,
-            }]
+            settings.shared_monitors,
+            vec![SelectedMonitor::from(&disconnected)]
         );
-        assert!(settings.shared_monitors.is_empty());
     }
 
     #[test]
@@ -5385,18 +5335,15 @@ mod tests {
         };
         let monitors = [stays.clone()];
 
-        let changes = reconcile_monitor_selection(&mut settings, &monitors, &monitors);
+        let changes = reconcile_monitor_selection(&mut settings, &monitors);
 
-        assert_eq!(
-            changes,
-            vec![MonitorSelectionChange::RemovedMissingMonitor {
-                name: "disconnected".to_owned(),
-                fingerprint: disconnected.fingerprint,
-            }]
-        );
+        assert!(changes.is_empty());
         assert_eq!(
             settings.shared_monitors,
-            vec![SelectedMonitor::from(&stays)]
+            vec![
+                SelectedMonitor::from(&stays),
+                SelectedMonitor::from(&disconnected),
+            ]
         );
     }
 
@@ -5409,7 +5356,7 @@ mod tests {
         };
         let monitors = [already_selected.clone(), monitor("new-arrival")];
 
-        let changes = reconcile_monitor_selection(&mut settings, &monitors, &monitors);
+        let changes = reconcile_monitor_selection(&mut settings, &monitors);
 
         assert!(changes.is_empty());
         assert_eq!(
@@ -5432,7 +5379,7 @@ mod tests {
         refreshed.name = "renamed".to_owned();
         let monitors = [refreshed.clone(), unaffected.clone()];
 
-        let changes = reconcile_monitor_selection(&mut settings, &monitors, &monitors);
+        let changes = reconcile_monitor_selection(&mut settings, &monitors);
 
         assert_eq!(
             changes,
@@ -5513,14 +5460,12 @@ mod tests {
             shared_monitors: vec![SelectedMonitor::from(&selected)],
             ..AppSettings::default()
         };
-        let detected = [selected.clone(), replacement.clone()];
-
-        assert!(reconcile_monitor_selection(
-            &mut settings,
-            &detected,
-            std::slice::from_ref(&replacement),
-        )
-        .is_empty());
+        // The selection is detected but unreadable, so it is absent from the
+        // controllable list while another monitor is present in it.
+        assert!(
+            reconcile_monitor_selection(&mut settings, std::slice::from_ref(&replacement),)
+                .is_empty()
+        );
         assert_eq!(
             settings.shared_monitors,
             vec![SelectedMonitor::from(&selected)]
