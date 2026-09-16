@@ -454,6 +454,44 @@ struct DashboardState {
     uncontrollable_monitors: Vec<MonitorDescriptor>,
     shared: Vec<SharedMonitorStatus>,
     selection_notices: Vec<String>,
+    monitor_identity_claims: Vec<MonitorIdentityClaim>,
+}
+
+/// One "these two identities are the same display" claim, as the settings page
+/// shows it. The keys go back to `set_monitor_identity_link`, so a claim can be
+/// withdrawn even when neither identity is present or shared any more.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MonitorIdentityClaim {
+    alias_key: String,
+    alias_label: String,
+    primary_key: String,
+    primary_label: String,
+}
+
+/// `MANUFACTURER / PRODUCT`, enough to tell two identities of one display apart
+/// where the name is identical because it is the same panel.
+fn identity_label(fingerprint: &MonitorFingerprint) -> String {
+    format!(
+        "{} / {}",
+        fingerprint.manufacturer_id, fingerprint.product_code
+    )
+}
+
+fn monitor_identity_claims(settings: &AppSettings) -> Vec<MonitorIdentityClaim> {
+    settings
+        .monitor_identity_links
+        .iter()
+        .filter_map(|link| {
+            let primary = link.primary.as_ref()?;
+            Some(MonitorIdentityClaim {
+                alias_key: monitor_key(&link.alias),
+                alias_label: identity_label(&link.alias),
+                primary_key: monitor_key(primary),
+                primary_label: identity_label(primary),
+            })
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1142,6 +1180,7 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
         uncontrollable_monitors,
         shared,
         selection_notices,
+        monitor_identity_claims: monitor_identity_claims(&settings),
     })
 }
 
@@ -2882,6 +2921,15 @@ fn fingerprint_for_ui_id(
 ) -> Result<MonitorFingerprint, String> {
     if let Ok(selected) = find_shared_monitor(settings, monitor_id) {
         return Ok(selected.fingerprint.clone());
+    }
+    // Withdrawing a claim must work when neither identity is shared or present
+    // any more, which is the state a stale claim leaves behind.
+    if let Some(link) = settings
+        .monitor_identity_links
+        .iter()
+        .find(|link| monitor_key(&link.alias) == monitor_id)
+    {
+        return Ok(link.alias.clone());
     }
     platform_controller()
         .and_then(|controller| controller.enumerate())
@@ -5526,6 +5574,45 @@ mod tests {
             &selected,
             &monitor("somebody-else")
         ));
+    }
+
+    #[test]
+    fn a_withdrawn_claim_is_not_shown_as_one() {
+        let at_4k = MonitorFingerprint::new("MSI", "3CF0", None::<String>);
+        let at_1080 = MonitorFingerprint::new("MSI", "7CF0", None::<String>);
+        let links = monitor_identity::with_link(
+            &monitor_identity::with_link(&[], &at_1080, Some(&at_4k), 10),
+            &at_1080,
+            None,
+            20,
+        );
+        let settings = AppSettings {
+            monitor_identity_links: links,
+            ..AppSettings::default()
+        };
+
+        assert!(monitor_identity_claims(&settings).is_empty());
+    }
+
+    #[test]
+    fn a_claim_is_shown_with_keys_that_withdraw_it() {
+        // Neither identity is shared or present here, which is exactly the
+        // state a claim left behind by earlier testing sits in.
+        let at_4k = MonitorFingerprint::new("MSI", "3CF0", None::<String>);
+        let at_1080 = MonitorFingerprint::new("MSI", "7CF0", None::<String>);
+        let settings = AppSettings {
+            monitor_identity_links: monitor_identity::with_link(&[], &at_1080, Some(&at_4k), 10),
+            ..AppSettings::default()
+        };
+
+        let claims = monitor_identity_claims(&settings);
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].alias_key, monitor_key(&at_1080));
+        assert_eq!(claims[0].primary_label, "MSI / 3CF0");
+        assert_eq!(
+            fingerprint_for_ui_id(&settings, &claims[0].alias_key),
+            Ok(at_1080)
+        );
     }
 
     #[test]

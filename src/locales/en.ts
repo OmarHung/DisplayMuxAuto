@@ -108,6 +108,7 @@ const en = {
   "settings.mergeSelect": "Merge into this display",
   "settings.mergeAction": "Same display",
   "settings.mergeUndo": "Undo merge",
+  "settings.mergeUndone": "Merge undone. The two identities count as separate displays again.",
   "settings.mergedInto": "Merged into {name}",
   "settings.noSerial": "No serial number",
   "settings.ddcControllable": "DDC/CI controllable",

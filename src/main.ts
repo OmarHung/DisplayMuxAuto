@@ -110,6 +110,13 @@ interface SharedMonitorStatus {
   connectionInputConflict: boolean;
 }
 
+interface MonitorIdentityClaim {
+  aliasKey: string;
+  aliasLabel: string;
+  primaryKey: string;
+  primaryLabel: string;
+}
+
 interface DashboardState {
   platform: string;
   localHost: Platform;
@@ -118,6 +125,7 @@ interface DashboardState {
   uncontrollableMonitors: MonitorDescriptor[];
   shared: SharedMonitorStatus[];
   selectionNotices: string[];
+  monitorIdentityClaims?: MonitorIdentityClaim[];
 }
 
 interface DiscoveredPeer {
@@ -550,7 +558,10 @@ document.querySelector("#monitor-picker")?.addEventListener("click", (event) => 
   else void addSharedMonitor(button.dataset.monitorId);
 });
 document.querySelector("#monitor-merge")?.addEventListener("click", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-merge-alias]");
+  const target = event.target as HTMLElement;
+  const undo = target.closest<HTMLButtonElement>("[data-unmerge-alias]");
+  if (undo?.dataset.unmergeAlias) { void unmergeSharedMonitor(undo.dataset.unmergeAlias); return; }
+  const button = target.closest<HTMLButtonElement>("[data-merge-alias]");
   const aliasId = button?.dataset.mergeAlias;
   if (!aliasId) return;
   const select = document.querySelector<HTMLSelectElement>(`[data-merge-target="${CSS.escape(aliasId)}"]`);
@@ -1231,7 +1242,9 @@ function renderMonitorMerge(): void {
   const present = [...dashboard.monitors, ...(dashboard.uncontrollableMonitors ?? [])];
   const strangers = present.filter((monitor) => !isSharedDisplay(monitor.fingerprint));
   const targets = dashboard.shared;
-  if (!strangers.length || !targets.length) { container.innerHTML = ""; return; }
+  const claims = dashboard.monitorIdentityClaims ?? [];
+  const canMerge = strangers.length > 0 && targets.length > 0;
+  if (!canMerge && !claims.length) { container.innerHTML = ""; return; }
 
   const describeMonitor = (monitor: MonitorDescriptor) =>
     `${monitor.name} (${monitor.fingerprint.manufacturer_id}/${monitor.fingerprint.product_code})`;
@@ -1240,7 +1253,21 @@ function renderMonitorMerge(): void {
   container.innerHTML = `
     <div class="pairing-heading"><strong>${t("settings.mergeTitle")}</strong></div>
     <p class="monitor-merge-note">${t("settings.mergeIntro")}</p>
-    ${strangers.map((monitor) => `
+    ${claims.map((claim) => `
+      <article class="monitor-card-item is-selected">
+        <div class="monitor-item-left">
+          <div class="monitor-item-icon"><i data-lucide="link"></i></div>
+          <div class="monitor-identity">
+            <strong>${escapeHtml(claim.aliasLabel)} → ${escapeHtml(claim.primaryLabel)}</strong>
+            <span>${escapeHtml(t("settings.mergedInto", { name: claim.primaryLabel }))}</span>
+          </div>
+        </div>
+        <button type="button" class="monitor-select-btn" data-unmerge-alias="${escapeHtml(claim.aliasKey)}">
+          ${t("settings.mergeUndo")}
+        </button>
+      </article>
+    `).join("")}
+    ${(canMerge ? strangers : []).map((monitor) => `
       <article class="monitor-card-item">
         <div class="monitor-item-left">
           <div class="monitor-item-icon"><i data-lucide="monitor-dot"></i></div>
@@ -1738,6 +1765,14 @@ async function mergeSharedMonitor(aliasId: string, primaryId: string): Promise<v
       t("settings.mergeAction"),
       t("settings.mergedInto", { name: primary?.name ?? t("dashboard.sharedDisplay") }),
     );
+  } catch (error) { showToast(t("toast.monitorSelectFailed"), String(error), true); }
+}
+
+async function unmergeSharedMonitor(aliasId: string): Promise<void> {
+  try {
+    settings = await invoke<AppSettings>("set_monitor_identity_link", { aliasId, primaryId: null });
+    await refresh();
+    showToast(t("settings.mergeUndo"), t("settings.mergeUndone"));
   } catch (error) { showToast(t("toast.monitorSelectFailed"), String(error), true); }
 }
 
