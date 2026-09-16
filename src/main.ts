@@ -1865,7 +1865,10 @@ function requestReset(scope: string, button: HTMLButtonElement): void {
   if (pendingReset?.scope === scope) {
     window.clearTimeout(pendingReset.timer);
     pendingReset = null;
-    void performReset(scope);
+    button.classList.remove("is-confirming");
+    // Resetting restarts the agent and rewrites the settings file, so it is
+    // not instant; without this the confirmed press looked like no press.
+    void withBusyButton(button, () => performReset(scope));
     return;
   }
   if (pendingReset) window.clearTimeout(pendingReset.timer);
