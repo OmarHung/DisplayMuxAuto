@@ -972,18 +972,24 @@ function selectedMonitorFor(shared: SharedMonitorStatus): SelectedMonitor | unde
   return settings.sharedMonitors.find((sm) => sameFingerprint(sm.fingerprint, shared.fingerprint));
 }
 
+/** A display's resolution belongs to the display mode it is in right now, not
+ *  to the snapshot taken when it was selected, so a live reading wins. The
+ *  stored value is only a last-known fallback for a display nothing can see:
+ *  it is refreshed solely while the display answers DDC/CI, so it outlives the
+ *  mode — and, on displays that change identity with the mode, the reading it
+ *  was taken for. Displays showing another host are included, since they are
+ *  still enumerated even though they cannot be read. */
 function resolutionFor(shared: SharedMonitorStatus): { resolution: MonitorResolution | null; source: ResolutionSource | null } {
-  const selectedMonitor = selectedMonitorFor(shared);
-  let resolution = selectedMonitor?.maxResolution ?? null;
-  let source = selectedMonitor?.resolutionSource ?? null;
-  if (!resolution) {
-    const match = dashboard.monitors.find((m) => sameDisplay(m.fingerprint, shared.fingerprint));
-    if (match?.maxResolution) {
-      resolution = match.maxResolution;
-      source = match.resolutionSource ?? null;
-    }
+  const live = [...dashboard.monitors, ...(dashboard.uncontrollableMonitors ?? [])]
+    .find((monitor) => sameDisplay(monitor.fingerprint, shared.fingerprint));
+  if (live?.maxResolution) {
+    return { resolution: live.maxResolution, source: live.resolutionSource ?? null };
   }
-  return { resolution, source };
+  const selectedMonitor = selectedMonitorFor(shared);
+  return {
+    resolution: selectedMonitor?.maxResolution ?? null,
+    source: selectedMonitor?.resolutionSource ?? null,
+  };
 }
 
 function ratioText(resolution: MonitorResolution | null, source: ResolutionSource | null, isUltrawide: boolean): string {
@@ -1215,37 +1221,41 @@ function renderMonitors(): void {
   }).join("");
 }
 
-/// Offers to merge a shared display that cannot be identified right now into
-/// another one. A display that reports a different identifier per display mode
-/// looks like a second display, and only the user can say they are one panel.
+/** Offers to merge a display that is present but belongs to no shared display
+ *  into one that is. A display that reports a different identity per display
+ *  mode shows up as an unfamiliar new display while the shared one it really
+ *  is goes unreadable, and only the user can say they are one panel. */
 function renderMonitorMerge(): void {
   const container = document.querySelector("#monitor-merge");
   if (!container) return;
-  const unidentified = dashboard.shared.filter((shared) => shared.displayState === "unavailable");
-  const targets = dashboard.shared.filter((shared) => shared.displayState !== "unavailable");
-  if (!unidentified.length || !targets.length) { container.innerHTML = ""; return; }
+  const present = [...dashboard.monitors, ...(dashboard.uncontrollableMonitors ?? [])];
+  const strangers = present.filter((monitor) => !isSharedDisplay(monitor.fingerprint));
+  const targets = dashboard.shared;
+  if (!strangers.length || !targets.length) { container.innerHTML = ""; return; }
 
-  const describe = (shared: SharedMonitorStatus) =>
+  const describeMonitor = (monitor: MonitorDescriptor) =>
+    `${monitor.name} (${monitor.fingerprint.manufacturer_id}/${monitor.fingerprint.product_code})`;
+  const describeShared = (shared: SharedMonitorStatus) =>
     `${shared.name} (${shared.fingerprint.manufacturer_id}/${shared.fingerprint.product_code})`;
   container.innerHTML = `
     <div class="pairing-heading"><strong>${t("settings.mergeTitle")}</strong></div>
-    <p class="peer-empty">${t("settings.mergeIntro")}</p>
-    ${unidentified.map((shared) => `
+    <p class="monitor-merge-note">${t("settings.mergeIntro")}</p>
+    ${strangers.map((monitor) => `
       <article class="monitor-card-item">
         <div class="monitor-item-left">
-          <div class="monitor-item-icon"><i data-lucide="monitor-off"></i></div>
+          <div class="monitor-item-icon"><i data-lucide="monitor-dot"></i></div>
           <div class="monitor-identity">
-            <strong>${escapeHtml(describe(shared))}</strong>
+            <strong>${escapeHtml(describeMonitor(monitor))}</strong>
             <span>${escapeHtml(t("settings.mergeUnidentified"))}</span>
           </div>
         </div>
-        <label class="field">
+        <label class="monitor-merge-choice">
           <span>${t("settings.mergeSelect")}</span>
-          <select data-merge-target="${escapeHtml(shared.monitorKey)}">
-            ${targets.map((target) => `<option value="${escapeHtml(target.monitorKey)}">${escapeHtml(describe(target))}</option>`).join("")}
+          <select data-merge-target="${escapeHtml(monitor.id)}">
+            ${targets.map((target) => `<option value="${escapeHtml(target.monitorKey)}">${escapeHtml(describeShared(target))}</option>`).join("")}
           </select>
         </label>
-        <button type="button" class="monitor-select-btn" data-merge-alias="${escapeHtml(shared.monitorKey)}">
+        <button type="button" class="monitor-select-btn" data-merge-alias="${escapeHtml(monitor.id)}">
           ${t("settings.mergeAction")}
         </button>
       </article>

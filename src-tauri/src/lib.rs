@@ -2865,8 +2865,29 @@ fn adopt_alias_settings(
     }
 }
 
-/// Declares that the shared display `alias_id` is the same physical display as
-/// `primary_id`, or withdraws that claim when `primary_id` is `None`.
+/// The fingerprint behind an id the UI holds. A display the user wants to merge
+/// is usually not a shared display at all — it is the unfamiliar one that
+/// appeared when the display mode changed — so a display present right now is
+/// accepted by its platform id as well.
+fn fingerprint_for_ui_id(
+    settings: &AppSettings,
+    monitor_id: &str,
+) -> Result<MonitorFingerprint, String> {
+    if let Ok(selected) = find_shared_monitor(settings, monitor_id) {
+        return Ok(selected.fingerprint.clone());
+    }
+    platform_controller()
+        .and_then(|controller| controller.enumerate())
+        .map_err(core_user_error)?
+        .into_iter()
+        .find(|monitor| monitor.id.as_str() == monitor_id)
+        .map(|monitor| monitor.fingerprint)
+        .ok_or_else(display_not_found)
+}
+
+/// Declares that the display `alias_id` is the same physical display as the
+/// shared display `primary_id`, or withdraws that claim when `primary_id` is
+/// `None`.
 ///
 /// Some displays publish a different EDID product code per display mode, which
 /// reads as a different display on every host at once. Only the user can say
@@ -2882,9 +2903,7 @@ fn set_monitor_identity_link(
     app: AppHandle,
 ) -> Result<AppSettings, String> {
     let mut settings = read_settings(&state)?;
-    let alias = find_shared_monitor(&settings, &alias_id)?
-        .fingerprint
-        .clone();
+    let alias = fingerprint_for_ui_id(&settings, &alias_id)?;
     let primary = match primary_id {
         Some(primary_id) => Some(
             find_shared_monitor(&settings, &primary_id)?

@@ -34,7 +34,7 @@ const zhTW: Record<keyof typeof en, string> = {
   "settings.safetyBody": "即使更換螢幕，也只會控制選取的 EDID，保護其他獨立工作螢幕安全。", "settings.noMonitors": "沒有找到可選擇的 DDC/CI 螢幕",
   "settings.mergeTitle": "同一台螢幕的不同身分",
   "settings.mergeIntro": "有些螢幕在切換顯示模式時會回報不同的識別碼，看起來就像換了一台。如果下面這台其實是清單中某台螢幕的另一個顯示模式，把它們合併起來，輸入設定就不會再重設。",
-  "settings.mergeUnidentified": "目前找不到",
+  "settings.mergeUnidentified": "不屬於任何共用螢幕",
   "settings.mergeSelect": "合併到這台螢幕",
   "settings.mergeAction": "這是同一台",
   "settings.mergeUndo": "取消合併",

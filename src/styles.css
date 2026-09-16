@@ -883,6 +883,59 @@ button.switch-all-host:disabled {
   gap: 10px;
 }
 
+.monitor-merge {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.monitor-merge:empty { display: none; }
+
+/* An explanation, not an empty state: it wraps over several lines, so it needs
+   real padding rather than `.peer-empty`'s centred single-line box. */
+.monitor-merge-note {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--subtle);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* The row carries a control between the identity and the button, so it needs
+   to give the identity room to shrink and keep the control from stretching. */
+.monitor-merge .monitor-card-item { gap: 16px; }
+
+.monitor-merge .monitor-item-left { flex: 1 1 auto; }
+
+.monitor-merge-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.monitor-merge-choice > span {
+  font-size: 12px;
+  color: var(--subtle);
+}
+
+.monitor-merge-choice > select {
+  max-width: 260px;
+}
+
+@media (max-width: 720px) {
+  .monitor-merge .monitor-card-item {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .monitor-merge-choice { flex: 1 1 100%; }
+  .monitor-merge-choice > select { max-width: none; }
+}
+
 .monitor-card-item {
   display: flex;
   align-items: center;

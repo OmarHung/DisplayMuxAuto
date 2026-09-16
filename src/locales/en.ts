@@ -104,7 +104,7 @@ const en = {
   "settings.noMonitors": "No selectable DDC/CI displays were found",
   "settings.mergeTitle": "One display, more than one identity",
   "settings.mergeIntro": "Some displays report a different identifier once you switch display mode, which reads as a different display. If the one below is really another display mode of a display in the list, merge them so their input settings stop being reset.",
-  "settings.mergeUnidentified": "Not found right now",
+  "settings.mergeUnidentified": "Not part of any shared display",
   "settings.mergeSelect": "Merge into this display",
   "settings.mergeAction": "Same display",
   "settings.mergeUndo": "Undo merge",
