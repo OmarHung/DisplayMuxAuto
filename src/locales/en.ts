@@ -110,6 +110,7 @@ const en = {
   "settings.mergeUndo": "Undo merge",
   "settings.mergeUndone": "Merge undone. The two identities count as separate displays again.",
   "settings.mergedInto": "Merged into {name}",
+  "settings.notDetected": "Not detected right now",
   "settings.noSerial": "No serial number",
   "settings.ddcControllable": "DDC/CI controllable",
   "settings.networkAuto": "Network information detected automatically",

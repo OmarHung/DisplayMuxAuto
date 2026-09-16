@@ -40,6 +40,7 @@ const zhTW: Record<keyof typeof en, string> = {
   "settings.mergeUndo": "取消合併",
   "settings.mergeUndone": "已取消合併，這兩個身分會再次視為不同螢幕。",
   "settings.mergedInto": "已合併到 {name}",
+  "settings.notDetected": "目前偵測不到",
   "settings.noSerial": "無序號", "settings.ddcControllable": "DDC/CI 可控制", "settings.networkAuto": "自動取得網路資訊",
   "settings.noAvailableHosts": "沒有尚未加入的 DisplayMux 主機", "settings.addedHosts": "已加入的主機與輸入", "settings.diagnosticAria": "{name} 診斷工具",
   "settings.inputValue": "輸入值：", "settings.noAddedHosts": "尚未加入其他主機",

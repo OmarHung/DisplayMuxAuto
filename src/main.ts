@@ -1215,9 +1215,27 @@ function renderMonitors(): void {
   if (!dashboard.monitors.length && !uncontrollable.length) {
     container.innerHTML = `<p class="peer-empty">${t("settings.noMonitors")}</p>`; return;
   }
+  // A shared display this computer cannot see at all is listed from the saved
+  // selection, because it is exactly the one the user may need to remove and
+  // nothing enumerates a row for it.
+  const absent = dashboard.shared.filter((shared) =>
+    ![...dashboard.monitors, ...uncontrollable].some((monitor) => sameDisplay(monitor.fingerprint, shared.fingerprint)));
   container.innerHTML = dashboard.monitors.map((monitor) => selectableMonitorCard(monitor, t("settings.ddcControllable")))
     .concat(elsewhere.map((monitor) => selectableMonitorCard(monitor, t("dashboard.onOtherHost"))))
-    .join("") + unreachable.map((monitor) => {
+    .join("") + absent.map((shared) => `
+    <article class="monitor-card-item is-selected">
+      <div class="monitor-item-left">
+        <div class="monitor-item-icon"><i data-lucide="monitor-off"></i></div>
+        <div class="monitor-identity">
+          <strong>${escapeHtml(shared.name)}</strong>
+          <span>${escapeHtml(shared.fingerprint.manufacturer_id)} / ${escapeHtml(shared.fingerprint.product_code)} / ${escapeHtml(shared.fingerprint.serial_number ?? t("settings.noSerial"))} (${escapeHtml(t("settings.notDetected"))})</span>
+        </div>
+      </div>
+      <button type="button" class="monitor-select-btn is-selected" data-monitor-id="${escapeHtml(shared.monitorKey)}" data-monitor-selected="true">
+        ${t("action.removeShared")}
+      </button>
+    </article>
+  `).join("") + unreachable.map((monitor) => {
     const fp = monitor.fingerprint;
     return `<article class="monitor-card-item is-unreachable">
       <div class="monitor-item-left">
@@ -1291,7 +1309,8 @@ function renderMonitorMerge(): void {
 }
 
 function selectableMonitorCard(monitor: MonitorDescriptor, statusLabel: string): string {
-  const isSelected = isSharedDisplay(monitor.fingerprint);
+  const shared = dashboard.shared.find((item) => sameDisplay(item.fingerprint, monitor.fingerprint));
+  const isSelected = Boolean(shared);
   const fp = monitor.fingerprint;
   const res = monitor.maxResolution;
   const resText = res
@@ -1306,7 +1325,7 @@ function selectableMonitorCard(monitor: MonitorDescriptor, statusLabel: string):
         ${renderConnection(monitor.connection ?? null)}
       </div>
     </div>
-    <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""}" data-monitor-id="${escapeHtml(monitor.id)}" data-monitor-selected="${isSelected}">
+    <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""}" data-monitor-id="${escapeHtml(shared?.monitorKey ?? monitor.id)}" data-monitor-selected="${isSelected}">
       ${isSelected ? t("action.removeShared") : t("action.selectShared")}
     </button>
   </article>`;

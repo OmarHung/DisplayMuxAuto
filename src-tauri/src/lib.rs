@@ -727,39 +727,38 @@ fn add_shared_monitor_now(state: &AppRuntime, monitor_id: &str) -> Result<AppSet
     store_settings(state, settings)
 }
 
-/// Removes a shared display. Needs only to find the display, not to read it:
-/// a display showing another host may not answer DDC/CI.
+/// Removes a shared display, named by its own key. Never enumerates: a display
+/// is removed precisely when this computer cannot see it — asleep, showing
+/// another host, or reporting an identity this host no longer recognises — and
+/// requiring it to be present made those the only ones that could not be
+/// removed, despite being the ones a user most wants gone.
 #[tauri::command]
 async fn remove_shared_monitor(monitor_id: String, app: AppHandle) -> Result<AppSettings, String> {
     run_display_task(app, move |state| {
-        let monitor = platform_controller()
-            .and_then(|controller| controller.enumerate())
-            .map_err(core_user_error)?
-            .into_iter()
-            .find(|monitor| monitor.id.as_str() == monitor_id)
-            .ok_or_else(display_not_found)?;
-        remove_shared_monitor_now(state, &monitor)
+        remove_shared_monitor_now(state, &monitor_id)
     })
     .await
 }
 
-fn remove_shared_monitor_now(
-    state: &AppRuntime,
-    monitor: &MonitorDescriptor,
-) -> Result<AppSettings, String> {
+fn remove_shared_monitor_now(state: &AppRuntime, monitor_id: &str) -> Result<AppSettings, String> {
     let mut settings = read_settings(state)?;
     let links = settings.monitor_identity_links.clone();
+    let target = find_shared_monitor(&settings, monitor_id)?
+        .fingerprint
+        .clone();
     let removed = settings
         .shared_monitors
         .iter()
-        .filter(|selected| is_selected_display(&links, selected, monitor))
+        .filter(|selected| {
+            monitor_identity::is_same_display(&links, &selected.fingerprint, &target)
+        })
         .map(|selected| selected.fingerprint.clone())
         .collect::<Vec<_>>();
-    settings
-        .shared_monitors
-        .retain(|selected| !is_selected_display(&links, selected, monitor));
+    settings.shared_monitors.retain(|selected| {
+        !monitor_identity::is_same_display(&links, &selected.fingerprint, &target)
+    });
     for peer in &mut settings.peers {
-        peer.set_input_for(&monitor.fingerprint, None);
+        peer.set_input_for(&target, None);
         for fingerprint in &removed {
             peer.set_input_for(fingerprint, None);
         }
@@ -5574,6 +5573,21 @@ mod tests {
             &selected,
             &monitor("somebody-else")
         ));
+    }
+
+    #[test]
+    fn a_shared_display_is_named_by_its_own_key_so_it_can_be_removed_while_absent() {
+        let absent = monitor("disconnected");
+        let settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor::from(&absent)],
+            ..AppSettings::default()
+        };
+
+        let key = monitor_key(&absent.fingerprint);
+        assert_eq!(
+            find_shared_monitor(&settings, &key).map(|selected| selected.fingerprint.clone()),
+            Ok(absent.fingerprint)
+        );
     }
 
     #[test]
