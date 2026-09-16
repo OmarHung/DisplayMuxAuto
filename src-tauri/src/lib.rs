@@ -269,6 +269,11 @@ struct AppSettings {
     /// shared with paired hosts (see `monitor_identity`). Backend-owned like
     /// `host_order`.
     monitor_identity_links: Vec<MonitorIdentityLink>,
+    /// Whether the shared display list has ever been decided — by the user or
+    /// by the one-time auto-select. An empty list means "none chosen" only
+    /// until then; afterwards it means the user emptied it on purpose, and
+    /// auto-select must not undo that.
+    shared_monitors_chosen: bool,
     /// This computer's `LocalHostIdentity::id`, fixed the first time it is
     /// worked out. Peers store it to name this host in their pairings, host
     /// order and custom names, so it must never be re-derived: see
@@ -296,6 +301,7 @@ impl Default for AppSettings {
             host_aliases: Vec::new(),
             input_labels: Vec::new(),
             monitor_identity_links: Vec::new(),
+            shared_monitors_chosen: false,
             local_host_id: String::new(),
         }
     }
@@ -712,6 +718,7 @@ fn add_shared_monitor_now(state: &AppRuntime, monitor_id: &str) -> Result<AppSet
         .shared_monitors
         .iter()
         .any(|selected| is_selected_display(&links, selected, &monitor));
+    settings.shared_monitors_chosen = true;
     if !already_selected {
         settings
             .shared_monitors
@@ -727,11 +734,11 @@ fn add_shared_monitor_now(state: &AppRuntime, monitor_id: &str) -> Result<AppSet
     store_settings(state, settings)
 }
 
-/// Removes a shared display, named by its own key. Never enumerates: a display
-/// is removed precisely when this computer cannot see it — asleep, showing
-/// another host, or reporting an identity this host no longer recognises — and
-/// requiring it to be present made those the only ones that could not be
-/// removed, despite being the ones a user most wants gone.
+/// Removes a shared display, named either by its own key or by a display
+/// present right now. Never enumerates: a display is removed precisely when
+/// this computer cannot see it — asleep, showing another host, or reporting an
+/// identity this host no longer recognises — and requiring it to be present
+/// made those the only ones that could not be removed.
 #[tauri::command]
 async fn remove_shared_monitor(monitor_id: String, app: AppHandle) -> Result<AppSettings, String> {
     run_display_task(app, move |state| {
@@ -746,6 +753,7 @@ fn remove_shared_monitor_now(state: &AppRuntime, monitor_id: &str) -> Result<App
     let target = find_shared_monitor(&settings, monitor_id)?
         .fingerprint
         .clone();
+    settings.shared_monitors_chosen = true;
     let removed = settings
         .shared_monitors
         .iter()
@@ -947,6 +955,7 @@ async fn save_settings(
     settings.host_aliases = protected.host_aliases.clone();
     settings.input_labels = protected.input_labels.clone();
     settings.monitor_identity_links = protected.monitor_identity_links.clone();
+    settings.shared_monitors_chosen = protected.shared_monitors_chosen;
     settings.local_host_id = protected.local_host_id.clone();
     validate_settings(&settings).map_err(core_user_error)?;
     let enable_autostart = settings.autostart;
@@ -3467,6 +3476,7 @@ fn migrate_single_monitor_settings(value: serde_json::Value) -> AppSettings {
         host_aliases: Vec::new(),
         input_labels: Vec::new(),
         monitor_identity_links: Vec::new(),
+        shared_monitors_chosen: false,
         local_host_id: String::new(),
     }
 }
@@ -3508,6 +3518,7 @@ fn migrate_legacy_settings(legacy: LegacySettings) -> AppSettings {
         host_aliases: Vec::new(),
         input_labels: Vec::new(),
         monitor_identity_links: Vec::new(),
+        shared_monitors_chosen: false,
         local_host_id: String::new(),
     }
 }
@@ -3825,8 +3836,10 @@ fn reconcile_monitor_selection(
     settings: &mut AppSettings,
     controllable: &[MonitorDescriptor],
 ) -> Vec<MonitorSelectionChange> {
-    // Auto-select is only for "nothing has ever been selected" (onboarding).
-    let had_no_selection = settings.shared_monitors.is_empty();
+    // Auto-select is a one-time onboarding step. An empty list stops meaning
+    // "nothing chosen yet" the moment the user chooses, so emptying the list
+    // on purpose must not be undone on the next refresh.
+    let never_chosen = !settings.shared_monitors_chosen && settings.shared_monitors.is_empty();
     // Taken by value so the selections below can be borrowed mutably.
     let links = settings.monitor_identity_links.clone();
     let mut changes = Vec::new();
@@ -3855,12 +3868,13 @@ fn reconcile_monitor_selection(
         }
     }
 
-    if had_no_selection {
+    if never_chosen {
         let mut auto_candidates = controllable.iter().filter(|monitor| !monitor.built_in);
         if let Some(only) = auto_candidates.next() {
             if auto_candidates.next().is_none() {
                 let name = only.name.clone();
                 settings.shared_monitors.push(SelectedMonitor::from(only));
+                settings.shared_monitors_chosen = true;
                 changes.push(MonitorSelectionChange::SelectedOnlyMonitor { name });
             }
         }
@@ -5538,55 +5552,40 @@ mod tests {
     }
 
     #[test]
-    fn a_selection_stored_under_an_alias_is_not_added_a_second_time() {
-        // Guards the shape that produced three byte-identical entries: the
-        // stored selection was the alias, so it failed to recognise itself.
-        let at_4k = MonitorFingerprint::new("MSI", "3CF0", None::<String>);
-        let at_1080 = MonitorFingerprint::new("MSI", "7CF0", None::<String>);
-        let mut selected = SelectedMonitor::from(&monitor("shared"));
-        selected.fingerprint = at_4k.clone();
-        let mut present = monitor("shared");
-        present.fingerprint = at_4k.clone();
-        let links = monitor_identity::with_link(&[], &at_4k, Some(&at_1080), 10);
-
-        assert!(
-            is_selected_display(&links, &selected, &present),
-            "a display stored under an alias must recognise itself"
-        );
-    }
-
-    #[test]
-    fn a_merged_identity_is_recognised_as_the_shared_display_everywhere() {
-        // Reconciling kept the selection but the dashboard still reported it as
-        // missing, so the display read as "not found" right after a merge.
-        let at_4k = MonitorFingerprint::new("MSI", "3CF0", None::<String>);
-        let at_1080 = MonitorFingerprint::new("MSI", "7CF0", None::<String>);
-        let mut selected = SelectedMonitor::from(&monitor("shared"));
-        selected.fingerprint = at_1080.clone();
-        let mut present = monitor("shared");
-        present.fingerprint = at_4k.clone();
-        let links = monitor_identity::with_link(&[], &at_4k, Some(&at_1080), 10);
-
-        assert!(is_selected_display(&links, &selected, &present));
-        assert!(!is_selected_display(
-            &links,
-            &selected,
-            &monitor("somebody-else")
-        ));
-    }
-
-    #[test]
-    fn a_shared_display_is_named_by_its_own_key_so_it_can_be_removed_while_absent() {
-        let absent = monitor("disconnected");
-        let settings = AppSettings {
-            shared_monitors: vec![SelectedMonitor::from(&absent)],
+    fn emptying_the_shared_list_on_purpose_is_not_undone_by_auto_select() {
+        // With one controllable display, removing it emptied the list and the
+        // next refresh auto-selected it straight back, so it could never be
+        // removed at all.
+        let only = monitor("only");
+        let mut settings = AppSettings {
+            shared_monitors: Vec::new(),
+            shared_monitors_chosen: true,
             ..AppSettings::default()
         };
 
-        let key = monitor_key(&absent.fingerprint);
+        let changes = reconcile_monitor_selection(&mut settings, std::slice::from_ref(&only));
+
+        assert!(changes.is_empty());
+        assert!(settings.shared_monitors.is_empty());
+    }
+
+    #[test]
+    fn auto_select_still_runs_for_a_computer_that_has_never_chosen() {
+        let only = monitor("only");
+        let mut settings = AppSettings::default();
+
+        let changes = reconcile_monitor_selection(&mut settings, std::slice::from_ref(&only));
+
         assert_eq!(
-            find_shared_monitor(&settings, &key).map(|selected| selected.fingerprint.clone()),
-            Ok(absent.fingerprint)
+            changes,
+            vec![MonitorSelectionChange::SelectedOnlyMonitor {
+                name: "only".to_owned()
+            }]
+        );
+        assert_eq!(settings.shared_monitors.len(), 1);
+        assert!(
+            settings.shared_monitors_chosen,
+            "auto-select decides the list, so it must not run twice"
         );
     }
 
@@ -5627,6 +5626,63 @@ mod tests {
             fingerprint_for_ui_id(&settings, &claims[0].alias_key),
             Ok(at_1080)
         );
+    }
+
+    #[test]
+    fn a_shared_display_is_named_by_its_own_key_so_it_can_be_removed_while_absent() {
+        // Removal used to enumerate and fail when the display was not present,
+        // which left exactly the displays a user wants to drop — asleep, on
+        // another host, or reporting an identity this host no longer knows —
+        // as the only ones that could not be dropped.
+        let absent = monitor("disconnected");
+        let settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor::from(&absent)],
+            ..AppSettings::default()
+        };
+
+        let key = monitor_key(&absent.fingerprint);
+        assert_eq!(
+            find_shared_monitor(&settings, &key).map(|selected| selected.fingerprint.clone()),
+            Ok(absent.fingerprint)
+        );
+    }
+
+    #[test]
+    fn a_selection_stored_under_an_alias_is_not_added_a_second_time() {
+        // Guards the shape that produced three byte-identical entries: the
+        // stored selection was the alias, so it failed to recognise itself.
+        let at_4k = MonitorFingerprint::new("MSI", "3CF0", None::<String>);
+        let at_1080 = MonitorFingerprint::new("MSI", "7CF0", None::<String>);
+        let mut selected = SelectedMonitor::from(&monitor("shared"));
+        selected.fingerprint = at_4k.clone();
+        let mut present = monitor("shared");
+        present.fingerprint = at_4k.clone();
+        let links = monitor_identity::with_link(&[], &at_4k, Some(&at_1080), 10);
+
+        assert!(
+            is_selected_display(&links, &selected, &present),
+            "a display stored under an alias must recognise itself"
+        );
+    }
+
+    #[test]
+    fn a_merged_identity_is_recognised_as_the_shared_display_everywhere() {
+        // Reconciling kept the selection but the dashboard still reported it as
+        // missing, so the display read as "not found" right after a merge.
+        let at_4k = MonitorFingerprint::new("MSI", "3CF0", None::<String>);
+        let at_1080 = MonitorFingerprint::new("MSI", "7CF0", None::<String>);
+        let mut selected = SelectedMonitor::from(&monitor("shared"));
+        selected.fingerprint = at_1080.clone();
+        let mut present = monitor("shared");
+        present.fingerprint = at_4k.clone();
+        let links = monitor_identity::with_link(&[], &at_4k, Some(&at_1080), 10);
+
+        assert!(is_selected_display(&links, &selected, &present));
+        assert!(!is_selected_display(
+            &links,
+            &selected,
+            &monitor("somebody-else")
+        ));
     }
 
     #[test]
