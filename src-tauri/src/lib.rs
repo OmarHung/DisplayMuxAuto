@@ -675,19 +675,6 @@ fn remove_peer(peer_id: String, state: State<'_, AppRuntime>) -> Result<AppSetti
     store_settings(&state, settings)
 }
 
-fn resolve_controllable_monitor(
-    monitor_id: &str,
-) -> Result<(impl MonitorControl, MonitorDescriptor), String> {
-    let controller = platform_controller().map_err(core_user_error)?;
-    let monitor = monitor_inventory(&controller)
-        .map_err(core_user_error)?
-        .controllable
-        .into_iter()
-        .find(|monitor| monitor.id.as_str() == monitor_id)
-        .ok_or_else(display_not_found)?;
-    Ok((controller, monitor))
-}
-
 /// Runs blocking display work (enumeration, DDC/CI) off the main thread,
 /// serialized with dashboard scans so they never talk to a display at once.
 async fn run_display_task<T: Send + 'static>(
@@ -718,7 +705,22 @@ async fn add_shared_monitor(monitor_id: String, app: AppHandle) -> Result<AppSet
 }
 
 fn add_shared_monitor_now(state: &AppRuntime, monitor_id: &str) -> Result<AppSettings, String> {
-    let (controller, monitor) = resolve_controllable_monitor(monitor_id)?;
+    let controller = platform_controller().map_err(core_user_error)?;
+    let inventory = monitor_inventory(&controller).map_err(core_user_error)?;
+    // Any detected display may be shared, not only one answering DDC/CI right
+    // now. A display refuses DDC/CI while it is showing another host or asleep,
+    // and that is exactly the display the user is trying to share — refusing it
+    // left the display they came to add with no way to add it.
+    let monitor = inventory
+        .detected
+        .iter()
+        .find(|monitor| monitor.id.as_str() == monitor_id)
+        .ok_or_else(display_not_found)?
+        .clone();
+    let readable = inventory
+        .controllable
+        .iter()
+        .any(|candidate| candidate.id == monitor.id);
     let mut settings = read_settings(state)?;
     let links = settings.monitor_identity_links.clone();
     let already_selected = settings
@@ -736,7 +738,12 @@ fn add_shared_monitor_now(state: &AppRuntime, monitor_id: &str) -> Result<AppSet
         .iter_mut()
         .find(|selected| is_selected_display(&links, selected, &monitor))
     {
-        refresh_selected_input_data(&controller, &monitor, selected).map_err(core_user_error)?;
+        // Its inputs are read when it answers again; until then the display is
+        // reported as unavailable rather than dropped.
+        if readable {
+            refresh_selected_input_data(&controller, &monitor, selected)
+                .map_err(core_user_error)?;
+        }
     }
     store_settings(state, settings)
 }

@@ -1264,19 +1264,7 @@ function renderMonitors(): void {
         ${t("action.removeShared")}
       </button>
     </article>
-  `).join("") + unreachable.map((monitor) => {
-    const fp = monitor.fingerprint;
-    return `<article class="monitor-card-item is-unreachable">
-      <div class="monitor-item-left">
-        <div class="monitor-item-icon"><i data-lucide="monitor-off"></i></div>
-        <div class="monitor-identity">
-          <strong>${escapeHtml(monitor.name)}</strong>
-          <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? t("settings.noSerial"))} (${t("settings.ddcUnreachable")})</span>
-          ${renderConnection(monitor.connection ?? null)}
-        </div>
-      </div>
-    </article>`;
-  }).join("");
+  `).join("") + unreachable.map((monitor) => selectableMonitorCard(monitor, t("settings.ddcUnreachable"))).join("");
 }
 
 /** Offers to merge a display that is present but belongs to no shared display
