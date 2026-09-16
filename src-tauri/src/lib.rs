@@ -988,6 +988,96 @@ async fn save_settings(
     })
 }
 
+/// How much of the saved setup a reset clears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ResetScope {
+    /// The shared displays and everything keyed to them. Pairing survives, so
+    /// this undoes a display setup without costing the user a re-pair on both
+    /// computers.
+    Displays,
+    /// Everything a fresh install would not have, except this computer's host
+    /// id: peers name this computer by it, so changing it here would strand
+    /// them on the *other* computer, which a local reset has no business doing.
+    Everything,
+}
+
+/// `settings` with `scope` cleared. Split out so the decision about what each
+/// scope keeps is testable without a running app.
+fn settings_after_reset(settings: &AppSettings, scope: ResetScope) -> AppSettings {
+    match scope {
+        ResetScope::Displays => AppSettings {
+            shared_monitors: Vec::new(),
+            shared_monitors_chosen: false,
+            monitor_identity_links: Vec::new(),
+            input_labels: Vec::new(),
+            // Assignments name displays that no longer exist here.
+            peers: settings
+                .peers
+                .iter()
+                .map(|peer| HostRoute {
+                    inputs: Vec::new(),
+                    ..peer.clone()
+                })
+                .collect(),
+            ..settings.clone()
+        },
+        ResetScope::Everything => AppSettings {
+            local_host: settings.local_host,
+            local_host_id: settings.local_host_id.clone(),
+            ..AppSettings::default()
+        },
+    }
+}
+
+/// Clears the saved setup. Destructive and not undoable, so the webview asks
+/// before calling it.
+#[tauri::command]
+async fn reset_settings(
+    scope: ResetScope,
+    state: State<'_, AppRuntime>,
+    app: AppHandle,
+) -> Result<AppSettings, String> {
+    let previous = read_settings(&state)?;
+    let settings = settings_for_current_build(settings_after_reset(&previous, scope));
+    update_host_switcher_shortcut(&app, &previous, &settings)?;
+    let settings = match store_settings(&state, settings.clone()) {
+        Ok(settings) => settings,
+        Err(error) => {
+            if let Err(rollback) = update_host_switcher_shortcut(&app, &settings, &previous) {
+                tracing::warn!(error = %rollback, "unable to restore the previous host switcher shortcut");
+            }
+            return Err(error);
+        }
+    };
+    let autostart = app.autolaunch();
+    if let Ok(enabled) = autostart.is_enabled() {
+        if settings.autostart != enabled {
+            let result = if settings.autostart {
+                autostart.enable()
+            } else {
+                autostart.disable()
+            };
+            if let Err(error) = result {
+                tracing::warn!(error = %error, "unable to apply the autostart setting after a reset");
+            }
+        }
+    }
+    // The agent is keyed to the pairing password, which a full reset clears.
+    restart_agent(&state, &app).await?;
+    for event in [
+        HOST_ORDER_CHANGED_EVENT,
+        HOST_NAMES_CHANGED_EVENT,
+        INPUT_LABELS_CHANGED_EVENT,
+        MONITOR_IDENTITIES_CHANGED_EVENT,
+    ] {
+        if let Err(error) = app.emit(event, ()) {
+            tracing::warn!(error = %error, event, "unable to notify windows of a reset");
+        }
+    }
+    Ok(settings)
+}
+
 #[tauri::command]
 async fn check_for_update(app: AppHandle) -> Result<UpdateInfo, String> {
     let current_version = app.package_info().version.to_string();
@@ -4226,6 +4316,7 @@ pub fn run() -> anyhow::Result<()> {
             set_host_name,
             set_input_label,
             set_monitor_identity_link,
+            reset_settings,
             exchange_host_layout,
             hide_host_switcher,
             check_host_switcher_shortcut,
@@ -5586,6 +5677,66 @@ mod tests {
         assert!(
             settings.shared_monitors_chosen,
             "auto-select decides the list, so it must not run twice"
+        );
+    }
+
+    fn configured_settings() -> AppSettings {
+        let shared = monitor("shared");
+        AppSettings {
+            shared_monitors: vec![SelectedMonitor::from(&shared)],
+            shared_monitors_chosen: true,
+            monitor_identity_links: monitor_identity::with_link(
+                &[],
+                &MonitorFingerprint::new("MSI", "7CF0", None::<String>),
+                Some(&MonitorFingerprint::new("MSI", "3CF0", None::<String>)),
+                10,
+            ),
+            input_labels: vec![InputLabel {
+                monitor: shared.fingerprint.clone(),
+                input: DisplayInput::new(8).unwrap(),
+                label: "USB-C".to_owned(),
+                updated_at_ms: 10,
+            }],
+            peers: vec![peer_using_input("ITX-PC", &shared, 7)],
+            shared_key: "pairing-password".to_owned(),
+            host_switcher_shortcut: "Alt+Q".to_owned(),
+            local_host_id: "kept-id".to_owned(),
+            ..AppSettings::default()
+        }
+    }
+
+    #[test]
+    fn resetting_displays_keeps_the_pairing() {
+        let settings = settings_after_reset(&configured_settings(), ResetScope::Displays);
+
+        assert!(settings.shared_monitors.is_empty());
+        assert!(!settings.shared_monitors_chosen);
+        assert!(settings.monitor_identity_links.is_empty());
+        assert!(settings.input_labels.is_empty());
+        assert_eq!(settings.peers.len(), 1, "the paired host survives");
+        assert!(
+            settings.peers[0].inputs.is_empty(),
+            "its inputs named displays that are gone"
+        );
+        assert_eq!(settings.shared_key, "pairing-password");
+        assert_eq!(settings.host_switcher_shortcut, "Alt+Q");
+    }
+
+    #[test]
+    fn resetting_everything_keeps_only_this_computer_identity() {
+        let settings = settings_after_reset(&configured_settings(), ResetScope::Everything);
+
+        assert_eq!(
+            settings.local_host_id, "kept-id",
+            "paired hosts name this computer by its id, so a local reset must not change it"
+        );
+        assert!(settings.shared_monitors.is_empty());
+        assert!(settings.peers.is_empty());
+        assert!(settings.shared_key.is_empty());
+        assert!(settings.monitor_identity_links.is_empty());
+        assert_eq!(
+            settings.host_switcher_shortcut,
+            AppSettings::default().host_switcher_shortcut
         );
     }
 

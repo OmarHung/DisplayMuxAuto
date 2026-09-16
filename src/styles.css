@@ -883,6 +883,51 @@ button.switch-all-host:disabled {
   gap: 10px;
 }
 
+.reset-section {
+  margin-top: 22px;
+}
+
+.reset-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.reset-button {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  text-align: left;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color .16s ease, background .16s ease;
+}
+
+.reset-button:hover { border-color: var(--accent); }
+
+.reset-button strong { font-size: 14px; font-weight: 700; }
+
+.reset-button small { color: var(--subtle); font-size: 12px; line-height: 1.5; }
+
+/* Armed by the first press; the second one goes through. */
+.reset-button.is-confirming {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.reset-button.is-confirming small { color: var(--danger); font-weight: 600; }
+
+.reset-button.is-danger:hover { border-color: var(--danger); color: var(--danger); }
+
+@media (max-width: 720px) {
+  .reset-actions { flex-direction: column; }
+}
+
 .monitor-merge {
   display: flex;
   flex-direction: column;

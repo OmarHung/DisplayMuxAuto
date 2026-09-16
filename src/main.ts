@@ -400,6 +400,21 @@ app.innerHTML = `
                 <button class="save-button full-width" type="submit"><i data-lucide="save"></i>${t("action.save")}</button>
               </div>
             </form>
+
+            <div class="form-section reset-section">
+              <div class="pairing-heading"><strong>${t("settings.resetTitle")}</strong></div>
+              <p class="monitor-merge-note">${t("settings.resetIntro")}</p>
+              <div class="reset-actions">
+                <button type="button" class="reset-button" data-reset-scope="displays">
+                  <strong>${t("settings.resetDisplays")}</strong>
+                  <small>${t("settings.resetDisplaysHint")}</small>
+                </button>
+                <button type="button" class="reset-button is-danger" data-reset-scope="everything">
+                  <strong>${t("settings.resetEverything")}</strong>
+                  <small>${t("settings.resetEverythingHint")}</small>
+                </button>
+              </div>
+            </div>
           </section>
 
           <aside class="compatibility-panel">
@@ -556,6 +571,10 @@ document.querySelector("#monitor-picker")?.addEventListener("click", (event) => 
   if (!button?.dataset.monitorId) return;
   if (button.dataset.monitorSelected === "true") void removeSharedMonitor(button.dataset.monitorId);
   else void addSharedMonitor(button.dataset.monitorId);
+});
+document.querySelector(".settings-main")?.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-reset-scope]");
+  if (button?.dataset.resetScope) requestReset(button.dataset.resetScope, button);
 });
 document.querySelector("#monitor-merge")?.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
@@ -1791,6 +1810,41 @@ async function mergeSharedMonitor(aliasId: string, primaryId: string): Promise<v
       t("settings.mergedInto", { name: primary?.name ?? t("dashboard.sharedDisplay") }),
     );
   } catch (error) { showToast(t("toast.monitorSelectFailed"), String(error), true); }
+}
+
+let pendingReset: { scope: string; timer: number } | null = null;
+
+/** Asks once, then performs. The second press within ten seconds confirms; any
+ *  other press, or the timeout, puts the button back. */
+function requestReset(scope: string, button: HTMLButtonElement): void {
+  if (pendingReset?.scope === scope) {
+    window.clearTimeout(pendingReset.timer);
+    pendingReset = null;
+    void performReset(scope);
+    return;
+  }
+  if (pendingReset) window.clearTimeout(pendingReset.timer);
+  const label = button.querySelector("small");
+  const original = label?.textContent ?? "";
+  if (label) label.textContent = t("settings.resetConfirm");
+  button.classList.add("is-confirming");
+  pendingReset = {
+    scope,
+    timer: window.setTimeout(() => {
+      pendingReset = null;
+      if (label) label.textContent = original;
+      button.classList.remove("is-confirming");
+    }, 10_000),
+  };
+}
+
+async function performReset(scope: string): Promise<void> {
+  try {
+    settings = await invoke<AppSettings>("reset_settings", { scope });
+    await refresh();
+    renderState();
+    showToast(t("settings.resetTitle"), t("settings.resetDone"));
+  } catch (error) { showToast(t("settings.resetTitle"), String(error), true); }
 }
 
 async function unmergeSharedMonitor(aliasId: string): Promise<void> {
