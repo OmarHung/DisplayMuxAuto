@@ -1259,7 +1259,13 @@ function renderMonitorMerge(): void {
   if (!container) return;
   const present = [...dashboard.monitors, ...(dashboard.uncontrollableMonitors ?? [])];
   const strangers = present.filter((monitor) => !isSharedDisplay(monitor.fingerprint));
-  const targets = dashboard.shared;
+  // Only a shared display that has gone missing can be the other identity of a
+  // display that just turned up. With every shared display accounted for there
+  // is nothing to merge, and offering it anyway invites merging two displays
+  // that are genuinely different — which is not something a user can undo by
+  // looking at the screen.
+  const targets = dashboard.shared.filter((shared) =>
+    !present.some((monitor) => sameDisplay(monitor.fingerprint, shared.fingerprint)));
   const claims = dashboard.monitorIdentityClaims ?? [];
   const canMerge = strangers.length > 0 && targets.length > 0;
   if (!canMerge && !claims.length) { container.innerHTML = ""; return; }
