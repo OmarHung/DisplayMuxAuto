@@ -90,6 +90,7 @@ const zhTW: Record<keyof typeof en, string> = {
   "toast.updateUnavailableBody": "請從已安裝的 DisplayMux 執行更新檢查。", "toast.updateFailed": "無法檢查更新", "toast.installFailed": "更新未安裝",
   "toast.onboardingFailed": "無法儲存設定引導狀態", "toast.openLinkFailed": "無法開啟連結",
   "toast.activeHostSyncFailed": "無法更新目前顯示的主機",
+  "toast.peerInputSyncFailed": "無法更新已加入主機的輸入值",
   "preview.monitorStatus": "請在設定頁選擇共用螢幕",
   "settings.ddcUnreachable": "已偵測到，但無法讀取 DDC/CI",
   "settings.inputLabels": "輸入備註", "settings.inputLabelsHint": "為只顯示數字或不好辨認的輸入加上名稱，例如「USB-C」。備註會同步到已配對主機。",

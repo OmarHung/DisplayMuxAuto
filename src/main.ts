@@ -750,6 +750,8 @@ let routeOrder: string[] = [];
 const HOST_NAMES_CHANGED_EVENT = "host-names-changed";
 /** Emitted by the backend when this or a paired host changes an input note. */
 const INPUT_LABELS_CHANGED_EVENT = "input-labels-changed";
+/** Emitted by the backend when a paired host reports the port it occupies. */
+const PEER_INPUTS_CHANGED_EVENT = "peer-inputs-changed";
 /** Longest input note the backend accepts, in characters. */
 const MAX_INPUT_LABEL_CHARS = 24;
 /** Shared displays whose input note list is expanded, by monitor key. */
@@ -815,6 +817,25 @@ async function reloadActiveRoutes(): Promise<void> {
     showToast(t("toast.activeHostSyncFailed"), String(error), true);
   }
   scheduleSettledRescans();
+}
+
+/**
+ * Re-reads the saved peer inputs after a paired host reported the port it
+ * occupies, leaving a select the user has open alone so the new value never
+ * closes a list mid-pick.
+ */
+async function reloadPeerInputs(): Promise<void> {
+  const routes = document.querySelector("#paired-routes");
+  if (routes?.contains(document.activeElement)) return;
+  try {
+    const latest = await invoke<AppSettings>("get_settings");
+    settings = { ...settings, peers: latest.peers };
+    renderPairedRoutes();
+    renderInputNames();
+    refreshIcons();
+  } catch (error) {
+    showToast(t("toast.peerInputSyncFailed"), String(error), true);
+  }
 }
 
 function renderMonitorHealth(): void {
@@ -1778,8 +1799,14 @@ async function switchAllToHost(targetId: string): Promise<void> {
 }
 
 async function peerCommand(command: "probe_peer" | "wake_peer", peerId: string): Promise<void> {
-  try { const result = await invoke<OperationResult>(command, { peerId }); showToast(result.title, result.detail); }
-  catch (error) { showToast(command === "probe_peer" ? t("toast.probeFailed") : t("toast.wakeFailed"), String(error), true); }
+  try {
+    const result = await invoke<OperationResult>(command, { peerId });
+    showToast(result.title, result.detail, result.warning);
+    // A connection test adopts whatever input the host reported for itself.
+    if (command === "probe_peer") await reloadPeerInputs();
+  } catch (error) {
+    showToast(command === "probe_peer" ? t("toast.probeFailed") : t("toast.wakeFailed"), String(error), true);
+  }
 }
 
 async function checkForUpdates(manual: boolean): Promise<void> {
@@ -2119,6 +2146,7 @@ async function bootstrap(): Promise<void> {
       await listen(HOST_ORDER_CHANGED_EVENT, () => void reloadHostOrder());
       await listen(HOST_NAMES_CHANGED_EVENT, () => void reloadHostNames());
       await listen(INPUT_LABELS_CHANGED_EVENT, () => void reloadInputOptions());
+      await listen(PEER_INPUTS_CHANGED_EVENT, () => void reloadPeerInputs());
     } catch (error) {
       showToast(t("toast.activeHostSyncFailed"), String(error), true);
     }

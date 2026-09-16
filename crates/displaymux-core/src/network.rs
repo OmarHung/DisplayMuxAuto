@@ -388,6 +388,20 @@ pub enum AgentAction {
     InputLabelsChanged {
         labels: Vec<InputLabel>,
     },
+    /// Best-effort notice that the sender is on screen on `monitor` and reads
+    /// `input` there, so `input` is the port the sender is plugged into.
+    /// Receivers adopt it as that host's input without the user picking one.
+    /// Only a host that is on screen can vouch for its own port: DDC reports
+    /// the input a display shows, never which port the reader occupies.
+    /// Agents older than this variant reject the request; senders ignore that.
+    LocalInputConfirmed {
+        /// The sender's `LocalHostIdentity::id`, so the receiver knows whose
+        /// port this is. Signed with the rest of the action, so only a holder
+        /// of the shared key can send it.
+        host_id: String,
+        monitor: MonitorFingerprint,
+        input: DisplayInput,
+    },
 }
 
 /// A user-chosen display name for a host, keyed by `LocalHostIdentity::id`.
@@ -495,6 +509,14 @@ pub struct AgentResponse {
 pub struct AgentDisplayRoute {
     pub monitor: MonitorFingerprint,
     pub input: DisplayInput,
+    /// True when the responder believes `monitor` is currently showing it, so
+    /// `input` is the port it is plugged into rather than a reading taken
+    /// while another host was on screen. DDC reports the input the display
+    /// shows, never which port the reader occupies, so only a host that is on
+    /// screen can vouch for its own port. Absent on agents that predate this
+    /// field, which deserializes to `false` via `#[serde(default)]`.
+    #[serde(default)]
+    pub confirmed: bool,
 }
 
 #[derive(Clone)]
@@ -926,6 +948,36 @@ mod tests {
             serde_json::from_str::<AgentAction>(&serialized).unwrap(),
             action
         );
+    }
+
+    #[test]
+    fn local_input_confirmed_notice_round_trips_with_its_sender_monitor_and_input() {
+        let action = AgentAction::LocalInputConfirmed {
+            host_id: "2cf05de0c029-windows".to_owned(),
+            monitor: MonitorFingerprint::new("MSI", "3CF0", None::<String>),
+            input: DisplayInput::new(0x08).unwrap(),
+        };
+
+        let serialized = serde_json::to_string(&action).unwrap();
+
+        assert!(serialized.contains(r#""type":"local_input_confirmed""#));
+        assert_eq!(
+            serde_json::from_str::<AgentAction>(&serialized).unwrap(),
+            action
+        );
+    }
+
+    /// An agent that predates `confirmed` omits it, and its reports must stay
+    /// readable — as unconfirmed, the conservative reading.
+    #[test]
+    fn display_route_without_confirmed_deserializes_as_unconfirmed() {
+        let route: AgentDisplayRoute = serde_json::from_str(
+            r#"{"monitor":{"manufacturer_id":"MSI","product_code":"3CF0","serial_number":null},"input":8}"#,
+        )
+        .unwrap();
+
+        assert!(!route.confirmed);
+        assert_eq!(route.input.value(), 0x08);
     }
 
     #[tokio::test]

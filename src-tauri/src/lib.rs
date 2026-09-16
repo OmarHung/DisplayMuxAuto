@@ -376,6 +376,9 @@ struct AppRuntime {
     discovery: Option<MdnsPeerDiscovery>,
     /// This computer's discovery id, used to name it in the shared host order.
     local_host_id: String,
+    /// The input last announced to paired hosts per shared display, keyed by
+    /// `monitor_key`, so a repeating scan announces a value only once.
+    announced_inputs: std::sync::Mutex<HashMap<String, DisplayInput>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -590,7 +593,7 @@ async fn select_peer(
         query_settings.shared_key = query_key;
         if let Ok(response) = request_peer(&query_settings, &route, AgentAction::Ping).await {
             for display_route in agent_display_routes(&response) {
-                apply_verified_peer_route(&mut settings, &route.id, display_route);
+                let _ = apply_verified_peer_route(&mut settings, &route.id, display_route);
             }
         }
     }
@@ -1038,6 +1041,7 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
                 if !changes.is_empty() || routes_changed {
                     store_settings(state, settings.clone())?;
                 }
+                announce_confirmed_local_inputs(state, &settings);
                 let selection_notices = changes
                     .into_iter()
                     .filter_map(selection_notice_text)
@@ -1192,19 +1196,107 @@ async fn probe_peer(
 ) -> Result<OperationResult, String> {
     let settings = read_settings(&state)?;
     let peer = find_peer(&settings, &peer_id)?;
-    request_peer(&settings, peer, AgentAction::Ping).await?;
+    let peer_name = peer.name.clone();
+    let response = request_peer(&settings, peer, AgentAction::Ping).await?;
+    let adoption = adopt_peer_routes(&state, &peer_id, &response)?;
     Ok(OperationResult {
         title: match UiLocale::current() {
-            UiLocale::TraditionalChinese => format!("{} 已連線", peer.name),
-            UiLocale::English => format!("{} connected", peer.name),
+            UiLocale::TraditionalChinese => format!("{peer_name} 已連線"),
+            UiLocale::English => format!("{peer_name} connected"),
         },
-        detail: ui_text(
-            "DisplayMux Agent 已就緒。",
-            "The DisplayMux Agent is ready.",
-        )
-        .to_owned(),
+        detail: adoption.detail,
         peer_woken: false,
-        warning: false,
+        warning: adoption.warning,
+    })
+}
+
+/// The outcome of adopting a paired host's reported inputs, phrased for a toast.
+struct RouteAdoption {
+    detail: String,
+    warning: bool,
+}
+
+/// Applies every input a paired host reported for the displays shared here,
+/// and describes what happened. A port that cannot be filled in says why,
+/// rather than leaving the user with a field that silently stays empty.
+fn adopt_peer_routes(
+    state: &AppRuntime,
+    peer_id: &str,
+    response: &AgentResponse,
+) -> Result<RouteAdoption, String> {
+    let routes = agent_display_routes(response);
+    if routes.is_empty() {
+        return Ok(RouteAdoption {
+            detail: ui_text(
+                "Agent 已就緒，但這台主機沒有回報任何輸入值；請確認它也把同一台螢幕設為共用。",
+                "The agent is ready, but this host reported no input. Check that it shares the same display.",
+            )
+            .to_owned(),
+            warning: true,
+        });
+    }
+    let mut settings = read_settings(state)?;
+    let mut notes: Vec<String> = Vec::new();
+    let mut applied = false;
+    let mut warning = false;
+    let chinese = matches!(UiLocale::current(), UiLocale::TraditionalChinese);
+    for route in routes {
+        let matched = shared_monitor_index_for_peer(&settings.shared_monitors, &route.monitor)
+            .map(|index| settings.shared_monitors[index].clone());
+        let label = matched.as_ref().map_or_else(
+            || input_label(false, route.input),
+            |selected| noted_input_label(&settings, selected, route.input),
+        );
+        let monitor = matched.map_or_else(String::new, |selected| selected.name);
+        let outcome = apply_verified_peer_route(&mut settings, peer_id, route);
+        applied |= outcome == PeerRouteOutcome::Applied;
+        warning |= !matches!(
+            outcome,
+            PeerRouteOutcome::Applied | PeerRouteOutcome::Unchanged
+        );
+        notes.push(match (outcome, chinese) {
+            (PeerRouteOutcome::Applied, true) => format!("{monitor} 已帶入 {label}。"),
+            (PeerRouteOutcome::Applied, false) => format!("{monitor} set to {label}."),
+            (PeerRouteOutcome::Unchanged, true) => format!("{monitor} 已經是 {label}。"),
+            (PeerRouteOutcome::Unchanged, false) => format!("{monitor} was already {label}."),
+            (PeerRouteOutcome::Kept, true) => format!(
+                "{monitor} 回報 {label}，但這台主機目前不在螢幕上，讀到的可能是別台，因此保留原本的設定。"
+            ),
+            (PeerRouteOutcome::Kept, false) => format!(
+                "{monitor} reported {label}, but that host is not on screen so the reading may be another host's; the current setting was kept."
+            ),
+            (PeerRouteOutcome::UnknownMonitor, true) => {
+                "這台主機回報了一台這裡沒有共用的螢幕。".to_owned()
+            }
+            (PeerRouteOutcome::UnknownMonitor, false) => {
+                "This host reported a display that is not shared here.".to_owned()
+            }
+            (PeerRouteOutcome::Unsupported, true) => {
+                format!("{monitor} 沒有 {label} 這個輸入。")
+            }
+            (PeerRouteOutcome::Unsupported, false) => {
+                format!("{monitor} has no {label} input.")
+            }
+            (PeerRouteOutcome::Taken, true) => format!(
+                "{monitor} 的 {label} 已指派給其他主機；請確認兩台主機接在不同的 Port，或先切換到這台主機再試一次。"
+            ),
+            (PeerRouteOutcome::Taken, false) => format!(
+                "{label} on {monitor} is already assigned to another host. Check that the hosts use different ports, or switch to this host and retry."
+            ),
+            (PeerRouteOutcome::UnknownPeer, true) => {
+                "這台主機已不在已加入的清單中。".to_owned()
+            }
+            (PeerRouteOutcome::UnknownPeer, false) => {
+                "This host is no longer in the added list.".to_owned()
+            }
+        });
+    }
+    if applied {
+        store_settings(state, settings)?;
+    }
+    Ok(RouteAdoption {
+        detail: notes.join(" "),
+        warning,
     })
 }
 
@@ -1913,11 +2005,46 @@ fn shared_monitor_index_for_peer(
     }
 }
 
+/// Whether this host believes `selected` is currently showing it. An unset
+/// `active_route` renders as this host everywhere else, so it counts as this
+/// host here too — which is how a host that was never switched away sees
+/// itself.
+fn shows_this_host(selected: &SelectedMonitor) -> bool {
+    selected.active_route.as_deref().unwrap_or("local") == "local"
+}
+
+/// What `apply_verified_peer_route` did with a route a paired host reported.
+/// Every rejection carries its reason so the caller can say why a port stayed
+/// empty instead of leaving the user with a blank field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PeerRouteOutcome {
+    /// The reported input became the peer's assignment for that display.
+    Applied,
+    /// The peer was already assigned that input.
+    Unchanged,
+    /// The peer kept the input it already had, because it did not claim to be
+    /// on screen and so cannot vouch for what it reported.
+    Kept,
+    /// The peer named a display this host does not share.
+    UnknownMonitor,
+    /// The display does not offer that input.
+    Unsupported,
+    /// This host or another paired host already uses that input.
+    Taken,
+    /// The peer is no longer in the saved list.
+    UnknownPeer,
+}
+
+/// Adopts the input a paired host reported for one shared display.
+///
+/// A reading the peer cannot vouch for never overwrites an input that is
+/// already set: DDC reports the input a display is showing, not the port the
+/// reader occupies, so a host that is off screen reads whoever is on screen.
 fn apply_verified_peer_route(
     settings: &mut AppSettings,
     peer_id: &str,
     route: AgentDisplayRoute,
-) -> bool {
+) -> PeerRouteOutcome {
     let Some((fingerprint, local_input, supported_inputs)) =
         shared_monitor_index_for_peer(&settings.shared_monitors, &route.monitor)
             .map(|index| &settings.shared_monitors[index])
@@ -1929,25 +2056,42 @@ fn apply_verified_peer_route(
                 )
             })
     else {
-        return false;
+        return PeerRouteOutcome::UnknownMonitor;
     };
     let supported = supported_inputs.as_ref().map_or_else(
         || common_input_sources().contains(&route.input),
         |inputs| inputs.contains(&route.input),
     );
-    let already_assigned = local_input == Some(route.input)
+    if !supported {
+        return PeerRouteOutcome::Unsupported;
+    }
+    let Some(existing) = settings
+        .peers
+        .iter()
+        .find(|peer| peer.id == peer_id)
+        .map(|peer| peer.input_for(&fingerprint))
+    else {
+        return PeerRouteOutcome::UnknownPeer;
+    };
+    if existing == Some(route.input) {
+        return PeerRouteOutcome::Unchanged;
+    }
+    if existing.is_some() && !route.confirmed {
+        return PeerRouteOutcome::Kept;
+    }
+    let taken = local_input == Some(route.input)
         || settings
             .peers
             .iter()
             .any(|peer| peer.id != peer_id && peer.input_for(&fingerprint) == Some(route.input));
-    if !supported || already_assigned {
-        return false;
+    if taken {
+        return PeerRouteOutcome::Taken;
     }
     let Some(peer) = settings.peers.iter_mut().find(|peer| peer.id == peer_id) else {
-        return false;
+        return PeerRouteOutcome::UnknownPeer;
     };
     peer.set_input_for(&fingerprint, Some(route.input));
-    true
+    PeerRouteOutcome::Applied
 }
 
 fn refresh_paired_endpoints(state: &AppRuntime, peers: &[DiscoveredPeer]) -> Result<(), String> {
@@ -1999,6 +2143,11 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                         AgentAction::InputLabelsChanged { labels } => {
                             receive_input_labels_notice(app, labels).await
                         }
+                        AgentAction::LocalInputConfirmed {
+                            host_id,
+                            monitor,
+                            input,
+                        } => receive_local_input_confirmed(app, host_id, monitor, input).await,
                         AgentAction::Ping => {
                             let snapshot = live_settings.read().ok().map(|settings| settings.clone());
                             let display_routes = snapshot
@@ -2011,6 +2160,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                             Some(AgentDisplayRoute {
                                                 monitor: selected.fingerprint.clone(),
                                                 input: selected.local_input?,
+                                                confirmed: shows_this_host(selected),
                                             })
                                         })
                                         .collect::<Vec<_>>()
@@ -2721,6 +2871,141 @@ async fn receive_active_input_notice(
     })
     .await;
     agent_notice_response(applied)
+}
+
+/// Frontend event telling the settings page to re-read the saved peer inputs.
+const PEER_INPUTS_CHANGED_EVENT: &str = "peer-inputs-changed";
+
+/// Adopts a paired host's confirmed port. The sender vouches for the value
+/// because the display was showing *it* when the input was read, which is the
+/// only moment a DDC read identifies the reader's own port rather than
+/// whichever host happens to be on screen.
+async fn receive_local_input_confirmed(
+    app: AppHandle,
+    host_id: String,
+    monitor: MonitorFingerprint,
+    input: DisplayInput,
+) -> AgentResponse {
+    let applied = tauri::async_runtime::spawn_blocking(move || {
+        // Serialize with dashboard scans, which write back a settings snapshot.
+        let _scan = DASHBOARD_SCAN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = app.state::<AppRuntime>();
+        let mut settings = read_settings(&state)?;
+        let route = AgentDisplayRoute {
+            monitor,
+            input,
+            confirmed: true,
+        };
+        if apply_verified_peer_route(&mut settings, &host_id, route) == PeerRouteOutcome::Applied {
+            tracing::info!(
+                host_id = host_id.as_str(),
+                input = input.value(),
+                "adopted a paired host's confirmed display input"
+            );
+            store_settings(&state, settings)?;
+            if let Err(error) = app.emit(PEER_INPUTS_CHANGED_EVENT, ()) {
+                tracing::warn!(error = %error, "unable to notify windows of a paired host's input");
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await;
+    agent_notice_response(applied)
+}
+
+/// Asks every paired host once, at startup, which port it occupies. A host
+/// announces its port when the value changes, so a computer that was off at
+/// that moment would otherwise never hear it.
+fn adopt_peer_routes_at_startup(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(runtime) = app.try_state::<AppRuntime>() else {
+            return;
+        };
+        let Ok(settings) = read_settings_inner(&runtime) else {
+            return;
+        };
+        if !has_valid_shared_key(&settings.shared_key) {
+            return;
+        }
+        let settings = Arc::new(settings);
+        let mut adopted = false;
+        for index in 0..settings.peers.len() {
+            let peer = &settings.peers[index];
+            let response = match request_peer(&settings, peer, AgentAction::Ping).await {
+                Ok(response) => response,
+                Err(error) => {
+                    tracing::info!(
+                        peer = peer.name.as_str(),
+                        error = %error,
+                        "paired host did not answer the startup input query"
+                    );
+                    continue;
+                }
+            };
+            let mut saved = match read_settings_inner(&runtime) {
+                Ok(saved) => saved,
+                Err(_) => return,
+            };
+            let mut changed = false;
+            for route in agent_display_routes(&response) {
+                if apply_verified_peer_route(&mut saved, &peer.id, route)
+                    == PeerRouteOutcome::Applied
+                {
+                    changed = true;
+                    adopted = true;
+                }
+            }
+            if changed {
+                if let Err(error) = store_settings(&runtime, saved) {
+                    tracing::warn!(error = %error, "unable to save a paired host's reported input");
+                    return;
+                }
+            }
+        }
+        if adopted {
+            if let Err(error) = app.emit(PEER_INPUTS_CHANGED_EVENT, ()) {
+                tracing::warn!(error = %error, "unable to notify windows of a paired host's input");
+            }
+        }
+    });
+}
+
+/// Tells every paired host which port this computer occupies on the displays
+/// it is currently showing on, so their settings fill themselves in. Only
+/// displays this host is on screen for are announced, and only when the value
+/// changed since the last announcement, so an idle scan loop stays quiet.
+fn announce_confirmed_local_inputs(state: &AppRuntime, settings: &AppSettings) {
+    let host_id = state.local_host_id.clone();
+    if host_id.is_empty() {
+        return;
+    }
+    let confirmed: Vec<(MonitorFingerprint, DisplayInput)> = settings
+        .shared_monitors
+        .iter()
+        .filter(|selected| shows_this_host(selected))
+        .filter_map(|selected| Some((selected.fingerprint.clone(), selected.local_input?)))
+        .collect();
+    let Ok(mut announced) = state.announced_inputs.lock() else {
+        return;
+    };
+    for (fingerprint, input) in confirmed {
+        let key = monitor_key(&fingerprint);
+        if announced.get(&key) == Some(&input) {
+            continue;
+        }
+        announced.insert(key, input);
+        broadcast_to_peers(
+            state,
+            &AgentAction::LocalInputConfirmed {
+                host_id: host_id.clone(),
+                monitor: fingerprint,
+                input,
+            },
+        );
+    }
 }
 
 fn store_settings(state: &AppRuntime, settings: AppSettings) -> Result<AppSettings, String> {
@@ -3583,6 +3868,7 @@ pub fn run() -> anyhow::Result<()> {
                 agent_task: Mutex::new(None),
                 discovery,
                 local_host_id: identity.id,
+                announced_inputs: std::sync::Mutex::new(HashMap::new()),
             });
             if let Some(runtime) = app.try_state::<AppRuntime>() {
                 let settings = read_settings_inner(&runtime).map_err(anyhow::Error::msg)?;
@@ -3615,6 +3901,7 @@ pub fn run() -> anyhow::Result<()> {
                         tracing::warn!(error = %error, "unable to start DisplayMux agent");
                     }
                     exchange_host_layout_with_peers(&runtime, &handle);
+                    adopt_peer_routes_at_startup(&handle);
                 }
             });
             Ok(())
@@ -4169,14 +4456,18 @@ mod tests {
             inputs: Vec::new(),
         });
 
-        assert!(apply_verified_peer_route(
-            &mut settings,
-            "peer",
-            AgentDisplayRoute {
-                monitor: selected.fingerprint.clone(),
-                input: DisplayInput::new(0x11).unwrap(),
-            },
-        ));
+        assert_eq!(
+            apply_verified_peer_route(
+                &mut settings,
+                "peer",
+                AgentDisplayRoute {
+                    monitor: selected.fingerprint.clone(),
+                    input: DisplayInput::new(0x11).unwrap(),
+                    confirmed: false,
+                },
+            ),
+            PeerRouteOutcome::Applied
+        );
         assert_eq!(
             settings.peers[0]
                 .input_for(&selected.fingerprint)
@@ -4186,25 +4477,194 @@ mod tests {
         );
 
         settings.peers[0].set_input_for(&selected.fingerprint, None);
-        assert!(!apply_verified_peer_route(
-            &mut settings,
-            "peer",
-            AgentDisplayRoute {
-                monitor: monitor("different").fingerprint,
-                input: DisplayInput::new(0x12).unwrap(),
-            },
-        ));
+        assert_eq!(
+            apply_verified_peer_route(
+                &mut settings,
+                "peer",
+                AgentDisplayRoute {
+                    monitor: monitor("different").fingerprint,
+                    input: DisplayInput::new(0x12).unwrap(),
+                    confirmed: false,
+                },
+            ),
+            PeerRouteOutcome::UnknownMonitor
+        );
         assert!(settings.peers[0].input_for(&selected.fingerprint).is_none());
 
-        assert!(!apply_verified_peer_route(
-            &mut settings,
-            "peer",
-            AgentDisplayRoute {
-                monitor: selected.fingerprint.clone(),
-                input: DisplayInput::new(0x0f).unwrap(),
-            },
-        ));
+        assert_eq!(
+            apply_verified_peer_route(
+                &mut settings,
+                "peer",
+                AgentDisplayRoute {
+                    monitor: selected.fingerprint.clone(),
+                    input: DisplayInput::new(0x0f).unwrap(),
+                    confirmed: false,
+                },
+            ),
+            PeerRouteOutcome::Taken
+        );
         assert!(settings.peers[0].input_for(&selected.fingerprint).is_none());
+    }
+
+    /// A host that is off screen reads whichever host *is* on screen, so its
+    /// report must not overwrite an input the user already has set.
+    #[test]
+    fn an_unconfirmed_report_keeps_the_input_a_peer_already_has() {
+        let display = monitor("display");
+        let mut settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor {
+                supported_inputs: Some(vec![
+                    DisplayInput::new(0x0f).unwrap(),
+                    DisplayInput::new(0x11).unwrap(),
+                ]),
+                ..SelectedMonitor::from(&display)
+            }],
+            ..AppSettings::default()
+        };
+        settings.peers.push(peer_route("peer"));
+        settings.peers[0].set_input_for(&display.fingerprint, DisplayInput::new(0x11).ok());
+
+        assert_eq!(
+            apply_verified_peer_route(
+                &mut settings,
+                "peer",
+                AgentDisplayRoute {
+                    monitor: display.fingerprint.clone(),
+                    input: DisplayInput::new(0x0f).unwrap(),
+                    confirmed: false,
+                },
+            ),
+            PeerRouteOutcome::Kept
+        );
+        assert_eq!(
+            settings.peers[0]
+                .input_for(&display.fingerprint)
+                .unwrap()
+                .value(),
+            0x11
+        );
+    }
+
+    /// A host that is on screen when it reads the input can only be reading
+    /// its own port, so it corrects a wrong value the user picked earlier.
+    #[test]
+    fn a_confirmed_report_corrects_the_input_a_peer_already_has() {
+        let display = monitor("display");
+        let mut settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor {
+                supported_inputs: Some(vec![
+                    DisplayInput::new(0x0f).unwrap(),
+                    DisplayInput::new(0x11).unwrap(),
+                ]),
+                ..SelectedMonitor::from(&display)
+            }],
+            ..AppSettings::default()
+        };
+        settings.peers.push(peer_route("peer"));
+        settings.peers[0].set_input_for(&display.fingerprint, DisplayInput::new(0x11).ok());
+
+        assert_eq!(
+            apply_verified_peer_route(
+                &mut settings,
+                "peer",
+                AgentDisplayRoute {
+                    monitor: display.fingerprint.clone(),
+                    input: DisplayInput::new(0x0f).unwrap(),
+                    confirmed: true,
+                },
+            ),
+            PeerRouteOutcome::Applied
+        );
+        assert_eq!(
+            settings.peers[0]
+                .input_for(&display.fingerprint)
+                .unwrap()
+                .value(),
+            0x0f
+        );
+    }
+
+    /// Re-reporting the value a peer already has is not a change to save.
+    #[test]
+    fn re_reporting_the_same_input_changes_nothing() {
+        let display = monitor("display");
+        let mut settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor {
+                supported_inputs: Some(vec![DisplayInput::new(0x0f).unwrap()]),
+                ..SelectedMonitor::from(&display)
+            }],
+            ..AppSettings::default()
+        };
+        settings.peers.push(peer_route("peer"));
+        settings.peers[0].set_input_for(&display.fingerprint, DisplayInput::new(0x0f).ok());
+
+        assert_eq!(
+            apply_verified_peer_route(
+                &mut settings,
+                "peer",
+                AgentDisplayRoute {
+                    monitor: display.fingerprint.clone(),
+                    input: DisplayInput::new(0x0f).unwrap(),
+                    confirmed: true,
+                },
+            ),
+            PeerRouteOutcome::Unchanged
+        );
+    }
+
+    /// A display this host does not offer cannot be assigned, however sure
+    /// the reporting host is.
+    #[test]
+    fn a_confirmed_report_of_an_unsupported_input_is_rejected() {
+        let display = monitor("display");
+        let mut settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor {
+                supported_inputs: Some(vec![DisplayInput::new(0x0f).unwrap()]),
+                ..SelectedMonitor::from(&display)
+            }],
+            ..AppSettings::default()
+        };
+        settings.peers.push(peer_route("peer"));
+
+        assert_eq!(
+            apply_verified_peer_route(
+                &mut settings,
+                "peer",
+                AgentDisplayRoute {
+                    monitor: display.fingerprint.clone(),
+                    input: DisplayInput::new(0x11).unwrap(),
+                    confirmed: true,
+                },
+            ),
+            PeerRouteOutcome::Unsupported
+        );
+        assert!(settings.peers[0].input_for(&display.fingerprint).is_none());
+    }
+
+    #[test]
+    fn a_display_never_switched_away_still_counts_as_showing_this_host() {
+        let display = monitor("display");
+        let mut selected = SelectedMonitor::from(&display);
+
+        assert!(shows_this_host(&selected));
+
+        selected.active_route = Some("local".to_owned());
+        assert!(shows_this_host(&selected));
+
+        selected.active_route = Some("peer".to_owned());
+        assert!(!shows_this_host(&selected));
+    }
+
+    fn peer_route(id: &str) -> HostRoute {
+        HostRoute {
+            id: id.to_owned(),
+            name: "Peer".to_owned(),
+            platform: DestinationHost::Mac,
+            address: "192.168.1.20".to_owned(),
+            port: DEFAULT_AGENT_PORT,
+            mac_address: String::new(),
+            inputs: Vec::new(),
+        }
     }
 
     #[test]
@@ -4234,14 +4694,18 @@ mod tests {
             inputs: Vec::new(),
         });
 
-        assert!(apply_verified_peer_route(
-            &mut settings,
-            "peer",
-            AgentDisplayRoute {
-                monitor: monitor_b.fingerprint.clone(),
-                input: DisplayInput::new(0x0f).unwrap(),
-            },
-        ));
+        assert_eq!(
+            apply_verified_peer_route(
+                &mut settings,
+                "peer",
+                AgentDisplayRoute {
+                    monitor: monitor_b.fingerprint.clone(),
+                    input: DisplayInput::new(0x0f).unwrap(),
+                    confirmed: false,
+                },
+            ),
+            PeerRouteOutcome::Applied
+        );
 
         assert!(settings.peers[0]
             .input_for(&monitor_a.fingerprint)

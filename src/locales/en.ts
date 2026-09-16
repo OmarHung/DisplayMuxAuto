@@ -256,6 +256,7 @@ const en = {
   "toast.onboardingFailed": "Unable to save setup guide status",
   "toast.openLinkFailed": "Unable to open link",
   "toast.activeHostSyncFailed": "Unable to update the active host",
+  "toast.peerInputSyncFailed": "Unable to update an added host's input",
   "preview.monitorStatus": "Select a shared display on the settings page",
   "settings.ddcUnreachable": "Detected, but DDC/CI cannot be read",
   "settings.inputLabels": "Input notes",
