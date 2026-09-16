@@ -1,6 +1,6 @@
 [package]
 name = "displaymux-app"
-version = "0.1.11-beta.3"
+version = "0.1.11-beta.4"
 description = "Switch one shared monitor safely between Windows and macOS"
 authors = ["DisplayMux contributors"]
 edition.workspace = true
