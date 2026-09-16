@@ -1466,6 +1466,11 @@ async function reloadInputOptions(): Promise<void> {
 
 async function commitInputLabel(field: HTMLInputElement): Promise<void> {
   const monitorKey = field.dataset.labelMonitor ?? "";
+  // The field commits on blur, which is also what clicking anything else does,
+  // so it can fire for a display that stopped being shared while it was open —
+  // after a reset, or after the display was removed. A note for a display that
+  // is no longer shared means nothing; reporting it as a failure to save does.
+  if (!dashboard.shared.some((shared) => shared.monitorKey === monitorKey)) return;
   const input = Number(field.dataset.labelInput);
   const saved = inputOptionsByMonitor[monitorKey]?.find((option) => option.value === input)?.label ?? "";
   const label = field.value.trim();
