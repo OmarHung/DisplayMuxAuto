@@ -65,14 +65,49 @@ impl LocalHostIdentity {
         } else {
             host_name
         };
-        let mac_address = match mac_address::get_mac_address() {
-            Ok(address) => address.map(|address| address.to_string()),
+        let detected = match mac_address::get_mac_address() {
+            Ok(address) => address,
             Err(error) => {
                 tracing::warn!(error = %error, "unable to advertise wake-on-lan address");
                 None
             }
         };
-        Ok(Self::from_parts(name, platform, mac_address))
+        // The address is still worth advertising for wake-on-LAN, but only a
+        // universally administered one may name the host: see
+        // `identifies_the_machine`.
+        let id = peer_id(
+            &name,
+            platform_name(platform),
+            detected
+                .filter(identifies_the_machine)
+                .map(|address| address.to_string())
+                .as_deref(),
+        );
+        Ok(Self::with_id(
+            id,
+            name,
+            platform,
+            detected.map(|address| address.to_string()),
+        ))
+    }
+
+    /// An identity that keeps `id` whatever this machine's interfaces report
+    /// now. Which interface is enumerated first is not stable, but peers store
+    /// the id, so it has to outlive any of them: a host that renames itself
+    /// loses its pairings, its place in the shared host order and its custom
+    /// name on every other host.
+    pub fn with_id(
+        id: String,
+        name: String,
+        platform: DestinationHost,
+        mac_address: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            platform,
+            mac_address,
+        }
     }
 
     pub fn from_parts(
@@ -232,6 +267,19 @@ fn platform_name(platform: DestinationHost) -> &'static str {
         DestinationHost::Windows => "windows",
         DestinationHost::Mac => "mac",
     }
+}
+
+/// Whether a MAC address names the machine rather than one of its virtual or
+/// privacy interfaces. macOS hands out locally administered addresses for
+/// Wi-Fi privacy, AWDL, bridges and the Apple Silicon `anpi` devices, and
+/// which of them is enumerated first is not stable — one Mac was seen
+/// identifying itself as three different hosts. An address with the
+/// locally-administered bit set, or an all-zero one, therefore never becomes a
+/// host id; the host name is used instead, which at least does not change on
+/// its own.
+fn identifies_the_machine(address: &mac_address::MacAddress) -> bool {
+    let bytes = address.bytes();
+    bytes != [0; 6] && bytes[0] & 0b0000_0010 == 0
 }
 
 fn peer_id(host_name: &str, platform: &str, mac_address: Option<&str>) -> String {
@@ -768,6 +816,52 @@ mod tests {
             "AA:BB:CC".parse::<MacAddress>(),
             Err(DisplayMuxError::InvalidMacAddress(_))
         ));
+    }
+
+    #[test]
+    fn a_locally_administered_address_never_names_the_host() {
+        // Every address this Mac reports has the locally-administered bit set:
+        // the Apple Silicon `anpi` devices, AWDL, the bridges and the Wi-Fi
+        // privacy address. Which one is enumerated first is not stable, and it
+        // had the machine identifying itself as three different hosts.
+        for bytes in [
+            [0xd2, 0xa3, 0x18, 0x8f, 0xc5, 0xf4],
+            [0xd2, 0xa3, 0x18, 0x8f, 0xc5, 0xf5],
+            [0x3a, 0xf0, 0xcc, 0x1c, 0x98, 0x35],
+            [0x02, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        ] {
+            assert!(
+                !identifies_the_machine(&mac_address::MacAddress::new(bytes)),
+                "{bytes:02x?} must not name a host"
+            );
+        }
+    }
+
+    #[test]
+    fn a_burned_in_address_still_names_the_host() {
+        assert!(identifies_the_machine(&mac_address::MacAddress::new([
+            0x2c, 0xf0, 0x5d, 0xe0, 0xc0, 0x29
+        ])));
+    }
+
+    #[test]
+    fn a_kept_id_survives_a_machine_whose_address_changed() {
+        let first = LocalHostIdentity::with_id(
+            "kept-id".to_owned(),
+            "Mac".to_owned(),
+            DestinationHost::Mac,
+            Some("d2:a3:18:8f:c5:f4".to_owned()),
+        );
+        let later = LocalHostIdentity::with_id(
+            first.id.clone(),
+            "Mac".to_owned(),
+            DestinationHost::Mac,
+            Some("02:00:00:00:00:00".to_owned()),
+        );
+
+        assert_eq!(first.id, later.id);
+        assert_ne!(first.mac_address, later.mac_address);
     }
 
     #[test]

@@ -269,6 +269,11 @@ struct AppSettings {
     /// shared with paired hosts (see `monitor_identity`). Backend-owned like
     /// `host_order`.
     monitor_identity_links: Vec<MonitorIdentityLink>,
+    /// This computer's `LocalHostIdentity::id`, fixed the first time it is
+    /// worked out. Peers store it to name this host in their pairings, host
+    /// order and custom names, so it must never be re-derived: see
+    /// `identifies_the_machine`. Backend-owned like `host_order`.
+    local_host_id: String,
 }
 
 impl Default for AppSettings {
@@ -291,6 +296,7 @@ impl Default for AppSettings {
             host_aliases: Vec::new(),
             input_labels: Vec::new(),
             monitor_identity_links: Vec::new(),
+            local_host_id: String::new(),
         }
     }
 }
@@ -904,6 +910,7 @@ async fn save_settings(
     settings.host_aliases = protected.host_aliases.clone();
     settings.input_labels = protected.input_labels.clone();
     settings.monitor_identity_links = protected.monitor_identity_links.clone();
+    settings.local_host_id = protected.local_host_id.clone();
     validate_settings(&settings).map_err(core_user_error)?;
     let enable_autostart = settings.autostart;
     update_host_switcher_shortcut(&app, &protected, &settings)?;
@@ -3413,6 +3420,7 @@ fn migrate_single_monitor_settings(value: serde_json::Value) -> AppSettings {
         host_aliases: Vec::new(),
         input_labels: Vec::new(),
         monitor_identity_links: Vec::new(),
+        local_host_id: String::new(),
     }
 }
 
@@ -3453,6 +3461,7 @@ fn migrate_legacy_settings(legacy: LegacySettings) -> AppSettings {
         host_aliases: Vec::new(),
         input_labels: Vec::new(),
         monitor_identity_links: Vec::new(),
+        local_host_id: String::new(),
     }
 }
 
@@ -4069,10 +4078,28 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!(error = %error, "unable to refresh the login autostart entry");
                 }
             }
-            let identity = LocalHostIdentity::detect(local_host()).unwrap_or_else(|error| {
+            let detected = LocalHostIdentity::detect(local_host()).unwrap_or_else(|error| {
                 tracing::warn!(error = %error, "unable to read this computer's host name");
                 LocalHostIdentity::from_parts("DisplayMux".to_owned(), local_host(), None)
             });
+            // Fixed once and then kept: every paired host stores this id, so
+            // re-deriving it would silently strand this computer's pairings,
+            // its place in the shared host order and its custom name.
+            let mut settings = settings;
+            let identity = if settings.local_host_id.is_empty() {
+                settings.local_host_id = detected.id.clone();
+                if let Err(error) = persist_settings(&settings_path, &settings) {
+                    tracing::warn!(error = %error, "unable to save this computer's host id");
+                }
+                detected
+            } else {
+                LocalHostIdentity::with_id(
+                    settings.local_host_id.clone(),
+                    detected.name,
+                    detected.platform,
+                    detected.mac_address,
+                )
+            };
             let discovery = MdnsPeerDiscovery::start(&identity, DEFAULT_AGENT_PORT)
                 .map(Some)
                 .unwrap_or_else(|error| {
