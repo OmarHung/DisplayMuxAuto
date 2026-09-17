@@ -570,9 +570,10 @@ document.addEventListener("keydown", captureShortcut, true);
 document.querySelector("#monitor-picker")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-monitor-id]");
   const monitorId = button?.dataset.monitorId;
-  if (!button || !monitorId) return;
+  const busyKey = button?.dataset.busyKey;
+  if (!button || !monitorId || !busyKey) return;
   const selected = button.dataset.monitorSelected === "true";
-  void withBusyButton(button, () => (selected ? removeSharedMonitor(monitorId) : addSharedMonitor(monitorId)));
+  void withBusyDisplay(busyKey, () => (selected ? removeSharedMonitor(monitorId) : addSharedMonitor(monitorId)));
 });
 document.querySelector("#local-input-summary")?.addEventListener("change", (event) => {
   const field = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-local-input]");
@@ -1287,7 +1288,7 @@ function renderMonitors(): void {
           <span>${escapeHtml(shared.fingerprint.manufacturer_id)} / ${escapeHtml(shared.fingerprint.product_code)} / ${escapeHtml(shared.fingerprint.serial_number ?? t("settings.noSerial"))} (${escapeHtml(t("settings.notDetected"))})</span>
         </div>
       </div>
-      <button type="button" class="monitor-select-btn is-selected" data-monitor-id="${escapeHtml(shared.monitorKey)}" data-monitor-selected="true">
+      <button type="button" class="monitor-select-btn is-selected ${busyDisplays.has(shared.monitorKey) ? "is-busy" : ""}" data-monitor-id="${escapeHtml(shared.monitorKey)}" data-busy-key="${escapeHtml(shared.monitorKey)}" data-monitor-selected="true"${busyDisplays.has(shared.monitorKey) ? " disabled" : ""}>
         ${t("action.removeShared")}
       </button>
     </article>
@@ -1361,6 +1362,7 @@ function renderMonitorMerge(): void {
 function selectableMonitorCard(monitor: MonitorDescriptor, statusLabel: string): string {
   const shared = dashboard.shared.find((item) => sameDisplay(item.fingerprint, monitor.fingerprint));
   const isSelected = Boolean(shared);
+  const isBusy = busyDisplays.has(monitor.id);
   const fp = monitor.fingerprint;
   const res = monitor.maxResolution;
   const resText = res
@@ -1375,7 +1377,7 @@ function selectableMonitorCard(monitor: MonitorDescriptor, statusLabel: string):
         ${renderConnection(monitor.connection ?? null)}
       </div>
     </div>
-    <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""}" data-monitor-id="${escapeHtml(shared?.monitorKey ?? monitor.id)}" data-monitor-selected="${isSelected}">
+    <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""} ${isBusy ? "is-busy" : ""}" data-monitor-id="${escapeHtml(shared?.monitorKey ?? monitor.id)}" data-busy-key="${escapeHtml(monitor.id)}" data-monitor-selected="${isSelected}"${isBusy ? " disabled" : ""}>
       ${isSelected ? t("action.removeShared") : t("action.selectShared")}
     </button>
   </article>`;
@@ -1826,6 +1828,30 @@ async function scanPeers(): Promise<void> {
     if (!discoveredPeers.length) showToast(t("toast.noPeersTitle"), t("toast.noPeersBody"), true);
   } catch (error) { showToast(t("toast.scanFailed"), String(error), true); }
   finally { if (button) { button.disabled = false; button.textContent = t("action.searchAgain"); } }
+}
+
+/** Displays with a command in flight, by the id their row is keyed on.
+ *
+ *  Held here rather than on the button, because any refresh rebuilds the list
+ *  and takes the button with it: two displays selected in quick succession had
+ *  the first one's refresh drop the second back to its idle label while its own
+ *  command was still running. Rendering from this survives that. */
+const busyDisplays = new Set<string>();
+
+/** Runs a display command, marking that display as working for as long as it
+ *  takes, however often the list is rebuilt meanwhile. */
+async function withBusyDisplay(key: string, run: () => Promise<void>): Promise<void> {
+  if (busyDisplays.has(key)) return;
+  busyDisplays.add(key);
+  renderMonitors();
+  refreshIcons();
+  try {
+    await run();
+  } finally {
+    busyDisplays.delete(key);
+    renderMonitors();
+    refreshIcons();
+  }
 }
 
 /** Marks a button as working until its command settles. Re-rendering replaces
