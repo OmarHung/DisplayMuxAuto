@@ -2291,26 +2291,41 @@ fn apply_verified_peer_route(
     peer_id: &str,
     route: AgentDisplayRoute,
 ) -> PeerRouteOutcome {
-    let Some((fingerprint, local_input, supported_inputs)) = shared_monitor_index_for_peer(
-        &settings.shared_monitors,
-        &settings.monitor_identity_links,
-        &route.monitor,
-    )
-    .map(|index| &settings.shared_monitors[index])
-    .map(|selected| {
-        (
-            selected.fingerprint.clone(),
-            selected.local_input,
-            selected.supported_inputs.clone(),
+    let Some((fingerprint, local_input, supported_inputs, guessed_inputs)) =
+        shared_monitor_index_for_peer(
+            &settings.shared_monitors,
+            &settings.monitor_identity_links,
+            &route.monitor,
         )
-    }) else {
+        .map(|index| &settings.shared_monitors[index])
+        .map(|selected| {
+            (
+                selected.fingerprint.clone(),
+                selected.local_input,
+                selected.supported_inputs.clone(),
+                selected.vendor_indexed_inputs,
+            )
+        })
+    else {
         return PeerRouteOutcome::UnknownMonitor;
     };
     let supported = supported_inputs.as_ref().map_or_else(
         || common_input_sources().contains(&route.input),
         |inputs| inputs.contains(&route.input),
     );
-    if !supported {
+    // What this host believes the display accepts is sometimes its own guess:
+    // a display whose capabilities omitted the input it was showing is given
+    // the private `1..=max` range it reports, which is a range, not a list of
+    // real inputs. A host that was on screen read its own port from the
+    // display itself, so on that display its word beats the guess — otherwise
+    // the port it worked out is dropped here without a trace.
+    if !supported && !(route.confirmed && guessed_inputs) {
+        tracing::info!(
+            peer_id,
+            input = route.input.value(),
+            confirmed = route.confirmed,
+            "paired host reported an input this display is not known to accept"
+        );
         return PeerRouteOutcome::Unsupported;
     }
     let Some(existing) = settings
@@ -6364,6 +6379,71 @@ mod tests {
             settings.shared_monitors,
             vec![SelectedMonitor::from(&previous)],
             "an unidentified selection is never reassigned to a different monitor"
+        );
+    }
+
+    fn shared_with_guessed_inputs(display: &MonitorDescriptor, upper: u32) -> SelectedMonitor {
+        let mut selected = SelectedMonitor::from(display);
+        selected.vendor_indexed_inputs = true;
+        selected.supported_inputs = Some(
+            (1..=upper)
+                .filter_map(|value| DisplayInput::new(value).ok())
+                .collect(),
+        );
+        selected
+    }
+
+    #[test]
+    fn a_confirmed_port_outside_a_guessed_list_is_still_adopted() {
+        // This host never saw the input its display accepts, so it was given
+        // the private 1..=max range instead — a range, not a list of inputs.
+        // The other host read its own port from the display while on screen,
+        // and dropping that leaves its port blank with nothing said.
+        let display = monitor("shared");
+        let mut settings = AppSettings {
+            shared_monitors: vec![shared_with_guessed_inputs(&display, 14)],
+            peers: vec![peer_using_input("ITX-PC", &display, 8)],
+            ..AppSettings::default()
+        };
+        settings.peers[0].inputs.clear();
+        let peer_id = settings.peers[0].id.clone();
+        let route = AgentDisplayRoute {
+            monitor: display.fingerprint.clone(),
+            input: DisplayInput::new(15).unwrap(),
+            confirmed: true,
+        };
+
+        assert_eq!(
+            apply_verified_peer_route(&mut settings, &peer_id, route),
+            PeerRouteOutcome::Applied
+        );
+        assert_eq!(
+            settings.peers[0].input_for(&display.fingerprint),
+            Some(DisplayInput::new(15).unwrap())
+        );
+    }
+
+    #[test]
+    fn an_unconfirmed_port_outside_a_guessed_list_is_still_refused() {
+        // Unconfirmed means the host was not on screen, so its reading is of
+        // whoever was: it has no more standing than the guess.
+        let display = monitor("shared");
+        let mut settings = AppSettings {
+            shared_monitors: vec![shared_with_guessed_inputs(&display, 14)],
+            peers: vec![peer_using_input("ITX-PC", &display, 8)],
+            ..AppSettings::default()
+        };
+        settings.peers[0].inputs.clear();
+        let peer_id = settings.peers[0].id.clone();
+        let route = AgentDisplayRoute {
+            monitor: display.fingerprint.clone(),
+            input: DisplayInput::new(15).unwrap(),
+            confirmed: false,
+        };
+
+        assert_eq!(
+            apply_verified_peer_route(&mut settings, &peer_id, route),
+            PeerRouteOutcome::Unsupported
         );
     }
 
