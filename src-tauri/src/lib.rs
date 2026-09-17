@@ -401,10 +401,14 @@ struct AppRuntime {
     local_host_name: String,
     /// The input last announced to paired hosts per shared display, keyed by
     /// `monitor_key`, so a repeating scan announces a value only once.
-    announced_inputs: std::sync::Mutex<HashMap<String, DisplayInput>>,
+    ///
+    /// Emptied whenever a notice fails to reach a paired host: what was
+    /// announced is only what arrived, and a host that was busy restarting had
+    /// otherwise missed the one announcement that would ever be made.
+    announced_inputs: Arc<std::sync::Mutex<HashMap<String, DisplayInput>>>,
     /// Which displays this host has already told paired hosts the inputs of,
-    /// for the same reason.
-    announced_input_lists: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// on the same terms.
+    announced_input_lists: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2753,6 +2757,8 @@ fn broadcast_to_peers(state: &AppRuntime, action: &AgentAction) {
     for index in 0..settings.peers.len() {
         let settings = Arc::clone(&settings);
         let action = action.clone();
+        let announced_inputs = Arc::clone(&state.announced_inputs);
+        let announced_input_lists = Arc::clone(&state.announced_input_lists);
         tauri::async_runtime::spawn(async move {
             let peer = &settings.peers[index];
             if let Err(error) = request_peer(&settings, peer, action).await {
@@ -2761,6 +2767,16 @@ fn broadcast_to_peers(state: &AppRuntime, action: &AgentAction) {
                     error = %error,
                     "paired host did not accept the notice"
                 );
+                // A notice is announced once and then remembered as announced,
+                // so one that did not arrive would never be sent again — a host
+                // that happened to be restarting stayed out of date for good.
+                // Forgetting makes the next scan say it all over again.
+                if let Ok(mut announced) = announced_inputs.lock() {
+                    announced.clear();
+                }
+                if let Ok(mut announced) = announced_input_lists.lock() {
+                    announced.clear();
+                }
             }
         });
     }
@@ -4622,8 +4638,10 @@ pub fn run() -> anyhow::Result<()> {
                 discovery,
                 local_host_id: identity.id,
                 local_host_name: identity.name,
-                announced_inputs: std::sync::Mutex::new(HashMap::new()),
-                announced_input_lists: std::sync::Mutex::new(std::collections::HashSet::new()),
+                announced_inputs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                announced_input_lists: Arc::new(std::sync::Mutex::new(
+                    std::collections::HashSet::new(),
+                )),
             });
             if let Some(runtime) = app.try_state::<AppRuntime>() {
                 let settings = read_settings_inner(&runtime).map_err(anyhow::Error::msg)?;
