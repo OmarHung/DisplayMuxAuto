@@ -53,6 +53,11 @@
       "icons/icon.ico"
     ],
     "category": "Utility",
+    "windows": {
+      "nsis": {
+        "installerHooks": "./installer-hooks.nsi"
+      }
+    },
     "shortDescription": "Safely switch one shared monitor between two computers",
     "longDescription": "DisplayMuxAuto coordinates Windows and macOS over a local network and changes only the configured shared monitor input. It extends DisplayMux by Henry Hsu.",
     "resources": {
