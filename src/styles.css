@@ -945,6 +945,12 @@ button.switch-all-host:disabled {
   .reset-button.is-busy::after { animation: none; }
 }
 
+/* The detected port is editable, so the row holds a control rather than text. */
+.local-input-row select.local-input-field {
+  max-width: 220px;
+  margin-inline-start: auto;
+}
+
 .reset-section {
   margin-top: 22px;
 }

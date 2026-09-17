@@ -3265,6 +3265,52 @@ fn set_monitor_identity_link(
     Ok(settings)
 }
 
+/// Sets which input this computer occupies on a shared display, or clears it.
+///
+/// Reading it can only get so far: VCP 0x60 says what a display is showing,
+/// never which port the reader is plugged into, so a host that has never been
+/// on screen cannot learn its own port and a display with a vendor-specific
+/// input may never be read confidently. The user can always see which cable
+/// they used.
+///
+/// A port set here is announced to paired hosts exactly like a detected one,
+/// so correcting it on one computer corrects what every other computer will
+/// switch to.
+#[tauri::command]
+async fn set_local_input(
+    monitor_id: String,
+    input: Option<u32>,
+    app: AppHandle,
+) -> Result<AppSettings, String> {
+    let settings = run_display_task(app.clone(), move |state| {
+        let mut settings = read_settings(state)?;
+        let fingerprint = find_shared_monitor(&settings, &monitor_id)?
+            .fingerprint
+            .clone();
+        let input = match input {
+            Some(value) => Some(DisplayInput::new(value).map_err(core_user_error)?),
+            None => None,
+        };
+        let Some(selected) = settings
+            .shared_monitors
+            .iter_mut()
+            .find(|selected| selected.fingerprint.matches_exactly(&fingerprint))
+        else {
+            return Err(display_not_found());
+        };
+        selected.local_input = input;
+        store_settings(state, settings)
+    })
+    .await?;
+    if let Err(error) = app.emit(PEER_INPUTS_CHANGED_EVENT, ()) {
+        tracing::warn!(error = %error, "unable to notify windows of an input change");
+    }
+    if let Some(state) = app.try_state::<AppRuntime>() {
+        announce_confirmed_local_inputs(&state, &settings);
+    }
+    Ok(settings)
+}
+
 /// Sets the note for one input of a shared display (empty clears it) and
 /// shares every note with paired hosts. Returns that display's input options.
 #[tauri::command]
@@ -4500,6 +4546,7 @@ pub fn run() -> anyhow::Result<()> {
             set_host_name,
             set_input_label,
             set_monitor_identity_link,
+            set_local_input,
             reset_settings,
             exchange_host_layout,
             hide_host_switcher,

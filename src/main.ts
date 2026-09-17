@@ -574,6 +574,10 @@ document.querySelector("#monitor-picker")?.addEventListener("click", (event) => 
   const selected = button.dataset.monitorSelected === "true";
   void withBusyButton(button, () => (selected ? removeSharedMonitor(monitorId) : addSharedMonitor(monitorId)));
 });
+document.querySelector("#local-input-summary")?.addEventListener("change", (event) => {
+  const field = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-local-input]");
+  if (field?.dataset.localInput) void commitLocalInput(field.dataset.localInput, field.value);
+});
 document.querySelector("#local-host-name")?.addEventListener("change", (event) => {
   void renameLocalHost((event.target as HTMLInputElement).value);
 });
@@ -1413,7 +1417,13 @@ function renderLocalInputSummary(): void {
   container.innerHTML = dashboard.shared.map((shared) => {
     const value = selectedMonitorFor(shared)?.localInput ?? null;
     const conflict = shared.connectionInputConflict ? `<small class="local-input-conflict">${t("settings.inputConflict")}</small>` : "";
-    return `<div class="local-input-row"><span>${escapeHtml(shared.name)}</span><strong>${value == null ? t("input.unset") : escapeHtml(inputName(value, shared.monitorKey))}</strong>${conflict}</div>`;
+    return `<div class="local-input-row">
+      <span>${escapeHtml(shared.name)}</span>
+      <select class="local-input-field" data-local-input="${escapeHtml(shared.monitorKey)}" aria-label="${escapeHtml(t("settings.localInputAria", { monitor: shared.name }))}">
+        ${renderInputOptions("local", shared.monitorKey, value)}
+      </select>
+      ${conflict}
+    </div>`;
   }).join("");
 }
 
@@ -1862,6 +1872,21 @@ async function mergeSharedMonitor(aliasId: string, primaryId: string): Promise<v
 
 /** Renames this computer. An empty name, or the discovered one, clears the
  *  custom name rather than storing a copy of the default. */
+/** Saves which input this computer occupies on a shared display. Announced to
+ *  paired hosts like a detected one, so a correction here corrects where every
+ *  other computer switches to. */
+async function commitLocalInput(monitorKey: string, value: string): Promise<void> {
+  const input = value === "" ? null : Number(value);
+  try {
+    settings = await invoke<AppSettings>("set_local_input", { monitorId: monitorKey, input });
+    renderState();
+    refreshIcons();
+  } catch (error) {
+    showToast(t("toast.inputLabelFailed"), String(error), true);
+    renderLocalInputSummary();
+  }
+}
+
 async function renameLocalHost(value: string): Promise<void> {
   const name = value.trim();
   const fallback = dashboard.localHostName ?? "";

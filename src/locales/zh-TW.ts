@@ -41,6 +41,7 @@ const zhTW: Record<keyof typeof en, string> = {
   "settings.mergeUndone": "已取消合併，這兩個身分會再次視為不同螢幕。",
   "settings.mergedInto": "已合併到 {name}",
   "settings.notDetected": "目前偵測不到",
+  "settings.localInputAria": "{monitor} 這台電腦使用的輸入",
   "settings.localComputerHint": "這個名稱會顯示在切換中心，並同步給已配對的主機。留空會還原成偵測到的機器名稱。",
   "settings.resetTitle": "重置",
   "settings.resetIntro": "重置無法復原。重置前建議先確認你知道會清掉什麼。",
