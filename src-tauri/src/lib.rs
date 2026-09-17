@@ -1028,7 +1028,11 @@ fn settings_after_reset(settings: &AppSettings, scope: ResetScope) -> AppSetting
     match scope {
         ResetScope::Displays => AppSettings {
             shared_monitors: Vec::new(),
-            shared_monitors_chosen: false,
+            // Emptied on purpose, by someone who is here. Auto-select exists
+            // for a computer that has never chosen; treating a reset as "never
+            // chosen" refills the list on the next refresh and makes the reset
+            // look like it did nothing.
+            shared_monitors_chosen: true,
             monitor_identity_links: Vec::new(),
             input_labels: Vec::new(),
             // Assignments name displays that no longer exist here.
@@ -1045,6 +1049,9 @@ fn settings_after_reset(settings: &AppSettings, scope: ResetScope) -> AppSetting
         ResetScope::Everything => AppSettings {
             local_host: settings.local_host,
             local_host_id: settings.local_host_id.clone(),
+            // As above: a fresh install auto-selects because nobody is there to
+            // choose, which is not the case after a reset.
+            shared_monitors_chosen: true,
             ..AppSettings::default()
         },
     }
@@ -5728,11 +5735,34 @@ mod tests {
     }
 
     #[test]
+    fn a_reset_list_is_not_refilled_by_auto_select() {
+        // Auto-select runs for a computer that has never chosen. A reset is a
+        // choice, made by someone who is present, so the list stays empty
+        // instead of the display reappearing on the next refresh.
+        for scope in [ResetScope::Displays, ResetScope::Everything] {
+            let mut settings = settings_after_reset(&configured_settings(), scope);
+            assert!(settings.shared_monitors.is_empty());
+
+            let only = monitor("only");
+            let changes = reconcile_monitor_selection(&mut settings, std::slice::from_ref(&only));
+
+            assert!(changes.is_empty(), "{scope:?} refilled the list");
+            assert!(
+                settings.shared_monitors.is_empty(),
+                "{scope:?} refilled the list"
+            );
+        }
+    }
+
+    #[test]
     fn resetting_displays_keeps_the_pairing() {
         let settings = settings_after_reset(&configured_settings(), ResetScope::Displays);
 
         assert!(settings.shared_monitors.is_empty());
-        assert!(!settings.shared_monitors_chosen);
+        assert!(
+            settings.shared_monitors_chosen,
+            "emptied on purpose, so auto-select must not refill it"
+        );
         assert!(settings.monitor_identity_links.is_empty());
         assert!(settings.input_labels.is_empty());
         assert_eq!(settings.peers.len(), 1, "the paired host survives");
