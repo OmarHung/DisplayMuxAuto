@@ -512,6 +512,18 @@ pub enum AgentAction {
     MonitorIdentitiesChanged {
         links: Vec<MonitorIdentityLink>,
     },
+    /// Best-effort notice of the inputs a display told the sender it accepts.
+    /// A display only answers the host it is showing, so the other host is
+    /// left guessing at standard MCCS codes and cannot name a vendor-specific
+    /// input at all. Receivers take these only when they have none of their
+    /// own: a reading taken from the display beats a guess, but not another
+    /// reading. `vendor_indexed` marks a list that is the display's private
+    /// `1..=max` range rather than MCCS codes, so both hosts label it alike.
+    DisplayInputsDiscovered {
+        monitor: MonitorFingerprint,
+        inputs: Vec<DisplayInput>,
+        vendor_indexed: bool,
+    },
     /// Best-effort notice that the sender is on screen on `monitor` and reads
     /// `input` there, so `input` is the port the sender is plugged into.
     /// Receivers adopt it as that host's input without the user picking one.
@@ -992,6 +1004,26 @@ mod tests {
             serde_json::from_str(r#"{"ready":true,"message":"ok"}"#).unwrap();
 
         assert!(response.monitor_identity_links.is_empty());
+    }
+
+    #[test]
+    fn display_inputs_notice_round_trips_with_a_vendor_indexed_list() {
+        // The list this carries is the one a host could only read while the
+        // display was showing it, including inputs MCCS has no code for.
+        let action = AgentAction::DisplayInputsDiscovered {
+            monitor: MonitorFingerprint::new("MSI", "3CF0", None::<String>),
+            inputs: vec![
+                DisplayInput::new(8).unwrap(),
+                DisplayInput::new(14).unwrap(),
+            ],
+            vendor_indexed: true,
+        };
+
+        let encoded = serde_json::to_string(&action).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AgentAction>(&encoded).unwrap(),
+            action
+        );
     }
 
     #[test]

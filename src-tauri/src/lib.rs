@@ -402,6 +402,9 @@ struct AppRuntime {
     /// The input last announced to paired hosts per shared display, keyed by
     /// `monitor_key`, so a repeating scan announces a value only once.
     announced_inputs: std::sync::Mutex<HashMap<String, DisplayInput>>,
+    /// Which displays this host has already told paired hosts the inputs of,
+    /// for the same reason.
+    announced_input_lists: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1297,6 +1300,7 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
                     store_settings(state, settings.clone())?;
                 }
                 announce_confirmed_local_inputs(state, &settings);
+                announce_discovered_inputs(state, &settings);
                 let selection_notices = changes
                     .into_iter()
                     .filter_map(selection_notice_text)
@@ -2324,13 +2328,19 @@ fn apply_verified_peer_route(
         || common_input_sources().contains(&route.input),
         |inputs| inputs.contains(&route.input),
     );
-    // What this host believes the display accepts is sometimes its own guess:
-    // a display whose capabilities omitted the input it was showing is given
-    // the private `1..=max` range it reports, which is a range, not a list of
-    // real inputs. A host that was on screen read its own port from the
-    // display itself, so on that display its word beats the guess — otherwise
-    // the port it worked out is dropped here without a trace.
-    if !supported && !(route.confirmed && guessed_inputs) {
+    // What this host believes the display accepts is often its own guess. A
+    // display that would not give up its capabilities — because it is busy
+    // showing the other computer, or sits behind a hub — leaves this host with
+    // the standard MCCS codes, which describe no particular display; one whose
+    // capabilities omitted the input it was showing leaves it with the private
+    // `1..=max` range, which is a range rather than a list of inputs. Neither
+    // knows a vendor-specific port such as the Type-C input this display calls
+    // 8, and both discard it.
+    //
+    // A host that was on screen read its own port from the display itself,
+    // which is what `confirmed` records. Against a guess, that wins.
+    let inputs_are_a_guess = guessed_inputs || supported_inputs.is_none();
+    if !supported && !(route.confirmed && inputs_are_a_guess) {
         tracing::info!(
             peer_id,
             input = route.input.value(),
@@ -2481,6 +2491,11 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                         AgentAction::MonitorIdentitiesChanged { links } => {
                             receive_monitor_identities_notice(app, links).await
                         }
+                        AgentAction::DisplayInputsDiscovered {
+                            monitor,
+                            inputs,
+                            vendor_indexed,
+                        } => receive_display_inputs(app, monitor, inputs, vendor_indexed).await,
                         AgentAction::LocalInputConfirmed {
                             host_id,
                             monitor,
@@ -3435,6 +3450,56 @@ async fn receive_monitor_identities_notice(
     agent_notice_response(applied)
 }
 
+/// Takes a paired host's reading of what a display accepts, but only when this
+/// host has no reading of its own. A display answers the host it is showing and
+/// no other, so the host that is off screen has nothing better than the
+/// standard MCCS codes — which name no particular display, and cannot express a
+/// vendor-specific input at all. A reading beats that. It never replaces a
+/// reading taken here.
+async fn receive_display_inputs(
+    app: AppHandle,
+    monitor: MonitorFingerprint,
+    inputs: Vec<DisplayInput>,
+    vendor_indexed: bool,
+) -> AgentResponse {
+    let applied = tauri::async_runtime::spawn_blocking(move || {
+        let _scan = DASHBOARD_SCAN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = app.state::<AppRuntime>();
+        let mut settings = read_settings(&state)?;
+        if inputs.is_empty() {
+            return Ok(());
+        }
+        let Some(index) = shared_monitor_index_for_peer(
+            &settings.shared_monitors,
+            &settings.monitor_identity_links,
+            &monitor,
+        ) else {
+            return Ok(());
+        };
+        let selected = &mut settings.shared_monitors[index];
+        if selected.supported_inputs.is_some() {
+            return Ok(());
+        }
+        tracing::info!(
+            monitor_id = monitor_key(&selected.fingerprint).as_str(),
+            count = inputs.len(),
+            vendor_indexed,
+            "adopted a paired host's reading of a display's inputs"
+        );
+        selected.supported_inputs = Some(inputs);
+        selected.vendor_indexed_inputs = vendor_indexed;
+        store_settings(&state, settings)?;
+        if let Err(error) = app.emit(INPUT_LABELS_CHANGED_EVENT, ()) {
+            tracing::warn!(error = %error, "unable to notify windows of a display's inputs");
+        }
+        Ok::<(), String>(())
+    })
+    .await;
+    agent_notice_response(applied)
+}
+
 fn agent_notice_response(applied: Result<Result<(), String>, tauri::Error>) -> AgentResponse {
     let (ready, message) = match applied {
         Ok(Ok(())) => (true, ui_text("已同步設定", "Settings synced").to_owned()),
@@ -3602,6 +3667,44 @@ fn adopt_peer_routes_at_startup(app: &AppHandle) {
 /// it is currently showing on, so their settings fill themselves in. Only
 /// displays this host is on screen for are announced, and only when the value
 /// changed since the last announcement, so an idle scan loop stays quiet.
+/// Tells paired hosts what a display said it accepts, for displays this host
+/// has read. A display answers only the host it is showing, so the other host
+/// has nothing but the standard MCCS codes to offer — and cannot express a
+/// vendor-specific input with them at all. Sending costs nothing and the
+/// receiver keeps its own reading if it has one.
+fn announce_discovered_inputs(state: &AppRuntime, settings: &AppSettings) {
+    let discovered: Vec<(MonitorFingerprint, Vec<DisplayInput>, bool)> = settings
+        .shared_monitors
+        .iter()
+        .filter_map(|selected| {
+            let inputs = selected.supported_inputs.clone()?;
+            (!inputs.is_empty()).then(|| {
+                (
+                    selected.fingerprint.clone(),
+                    inputs,
+                    selected.vendor_indexed_inputs,
+                )
+            })
+        })
+        .collect();
+    let Ok(mut announced) = state.announced_input_lists.lock() else {
+        return;
+    };
+    for (fingerprint, inputs, vendor_indexed) in discovered {
+        if !announced.insert(monitor_key(&fingerprint)) {
+            continue;
+        }
+        broadcast_to_peers(
+            state,
+            &AgentAction::DisplayInputsDiscovered {
+                monitor: fingerprint,
+                inputs,
+                vendor_indexed,
+            },
+        );
+    }
+}
+
 fn announce_confirmed_local_inputs(state: &AppRuntime, settings: &AppSettings) {
     let host_id = state.local_host_id.clone();
     if host_id.is_empty() {
@@ -4520,6 +4623,7 @@ pub fn run() -> anyhow::Result<()> {
                 local_host_id: identity.id,
                 local_host_name: identity.name,
                 announced_inputs: std::sync::Mutex::new(HashMap::new()),
+                announced_input_lists: std::sync::Mutex::new(std::collections::HashSet::new()),
             });
             if let Some(runtime) = app.try_state::<AppRuntime>() {
                 let settings = read_settings_inner(&runtime).map_err(anyhow::Error::msg)?;
@@ -6431,6 +6535,44 @@ mod tests {
         assert_eq!(
             settings.peers[0].input_for(&display.fingerprint),
             Some(DisplayInput::new(15).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_confirmed_vendor_port_is_adopted_when_this_host_never_read_the_display() {
+        // A display busy showing the other computer will not give up its
+        // capabilities, so this host has only the standard MCCS codes — which
+        // describe no particular display and do not include the Type-C input
+        // this one calls 8. That is how a port read on the other computer was
+        // thrown away here.
+        let display = monitor("shared");
+        let mut settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor::from(&display)],
+            peers: vec![peer_using_input("ITX-PC", &display, 7)],
+            ..AppSettings::default()
+        };
+        settings.shared_monitors[0].supported_inputs = None;
+        settings.shared_monitors[0].local_input = None;
+        settings.peers[0].inputs.clear();
+        let peer_id = settings.peers[0].id.clone();
+        let vendor_port = DisplayInput::new(8).unwrap();
+        assert!(!common_input_sources().contains(&vendor_port));
+
+        assert_eq!(
+            apply_verified_peer_route(
+                &mut settings,
+                &peer_id,
+                AgentDisplayRoute {
+                    monitor: display.fingerprint.clone(),
+                    input: vendor_port,
+                    confirmed: true,
+                }
+            ),
+            PeerRouteOutcome::Applied
+        );
+        assert_eq!(
+            settings.peers[0].input_for(&display.fingerprint),
+            Some(vendor_port)
         );
     }
 
