@@ -677,7 +677,7 @@ async fn discover_peers(state: State<'_, AppRuntime>) -> Result<Vec<DiscoveredPe
         .to_owned()
     })?;
     let peers = discovery.peers().map_err(core_user_error)?;
-    refresh_paired_endpoints(&state, &peers)?;
+    refresh_paired_endpoints(&state, &peers).await?;
     Ok(peers)
 }
 
@@ -2342,12 +2342,73 @@ fn apply_verified_peer_route(
     PeerRouteOutcome::Applied
 }
 
-fn refresh_paired_endpoints(state: &AppRuntime, peers: &[DiscoveredPeer]) -> Result<(), String> {
+/// The address discovery reports for `peer`, when it differs from the stored
+/// one. Only a candidate: discovery answers from a cache that can name an
+/// address the host has already left, or one of several interfaces where only
+/// some accept connections, so following it unchecked replaces a working
+/// address with a dead one.
+///
+/// Matched by host id alone. That id is fixed for the life of an install (see
+/// `identifies_the_machine`), so it names the same computer wherever it turns
+/// up; an address does not, which is the whole problem. Whatever now answers
+/// where the host used to be therefore inherits nothing.
+fn moved_peer_endpoint(peer: &HostRoute, discovered: &[DiscoveredPeer]) -> Option<(String, u16)> {
+    let found = discovered
+        .iter()
+        .find(|candidate| candidate.id == peer.id)?;
+    let address = found.address.to_string();
+    (peer.address != address || peer.port != found.port).then_some((address, found.port))
+}
+
+/// `moved_peer_endpoint`, confirmed by the host answering there. The reply is
+/// signed with the pairing password, so reaching it proves both that the
+/// address works and that the host behind it is the one paired with — neither
+/// of which discovery can establish on its own.
+async fn confirmed_move(
+    settings: &AppSettings,
+    peer: &HostRoute,
+    discovered: &[DiscoveredPeer],
+) -> Option<(String, u16)> {
+    let (address, port) = moved_peer_endpoint(peer, discovered)?;
+    let candidate = HostRoute {
+        address: address.clone(),
+        port,
+        ..peer.clone()
+    };
+    request_peer(settings, &candidate, AgentAction::Ping)
+        .await
+        .ok()?;
+    tracing::info!(
+        peer = peer.name.as_str(),
+        from = peer.address.as_str(),
+        to = address.as_str(),
+        "paired host answered at a new address; following it"
+    );
+    Some((address, port))
+}
+
+async fn refresh_paired_endpoints(
+    state: &AppRuntime,
+    peers: &[DiscoveredPeer],
+) -> Result<(), String> {
     let current = read_settings_inner(state)?;
     let mut updated = current.clone();
     for peer in peers {
-        if updated.peers.iter().any(|item| item.id == peer.id) {
-            upsert_discovered_peer(&mut updated, peer);
+        let Some(existing) = updated.peers.iter().find(|item| item.id == peer.id) else {
+            continue;
+        };
+        // Everything but where to reach it can be taken as reported; a wrong
+        // name costs nothing, a wrong address costs the pairing.
+        let moved = confirmed_move(&current, existing, peers).await;
+        let Some(existing) = updated.peers.iter_mut().find(|item| item.id == peer.id) else {
+            continue;
+        };
+        existing.name.clone_from(&peer.name);
+        existing.platform = peer.platform;
+        existing.mac_address = peer.mac_address.clone().unwrap_or_default();
+        if let Some((address, port)) = moved {
+            existing.address = address;
+            existing.port = port;
         }
     }
     if updated != current {
@@ -3392,6 +3453,13 @@ fn adopt_peer_routes_at_startup(app: &AppHandle) {
         if !has_valid_shared_key(&settings.shared_key) {
             return;
         }
+        // A host that did not answer may simply have moved, so the addresses
+        // discovery knows are worth a second try before giving up on it.
+        let discovered = runtime
+            .discovery
+            .as_ref()
+            .and_then(|discovery| discovery.peers().ok())
+            .unwrap_or_default();
         let settings = Arc::new(settings);
         let mut adopted = false;
         for index in 0..settings.peers.len() {
@@ -3399,11 +3467,23 @@ fn adopt_peer_routes_at_startup(app: &AppHandle) {
             let response = match request_peer(&settings, peer, AgentAction::Ping).await {
                 Ok(response) => response,
                 Err(error) => {
-                    tracing::info!(
-                        peer = peer.name.as_str(),
-                        error = %error,
-                        "paired host did not answer the startup input query"
-                    );
+                    let moved = confirmed_move(&settings, peer, &discovered).await;
+                    let Some((address, port)) = moved else {
+                        tracing::info!(
+                            peer = peer.name.as_str(),
+                            error = %error,
+                            "paired host did not answer the startup input query"
+                        );
+                        continue;
+                    };
+                    if let Ok(mut saved) = read_settings_inner(&runtime) {
+                        if let Some(stored) = saved.peers.iter_mut().find(|item| item.id == peer.id)
+                        {
+                            stored.address = address;
+                            stored.port = port;
+                            let _ = store_settings(&runtime, saved);
+                        }
+                    }
                     continue;
                 }
             };
@@ -5807,6 +5887,54 @@ mod tests {
                 DisplayInput::new(input).unwrap(),
             )]),
         }
+    }
+
+    fn discovered(id: &str, address: &str, port: u16) -> DiscoveredPeer {
+        DiscoveredPeer {
+            id: id.to_owned(),
+            name: "whatever discovery calls it".to_owned(),
+            platform: DestinationHost::Windows,
+            address: address.parse().unwrap(),
+            port,
+            mac_address: None,
+        }
+    }
+
+    #[test]
+    fn a_host_reported_somewhere_else_is_a_candidate_to_try() {
+        let mut peer = peer_using_input("ITX-PC", &monitor("shared"), 7);
+        peer.address = "192.168.50.93".to_owned();
+        let moved = moved_peer_endpoint(&peer, &[discovered(&peer.id, "192.168.50.97", 47653)]);
+
+        assert_eq!(moved, Some(("192.168.50.97".to_owned(), 47653)));
+    }
+
+    #[test]
+    fn a_host_reported_where_it_already_is_is_not_a_candidate() {
+        let mut peer = peer_using_input("ITX-PC", &monitor("shared"), 7);
+        peer.address = "192.168.50.97".to_owned();
+        let port = peer.port;
+
+        assert_eq!(
+            moved_peer_endpoint(&peer, &[discovered(&peer.id, "192.168.50.97", port)]),
+            None
+        );
+    }
+
+    #[test]
+    fn another_computer_at_the_same_address_is_never_a_candidate() {
+        // Only the host id decides. Something else answering where the host
+        // used to be must not inherit the pairing, however reachable it is.
+        let mut peer = peer_using_input("ITX-PC", &monitor("shared"), 7);
+        peer.address = "192.168.50.93".to_owned();
+
+        assert_eq!(
+            moved_peer_endpoint(
+                &peer,
+                &[discovered("somebody-else", "192.168.50.97", 47653)]
+            ),
+            None
+        );
     }
 
     #[test]
