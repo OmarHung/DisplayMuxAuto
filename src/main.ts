@@ -1506,7 +1506,7 @@ function renderPeerList(): void {
   const available = discoveredPeers.filter((peer) => !settings.peers.some((item) => item.id === peer.id));
   list.innerHTML = available.length ? available.map((peer) => `<article class="peer-row">
     <div class="peer-identity">
-      <strong>${escapeHtml(peer.name)}</strong>
+      <strong>${escapeHtml(hostNames[peer.id] ?? peer.name)}</strong>
       <span>${platformName(peer.platform)} · ${t("settings.networkAuto")}</span>
     </div>
     <button type="button" class="peer-add-btn" data-add-peer="${escapeHtml(peer.id)}"><i data-lucide="plus"></i>${t("action.add")}</button>

@@ -37,9 +37,42 @@ const MAX_PACKET_BYTES: usize = 8 * 1024;
 type HmacSha256 = Hmac<Sha256>;
 
 pub struct MdnsPeerDiscovery {
-    _daemon: ServiceDaemon,
+    daemon: ServiceDaemon,
     local_id: String,
+    /// What this host is advertised as. Kept so the advertisement can be
+    /// replaced when the user renames this computer: other machines only ever
+    /// see the advertised name until they pair, so a rename that stops at the
+    /// settings file leaves them calling this host by the name it had at
+    /// startup.
+    advertised: StdRwLock<AdvertisedService>,
     peers: Arc<StdRwLock<HashMap<String, DiscoveredPeer>>>,
+}
+
+#[derive(Clone, Debug)]
+struct AdvertisedService {
+    name: String,
+    port: u16,
+    properties: HashMap<String, String>,
+}
+
+impl AdvertisedService {
+    fn fullname(&self) -> String {
+        format!("{}.{DISPLAYMUX_SERVICE_TYPE}", self.name)
+    }
+
+    fn info(&self) -> Result<ServiceInfo, DisplayMuxError> {
+        let dns_host_name = format!("{}.local.", dns_label(&self.name));
+        ServiceInfo::new(
+            DISPLAYMUX_SERVICE_TYPE,
+            &self.name,
+            &dns_host_name,
+            "",
+            self.port,
+            self.properties.clone(),
+        )
+        .map(ServiceInfo::enable_addr_auto)
+        .map_err(|error| DisplayMuxError::Backend(error.to_string()))
+    }
 }
 
 /// How this computer identifies itself to paired hosts. `id` is the same value
@@ -128,8 +161,6 @@ impl LocalHostIdentity {
 impl MdnsPeerDiscovery {
     pub fn start(identity: &LocalHostIdentity, port: u16) -> Result<Self, DisplayMuxError> {
         let friendly_name = identity.name.clone();
-        let dns_label = dns_label(&friendly_name);
-        let dns_host_name = format!("{dns_label}.local.");
         let mac_address = identity.mac_address.clone();
         let platform = platform_name(identity.platform);
         let local_id = identity.id.clone();
@@ -144,20 +175,15 @@ impl MdnsPeerDiscovery {
             properties.insert("mac".to_owned(), address.clone());
         }
 
-        let service = ServiceInfo::new(
-            DISPLAYMUX_SERVICE_TYPE,
-            &friendly_name,
-            &dns_host_name,
-            "",
+        let advertised = AdvertisedService {
+            name: friendly_name.clone(),
             port,
             properties,
-        )
-        .map_err(|error| DisplayMuxError::Backend(error.to_string()))?
-        .enable_addr_auto();
+        };
         let daemon =
             ServiceDaemon::new().map_err(|error| DisplayMuxError::Backend(error.to_string()))?;
         daemon
-            .register(service)
+            .register(advertised.info()?)
             .map_err(|error| DisplayMuxError::Backend(error.to_string()))?;
         let receiver = daemon
             .browse(DISPLAYMUX_SERVICE_TYPE)
@@ -195,10 +221,40 @@ impl MdnsPeerDiscovery {
 
         tracing::info!(host = %friendly_name, "DisplayMux mDNS discovery started");
         Ok(Self {
-            _daemon: daemon,
+            daemon,
             local_id,
+            advertised: StdRwLock::new(advertised),
             peers,
         })
+    }
+
+    /// Re-advertises this host under `name`. Other machines list a host by the
+    /// name it advertises until they pair with it, so a rename has to reach the
+    /// advertisement or it is invisible to everyone who has not paired yet —
+    /// which is exactly the list a user renames a host to recognise it in.
+    pub fn advertise_name(&self, name: &str) -> Result<(), DisplayMuxError> {
+        let mut advertised = self
+            .advertised
+            .write()
+            .map_err(|_| DisplayMuxError::Backend("無法更新區域網路廣告名稱".to_owned()))?;
+        if advertised.name == name {
+            return Ok(());
+        }
+        let previous = advertised.fullname();
+        let mut updated = advertised.clone();
+        updated.name = name.to_owned();
+        updated
+            .properties
+            .insert("name".to_owned(), name.to_owned());
+        let info = updated.info()?;
+        // Withdraw the old record first: leaving it would have this host listed
+        // twice, once under a name it no longer answers to.
+        let _ = self.daemon.unregister(&previous);
+        self.daemon
+            .register(info)
+            .map_err(|error| DisplayMuxError::Backend(error.to_string()))?;
+        *advertised = updated;
+        Ok(())
     }
 
     pub fn local_id(&self) -> &str {

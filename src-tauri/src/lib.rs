@@ -3024,6 +3024,17 @@ fn set_host_name(
     settings.host_aliases =
         host_alias::with_alias(&settings.host_aliases, &host_id, name, unix_time_ms());
     let settings = store_settings(&state, settings)?;
+    if host_id == state.local_host_id {
+        // Machines that have not paired with this one list it by what it
+        // advertises, so a rename that stops here is invisible to them.
+        let advertised = host_alias::alias_for(&settings.host_aliases, &host_id)
+            .unwrap_or(state.local_host_name.as_str());
+        if let Some(discovery) = state.discovery.as_ref() {
+            if let Err(error) = discovery.advertise_name(advertised) {
+                tracing::warn!(error = %error, "unable to advertise this computer's new name");
+            }
+        }
+    }
     if let Err(error) = app.emit(HOST_NAMES_CHANGED_EVENT, ()) {
         tracing::warn!(error = %error, "unable to notify the host switcher of a host name change");
     }
