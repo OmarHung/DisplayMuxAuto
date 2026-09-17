@@ -3912,7 +3912,20 @@ fn load_settings(path: &Path) -> AppSettings {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) else {
         return AppSettings::default();
     };
-    settings_from_value(value)
+    let mut settings = settings_from_value(value);
+    // Claims used to be matched on an exact fingerprint, so the same
+    // equivalence arriving from a host that reads serial numbers differently
+    // was stored again rather than recognised. Anyone who merged before this
+    // has a settings file holding both, listed on screen as one display merged
+    // into itself, twice.
+    if let Some(links) = monitor_identity::deduplicated(&settings.monitor_identity_links) {
+        tracing::info!(
+            removed = settings.monitor_identity_links.len() - links.len(),
+            "collapsed display identity claims that name the same display"
+        );
+        settings.monitor_identity_links = links;
+    }
+    settings
 }
 
 /// The `AppSettings`/`HostRoute` shape shipped before multi-monitor support:
