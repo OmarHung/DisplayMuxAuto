@@ -661,6 +661,59 @@ pub struct AgentResponse {
     /// The responder's display-identity claims, for the same catch-up.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub monitor_identity_links: Vec<MonitorIdentityLink>,
+    /// Proof that whatever answered holds the pairing password, bound to the
+    /// nonce of the request it answers so it cannot be lifted from an earlier
+    /// exchange. Absent from agents that predate it, so its absence means
+    /// "unknown", not "forged" — only decisions that must not be made on a
+    /// stranger's say-so may require it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+/// What a reply's signature covers. Deliberately not the whole payload: the
+/// set of fields differs between versions, and a signature that breaks
+/// whenever a field is added would be read as an impostor rather than as a
+/// version gap. This is enough to establish who answered and which request
+/// they answered, which is what the decisions guarded by it turn on.
+fn response_signing_payload(nonce: &str, ready: bool) -> Result<Vec<u8>, DisplayMuxError> {
+    serde_json::to_vec(&("displaymux-response", nonce, ready))
+        .map_err(|error| DisplayMuxError::Backend(error.to_string()))
+}
+
+impl AgentResponse {
+    /// Signs this reply against the nonce of the request it answers.
+    pub fn signed_for(mut self, nonce: &str, shared_key: &[u8]) -> Self {
+        self.signature = response_signing_payload(nonce, self.ready)
+            .ok()
+            .and_then(|payload| {
+                let mut mac = HmacSha256::new_from_slice(shared_key).ok()?;
+                mac.update(&payload);
+                Some(hex::encode(mac.finalize().into_bytes()))
+            });
+        self
+    }
+
+    /// Whether this reply proves the responder holds the pairing password.
+    ///
+    /// False for a reply that carries no signature, which is what an agent
+    /// predating this field sends — the caller decides whether that is
+    /// acceptable for what it is about to do.
+    pub fn proves_pairing(&self, nonce: &str, shared_key: &[u8]) -> bool {
+        let Some(signature) = &self.signature else {
+            return false;
+        };
+        let Ok(supplied) = hex::decode(signature) else {
+            return false;
+        };
+        let Ok(payload) = response_signing_payload(nonce, self.ready) else {
+            return false;
+        };
+        let Ok(mut mac) = HmacSha256::new_from_slice(shared_key) else {
+            return false;
+        };
+        mac.update(&payload);
+        mac.verify_slice(&supplied).is_ok()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -843,7 +896,9 @@ where
     }
     drop(nonces);
 
-    let response = handler(request.action).await;
+    let response = handler(request.action)
+        .await
+        .signed_for(&request.nonce, &shared_key);
     write_agent_response(&mut writer, &response).await
 }
 
@@ -1291,6 +1346,68 @@ mod tests {
 
         assert!(!route.confirmed);
         assert_eq!(route.input.value(), 0x08);
+    }
+
+    /// Following a discovered address turns on this proof, and discovery is
+    /// unauthenticated — so everything an impostor could try has to fail.
+    #[test]
+    fn only_a_reply_from_the_paired_host_proves_the_pairing() {
+        let key = b"pairing-secret";
+        let signed = AgentResponse {
+            ready: true,
+            ..AgentResponse::default()
+        }
+        .signed_for("nonce-a", key);
+
+        assert!(signed.proves_pairing("nonce-a", key));
+        assert!(
+            !signed.proves_pairing("nonce-b", key),
+            "a reply was accepted for a request it does not answer"
+        );
+        assert!(
+            !signed.proves_pairing("nonce-a", b"a-different-secret"),
+            "a reply signed with the wrong password was accepted"
+        );
+        assert!(
+            !AgentResponse::default().proves_pairing("nonce-a", key),
+            "an unsigned reply was taken as proof"
+        );
+    }
+
+    /// The listener binds the reply to the request it answers, so the caller
+    /// can tell the paired host from anything else that accepted the socket.
+    #[tokio::test]
+    async fn the_listener_signs_what_it_sends_back() {
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let key = Arc::<[u8]>::from(&b"pairing-secret"[..]);
+        let server = AgentServer::new(address, Arc::clone(&key));
+        tokio::spawn(async move {
+            server
+                .run(|_| async {
+                    AgentResponse {
+                        ready: true,
+                        ..AgentResponse::default()
+                    }
+                })
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let endpoint = PeerEndpoint {
+            address: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port: address.port(),
+        };
+        let response = AgentClient::new(endpoint, Arc::clone(&key))
+            .request(AgentAction::Ping, "nonce-a")
+            .await
+            .unwrap();
+
+        assert!(response.proves_pairing("nonce-a", &key));
     }
 
     /// Anyone on the network can open this socket, and nothing over it is

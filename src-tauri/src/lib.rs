@@ -2436,10 +2436,40 @@ fn moved_peer_endpoint(peer: &HostRoute, discovered: &[DiscoveredPeer]) -> Optio
     (peer.address != address || peer.port != found.port).then_some((address, found.port))
 }
 
-/// `moved_peer_endpoint`, confirmed by the host answering there. The reply is
-/// signed with the pairing password, so reaching it proves both that the
-/// address works and that the host behind it is the one paired with — neither
-/// of which discovery can establish on its own.
+/// Whether the host answering at `peer`'s address proves it holds the pairing
+/// password, by signing its reply against the nonce of the Ping it is
+/// answering.
+///
+/// Discovery is unauthenticated and a host id is public, so an address learned
+/// there is only a claim. A reply on its own is no better a claim: nothing in
+/// it was signed until now, so anything that accepted the connection could
+/// have sent it.
+async fn peer_proves_pairing(settings: &AppSettings, peer: &HostRoute) -> bool {
+    let Ok(endpoint) = route_endpoint(peer) else {
+        return false;
+    };
+    if !has_valid_shared_key(&settings.shared_key) {
+        return false;
+    }
+    let nonce = next_nonce();
+    let key = Arc::<[u8]>::from(settings.shared_key.as_bytes());
+    match AgentClient::new(endpoint, Arc::clone(&key))
+        .request(AgentAction::Ping, nonce.clone())
+        .await
+    {
+        Ok(response) => response.proves_pairing(&nonce, &key),
+        Err(_) => false,
+    }
+}
+
+/// `moved_peer_endpoint`, confirmed by the host answering there proving it is
+/// the host this computer is paired with.
+///
+/// Following an address on discovery alone hands the pairing to whoever
+/// advertises the right id, which anyone on the network can read off the air
+/// and repeat. An older agent does not sign its reply and so cannot prove
+/// anything; its address stays where the user put it, which is where it was
+/// before any of this followed a move at all.
 async fn confirmed_move(
     settings: &AppSettings,
     peer: &HostRoute,
@@ -2451,9 +2481,14 @@ async fn confirmed_move(
         port,
         ..peer.clone()
     };
-    request_peer(settings, &candidate, AgentAction::Ping)
-        .await
-        .ok()?;
+    if !peer_proves_pairing(settings, &candidate).await {
+        tracing::warn!(
+            peer = peer.name.as_str(),
+            to = address.as_str(),
+            "a host answering at a new address did not prove the pairing; staying put"
+        );
+        return None;
+    }
     tracing::info!(
         peer = peer.name.as_str(),
         from = peer.address.as_str(),
@@ -2591,6 +2626,9 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                 host_aliases,
                                 input_labels,
                                 monitor_identity_links,
+                                // Filled in by the listener, which holds the
+                                // nonce this reply has to be bound to.
+                                signature: None,
                             }
                         }
                         AgentAction::SwitchInput { monitor, input } => {
