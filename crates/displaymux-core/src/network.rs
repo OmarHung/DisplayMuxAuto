@@ -732,7 +732,7 @@ impl AgentClient {
 pub struct AgentServer {
     bind_address: SocketAddr,
     shared_key: Arc<[u8]>,
-    seen_nonces: Arc<Mutex<HashSet<String>>>,
+    seen_nonces: Arc<Mutex<HashMap<String, u64>>>,
     request_timeout: Duration,
 }
 
@@ -741,7 +741,7 @@ impl AgentServer {
         Self {
             bind_address,
             shared_key: shared_key.into(),
-            seen_nonces: Arc::new(Mutex::new(HashSet::new())),
+            seen_nonces: Arc::new(Mutex::new(HashMap::new())),
             request_timeout: REQUEST_READ_TIMEOUT,
         }
     }
@@ -787,7 +787,7 @@ impl AgentServer {
 async fn handle_connection<H, Fut>(
     stream: TcpStream,
     shared_key: Arc<[u8]>,
-    seen_nonces: Arc<Mutex<HashSet<String>>>,
+    seen_nonces: Arc<Mutex<HashMap<String, u64>>>,
     handler: Arc<H>,
     request_timeout: Duration,
 ) -> Result<(), DisplayMuxError>
@@ -826,14 +826,20 @@ where
     }
 
     let mut nonces = seen_nonces.lock().await;
-    if !nonces.insert(request.nonce.clone()) {
+    // Remembered only for as long as a replay of them could still be accepted.
+    // The previous cap emptied the whole set on reaching a count, which let
+    // every nonce in it be used a second time; a request older than the skew
+    // window is already refused above, so forgetting those costs nothing.
+    let now = unix_time().unwrap_or(request.timestamp_seconds);
+    nonces.retain(|_, seen| now.saturating_sub(*seen) <= MAX_CLOCK_SKEW.as_secs());
+    if nonces
+        .insert(request.nonce.clone(), request.timestamp_seconds)
+        .is_some()
+    {
         let error = DisplayMuxError::StaleRequest;
         drop(nonces);
         tracing::warn!(error = %error, "agent request rejected");
         return write_agent_response(&mut writer, &rejection_response(&error)).await;
-    }
-    if nonces.len() > 2_048 {
-        nonces.clear();
     }
     drop(nonces);
 
@@ -1314,6 +1320,29 @@ mod tests {
         assert!(
             outcome.is_ok(),
             "a connection that sent nothing was still being held open"
+        );
+    }
+
+    /// The cache used to be emptied outright once it reached a count, which
+    /// let every nonce in it through a second time.
+    #[test]
+    fn expiring_a_nonce_does_not_forget_one_that_can_still_be_replayed() {
+        let skew = MAX_CLOCK_SKEW.as_secs();
+        let now = 1_000_000_u64;
+        let mut seen = HashMap::from([
+            ("stale".to_owned(), now - skew - 1),
+            ("recent".to_owned(), now - 1),
+        ]);
+
+        seen.retain(|_, at| now.saturating_sub(*at) <= skew);
+
+        assert!(
+            !seen.contains_key("stale"),
+            "a nonce too old to be accepted anyway was kept"
+        );
+        assert!(
+            seen.contains_key("recent"),
+            "a nonce that could still be replayed was forgotten"
         );
     }
 
