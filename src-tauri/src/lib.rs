@@ -3383,6 +3383,42 @@ async fn set_local_input(
     Ok(settings)
 }
 
+/// Sets which input a paired host occupies on a shared display, or clears it.
+///
+/// Saved as it is chosen, like the port for this computer. The two controls sit
+/// beside each other and say the same kind of thing; one of them quietly
+/// needing a separate save was a difference the user had no way to see.
+#[tauri::command]
+async fn set_peer_input(
+    peer_id: String,
+    monitor_id: String,
+    input: Option<u32>,
+    app: AppHandle,
+) -> Result<AppSettings, String> {
+    let settings = run_display_task(app.clone(), move |state| {
+        let mut settings = read_settings(state)?;
+        let fingerprint = find_shared_monitor(&settings, &monitor_id)?.fingerprint.clone();
+        let input = match input {
+            Some(value) => Some(DisplayInput::new(value).map_err(core_user_error)?),
+            None => None,
+        };
+        let Some(peer) = settings.peers.iter_mut().find(|peer| peer.id == peer_id) else {
+            return Err(ui_text(
+                "找不到這台已配對主機，請重新搜尋並加入",
+                "This paired host was not found. Search for it and add it again.",
+            )
+            .to_owned());
+        };
+        peer.set_input_for(&fingerprint, input);
+        store_settings(state, settings)
+    })
+    .await?;
+    if let Err(error) = app.emit(PEER_INPUTS_CHANGED_EVENT, ()) {
+        tracing::warn!(error = %error, "unable to notify windows of a paired host's input");
+    }
+    Ok(settings)
+}
+
 /// Sets the note for one input of a shared display (empty clears it) and
 /// shares every note with paired hosts. Returns that display's input options.
 #[tauri::command]
@@ -4714,6 +4750,7 @@ pub fn run() -> anyhow::Result<()> {
             set_input_label,
             set_monitor_identity_link,
             set_local_input,
+            set_peer_input,
             reset_settings,
             exchange_host_layout,
             hide_host_switcher,

@@ -575,6 +575,12 @@ document.querySelector("#monitor-picker")?.addEventListener("click", (event) => 
   const selected = button.dataset.monitorSelected === "true";
   void withBusyDisplay(busyKey, () => (selected ? removeSharedMonitor(monitorId) : addSharedMonitor(monitorId)));
 });
+document.querySelector("#paired-routes")?.addEventListener("change", (event) => {
+  const field = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-route-input]");
+  const peerId = field?.dataset.routeInput;
+  const monitorKey = field?.dataset.routeMonitor;
+  if (field && peerId && monitorKey) void commitPeerInput(peerId, monitorKey, field.value);
+});
 document.querySelector("#local-input-summary")?.addEventListener("change", (event) => {
   const field = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-local-input]");
   if (field?.dataset.localInput) void commitLocalInput(field.dataset.localInput, field.value);
@@ -1927,6 +1933,22 @@ async function commitLocalInput(monitorKey: string, value: string): Promise<void
   } catch (error) {
     showToast(t("toast.inputLabelFailed"), String(error), true);
     renderLocalInputSummary();
+  }
+}
+
+/** Saves which input a paired host occupies, as it is chosen. The control for
+ *  this computer's own port sits beside it and saves the same way. */
+async function commitPeerInput(peerId: string, monitorKey: string, value: string): Promise<void> {
+  const input = value === "" ? null : Number(value);
+  try {
+    settings = await invoke<AppSettings>("set_peer_input", { peerId, monitorId: monitorKey, input });
+    renderPairedRoutes();
+    renderInputNames();
+    renderInputHints();
+    refreshIcons();
+  } catch (error) {
+    showToast(t("toast.peerInputSyncFailed"), String(error), true);
+    renderPairedRoutes();
   }
 }
 
