@@ -1,7 +1,7 @@
 import "@fontsource-variable/manrope";
 import {
   Activity, AlertCircle, ArrowLeftRight, CircleHelp, Computer, createIcons, Download, KeyRound, Laptop, Link,
-  ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Pencil, Github, Languages, Monitor, MonitorDot, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
+  ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Pencil, Github, Languages, Monitor, MonitorDot, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, TriangleAlert,
   ShieldCheck, SunMoon, Trash2, UserRound, Zap,
 } from "lucide";
 import { getVersion } from "@tauri-apps/api/app";
@@ -410,7 +410,7 @@ app.innerHTML = `
 
             <div class="form-section reset-section">
               <div class="pairing-heading"><strong>${t("settings.resetTitle")}</strong></div>
-              <p class="monitor-merge-note">${t("settings.resetIntro")}</p>
+              <p class="reset-note"><i data-lucide="triangle-alert"></i>${t("settings.resetIntro")}</p>
               <div class="reset-actions">
                 <button type="button" class="reset-button" data-reset-scope="displays">
                   <strong>${t("settings.resetDisplays")}</strong>
@@ -518,7 +518,7 @@ app.innerHTML = `
   <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
 `;
 
-const iconSet = { Activity, AlertCircle, ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Pencil, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Link, Monitor, MonitorDot, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, SunMoon, Trash2, UserRound, Zap };
+const iconSet = { Activity, AlertCircle, ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Pencil, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Link, Monitor, MonitorDot, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, SunMoon, Trash2, TriangleAlert, UserRound, Zap };
 const refreshIcons = () => createIcons({ icons: iconSet });
 refreshIcons();
 

@@ -1001,6 +1001,26 @@ button.switch-all-host:disabled {
   margin-top: 22px;
 }
 
+/* This was borrowing the neutral dashed box the merge section uses to explain
+   itself, which reads as a disabled field rather than as the one warning
+   before something that cannot be undone. */
+.reset-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.reset-note svg { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 2px; }
+
 .reset-actions {
   display: flex;
   gap: 10px;
