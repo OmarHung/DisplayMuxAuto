@@ -1257,7 +1257,18 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
         match enumerate_monitor_inventory() {
             Ok(inventory) => {
                 let changes = reconcile_monitor_selection(&mut settings, &inventory.controllable);
-                if !changes.is_empty() {
+                // A display may be shared before it answers DDC/CI, and its
+                // inputs cannot be read then. Nothing read them afterwards, so
+                // it kept the generic list of standard inputs for good — on one
+                // host a display offered "DP, HDMI 1, HDMI 2…" while the other
+                // host knew its real ones. Read them the first time it answers.
+                let inputs_unread = settings.shared_monitors.iter().any(|selected| {
+                    selected.supported_inputs.is_none()
+                        && inventory.controllable.iter().any(|monitor| {
+                            is_selected_display(&settings.monitor_identity_links, selected, monitor)
+                        })
+                });
+                if !changes.is_empty() || inputs_unread {
                     if let Ok(controller) = platform_controller() {
                         let links = settings.monitor_identity_links.clone();
                         for selected in &mut settings.shared_monitors {
@@ -1282,7 +1293,7 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
                 let ports_filled = fill_unset_local_inputs(&mut settings, &inventory);
                 let routes_changed =
                     sync_active_routes_with_live_inputs(&mut settings, &inventory, unix_time_ms());
-                if !changes.is_empty() || ports_filled || routes_changed {
+                if !changes.is_empty() || inputs_unread || ports_filled || routes_changed {
                     store_settings(state, settings.clone())?;
                 }
                 announce_confirmed_local_inputs(state, &settings);
