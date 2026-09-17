@@ -69,7 +69,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 /* Shell Layout */
 .app-shell {
   display: grid;
-  grid-template-columns: 210px 1fr;
+  grid-template-columns: 238px 1fr;
   width: 100vw;
   height: 100vh;
   padding: 14px;
@@ -95,13 +95,17 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .brand-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   padding: 4px 6px 10px;
 }
 
+/* The name grew by four letters and the icon was the only thing here that
+   could give, so it was squeezed from a square into an upright oval. It holds
+   its shape now and the name gives way instead. */
 .brand-icon {
   display: grid;
   place-items: center;
+  flex: 0 0 auto;
   width: 36px;
   height: 36px;
   border-radius: 10px;
@@ -110,7 +114,16 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 }
 
 .brand-icon svg { width: 20px; height: 20px; }
-.brand-title { font-size: 18px; font-weight: 800; color: var(--sidebar-title); letter-spacing: -0.02em; }
+.brand-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--sidebar-title);
+  letter-spacing: -0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .language-picker {
   position: relative;
