@@ -1421,7 +1421,7 @@ function renderLocalInputSummary(): void {
     const conflict = shared.connectionInputConflict ? `<small class="local-input-conflict">${t("settings.inputConflict")}</small>` : "";
     return `<div class="local-input-row">
       <span>${escapeHtml(shared.name)}</span>
-      <select class="local-input-field" data-local-input="${escapeHtml(shared.monitorKey)}" aria-label="${escapeHtml(t("settings.localInputAria", { monitor: shared.name }))}">
+      <select class="local-input-field" data-local-input="${escapeHtml(shared.monitorKey)}" aria-label="${escapeHtml(t("settings.localInputAria", { monitor: shared.name }))}"${displayInputsKnown(shared.monitorKey) ? "" : " disabled"}>
         ${renderInputOptions("local", shared.monitorKey, value)}
       </select>
       ${conflict}
@@ -1554,14 +1554,31 @@ function renderPairedRoutes(): void {
     <div class="paired-route-right">
       ${dashboard.shared.map((shared) => `<label class="paired-input-wrap">
         <span>${escapeHtml(shared.name)} ${t("settings.inputValue")}</span>
-        <select class="paired-input-field" data-route-input="${escapeHtml(peer.id)}" data-route-monitor="${escapeHtml(shared.monitorKey)}">${renderInputOptions(peer.id, shared.monitorKey, peer.inputs.find((assignment) => sameDisplay(assignment.monitor, shared.fingerprint))?.input ?? null)}</select>
+        <select class="paired-input-field" data-route-input="${escapeHtml(peer.id)}" data-route-monitor="${escapeHtml(shared.monitorKey)}"${displayInputsKnown(shared.monitorKey) ? "" : " disabled"}>${renderInputOptions(peer.id, shared.monitorKey, peer.inputs.find((assignment) => sameDisplay(assignment.monitor, shared.fingerprint))?.input ?? null)}</select>
       </label>`).join("")}
       <button class="delete-button" type="button" data-remove-peer="${escapeHtml(peer.id)}" title="${t("action.remove")}"><i data-lucide="trash-2"></i></button>
     </div>
   </article>`).join("") : `<p class="peer-empty">${t("settings.noAddedHosts")}</p>`);
 }
 
+/** Whether a display has told some host which inputs it has. Until one of them
+ *  has read it, the app knows only the standard MCCS codes, which describe no
+ *  particular display — this one's only input in use is the vendor-specific
+ *  value it calls 8, so every standard code on offer would be wrong for it. */
+function displayInputsKnown(monitorKey: string): boolean {
+  const shared = dashboard.shared.find((item) => item.monitorKey === monitorKey);
+  return Boolean(shared && selectedMonitorFor(shared)?.supportedInputs?.length);
+}
+
 function renderInputOptions(routeId: string, monitorKey: string, current: number | null): string {
+  // Offering a guess invites a choice that cannot be right, and a wrong port
+  // sends a switch somewhere the display has nothing on. Whatever is already
+  // set stays visible, since it may have come from the host that could read it.
+  if (!displayInputsKnown(monitorKey)) {
+    return current == null
+      ? `<option value="" selected>${t("settings.inputsUnknown")}</option>`
+      : `<option value="${current}" selected>${escapeHtml(inputName(current, monitorKey))}</option>`;
+  }
   const assignedElsewhere = new Set<number>();
   const shared = dashboard.shared.find((item) => item.monitorKey === monitorKey);
   const selectedMonitor = shared ? selectedMonitorFor(shared) : undefined;
