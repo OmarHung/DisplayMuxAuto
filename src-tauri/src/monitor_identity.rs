@@ -46,6 +46,11 @@ const MAX_CHAIN_DEPTH: usize = 8;
 /// Switching is untouched by this: a write still demands an exact match
 /// against a display present right now, and refuses outright when more than
 /// one display matches.
+///
+/// The screen asks the same question of the same data, so `sameIdentity` in
+/// `src/main.ts` is this rule written again in TypeScript. The two must agree:
+/// when they did not, this side resolved a merge that the screen could not,
+/// and a display already merged went on being offered for merging.
 fn same_identity(left: &MonitorFingerprint, right: &MonitorFingerprint) -> bool {
     left.is_same_model(right)
         && match (&left.serial_number, &right.serial_number) {

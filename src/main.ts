@@ -1097,7 +1097,7 @@ function getFlatMonitorSvg(isUltrawide: boolean): string {
 }
 
 function selectedMonitorFor(shared: SharedMonitorStatus): SelectedMonitor | undefined {
-  return settings.sharedMonitors.find((sm) => sameFingerprint(sm.fingerprint, shared.fingerprint));
+  return settings.sharedMonitors.find((sm) => sameIdentity(sm.fingerprint, shared.fingerprint));
 }
 
 /** A display's resolution belongs to the display mode it is in right now, not
@@ -2535,8 +2535,8 @@ function resolutionSourceName(value: ResolutionSource | null): string {
 function primaryFingerprint(fingerprint: Fingerprint): Fingerprint {
   let current = fingerprint;
   for (let step = 0; step < 8; step += 1) {
-    const link = (settings.monitorIdentityLinks ?? []).find((entry) => sameFingerprint(entry.alias, current));
-    if (!link?.primary || sameFingerprint(link.primary, current)) return current;
+    const link = (settings.monitorIdentityLinks ?? []).find((entry) => sameIdentity(entry.alias, current));
+    if (!link?.primary || sameIdentity(link.primary, current)) return current;
     current = link.primary;
   }
   return current;
@@ -2547,7 +2547,7 @@ function primaryFingerprint(fingerprint: Fingerprint): Fingerprint {
  *  is an equivalence, so both sides are resolved — a stored selection can
  *  itself be an alias. */
 function sameDisplay(left: Fingerprint, right: Fingerprint): boolean {
-  return sameFingerprint(primaryFingerprint(left), primaryFingerprint(right));
+  return sameIdentity(primaryFingerprint(left), primaryFingerprint(right));
 }
 
 /** Whether a display present right now is one of this computer's shared displays. */
@@ -2555,7 +2555,23 @@ function isSharedDisplay(fingerprint: Fingerprint): boolean {
   return settings.sharedMonitors.some((sm) => sameDisplay(sm.fingerprint, fingerprint));
 }
 
-function sameFingerprint(left: Fingerprint, right: Fingerprint): boolean { return left.manufacturer_id.toUpperCase() === right.manufacturer_id.toUpperCase() && left.product_code.toUpperCase() === right.product_code.toUpperCase() && left.serial_number === right.serial_number; }
+/** Whether two fingerprints name the same identity, for deciding what belongs
+ *  to which display. Must agree with `monitor_identity::same_identity`, which
+ *  is the same rule written again in Rust: when the two drifted, the backend
+ *  resolved a merge that the screen could not, so a merged display went on
+ *  being offered for merging.
+ *
+ *  Two serial numbers that are both present and different mean two displays.
+ *  An absent one is unknown rather than a difference — Windows reads this
+ *  MSI's serial and macOS reads none from it, so requiring both to match kept
+ *  every merge from crossing between them. Switching never comes through here:
+ *  that happens in Rust and still demands an exact fingerprint. */
+function sameIdentity(left: Fingerprint, right: Fingerprint): boolean {
+  if (left.manufacturer_id.toUpperCase() !== right.manufacturer_id.toUpperCase()) return false;
+  if (left.product_code.toUpperCase() !== right.product_code.toUpperCase()) return false;
+  if (left.serial_number == null || right.serial_number == null) return true;
+  return left.serial_number === right.serial_number;
+}
 function escapeHtml(value: string): string { return value.replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char] ?? char); }
 function cssEscape(value: string): string { return typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&"); }
 function setText(selector: string, value: string): void { const element = document.querySelector(selector); if (element) element.textContent = value; }
