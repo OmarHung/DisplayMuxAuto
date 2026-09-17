@@ -335,6 +335,10 @@ struct HostSwitcherOption {
     input_name: Option<String>,
     is_local: bool,
     available: bool,
+    /// The host this display is already showing. The dashboard has always
+    /// refused to switch to it; this window had no way to know which one it
+    /// was.
+    is_active: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -902,6 +906,7 @@ fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherS
                     .map(|input| noted_input_label(&settings, selected, input)),
                 is_local: true,
                 available: selected.local_input.is_some(),
+                is_active: selected.active_route.as_deref() == Some("local"),
             });
             hosts.extend(settings.peers.iter().map(|peer| {
                 let input = peer.input_for(&selected.fingerprint);
@@ -914,6 +919,7 @@ fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherS
                     input_name: input.map(|input| noted_input_label(&settings, selected, input)),
                     is_local: false,
                     available: input.is_some(),
+                    is_active: selected.active_route.as_deref() == Some(peer.id.as_str()),
                 }
             }));
             hosts.sort_by_key(|host| route_order.iter().position(|route| *route == host.id));

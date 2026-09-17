@@ -60,7 +60,7 @@ const zhTW: Record<keyof typeof en, string> = {
   "settings.capabilitiesDetected": "螢幕宣告支援 {count} 個輸入；已分配的 Port 不會出現在其他主機清單。",
   "settings.capabilitiesFallback": "螢幕、HUB 或 Dock 沒有提供 capabilities，尚未讀取到這台螢幕支援哪些輸入。讀得到的已配對主機會把結果同步過來。",
   "switcher.title": "切換共用螢幕", "switcher.noDisplay": "尚未選擇共用螢幕", "switcher.hostListAria": "可選擇的主機",
-  "switcher.inputUnset": "尚未設定輸入", "switcher.local": "這台裝置", "switcher.select": "選取", "switcher.noHosts": "目前沒有可用的已設定主機",
+  "switcher.inputUnset": "尚未設定輸入", "switcher.local": "這台裝置", "switcher.showing": "目前顯示中", "switcher.select": "選取", "switcher.noHosts": "目前沒有可用的已設定主機",
   "switcher.navigationHint": "Tab 或上下方向鍵移動，Enter 選取", "switcher.closeHint": "Esc 關閉", "switcher.preparing": "正在準備切換",
   "switcher.preparingDetail": "正在確認最安全的可用切換路徑。", "switcher.waking": "正在喚醒 {name}。", "switcher.waiting": "最多等待 {seconds} 秒，確認 {name} 是否就緒。",
   "switcher.remoteFallback": "正在請求 {name} 代為切換。", "switcher.switching": "正在變更共用螢幕輸入。", "switcher.failed": "無法切換",

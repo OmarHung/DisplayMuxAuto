@@ -139,6 +139,7 @@ const en = {
   "switcher.hostListAria": "Available hosts",
   "switcher.inputUnset": "Input not configured",
   "switcher.local": "This device",
+  "switcher.showing": "Currently showing",
   "switcher.select": "Select",
   "switcher.noHosts": "No configured hosts are available",
   "switcher.navigationHint": "Tab or Up/Down to navigate · Enter to select",

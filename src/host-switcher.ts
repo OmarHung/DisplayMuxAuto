@@ -19,6 +19,8 @@ interface HostOption {
   inputName: string | null;
   isLocal: boolean;
   available: boolean;
+  /** The host the display is already showing. */
+  isActive: boolean;
 }
 
 interface HostSwitcherMonitor {
@@ -76,8 +78,12 @@ function computeRows(): Row[] {
   ]);
 }
 
+/** The host a display already shows is not somewhere to switch it to. The
+ *  dashboard has always refused it; pressing it here reached the backend, which
+ *  answered that the display was already on that input — leaving this window
+ *  sitting on a message instead of doing anything. */
 function isSelectableRow(row: Row | undefined): row is Extract<Row, { kind: "host" }> {
-  return row?.kind === "host" && row.host.available;
+  return row?.kind === "host" && row.host.available && !row.host.isActive;
 }
 
 function render(message?: { title: string; detail: string; error?: boolean }): void {
@@ -98,13 +104,13 @@ function render(message?: { title: string; detail: string; error?: boolean }): v
           ? `<div class="host-group-header">${escapeHtml(row.monitorName)}</div>`
           : `<button type="button" class="host-option ${index === selectedIndex ? "is-selected" : ""}"
             data-row-index="${index}" role="option" aria-selected="${index === selectedIndex}"
-            ${row.host.available && !switching ? "" : "disabled"}>
+            ${isSelectableRow(row) && !switching ? "" : "disabled"}>
             <span class="platform-mark ${row.host.platform}">${row.host.platform === "mac" ? "M" : "W"}</span>
             <span class="host-copy">
               <strong>${escapeHtml(row.host.name)}</strong>
               <small>${platformLabel(row.host.platform)} · ${escapeHtml(row.host.inputName ?? t("switcher.inputUnset"))}</small>
             </span>
-            <span class="host-status">${row.host.isLocal ? t("switcher.local") : t("switcher.select")}</span>
+            <span class="host-status">${row.host.isActive ? t("switcher.showing") : row.host.isLocal ? t("switcher.local") : t("switcher.select")}</span>
           </button>`).join("") || `<p class="empty-state">${t("switcher.noHosts")}</p>`}
       </section>
       ${message ? `<div class="switch-message ${message.error ? "is-error" : ""}" role="status"><strong>${escapeHtml(message.title)}</strong><span>${escapeHtml(message.detail)}</span></div>` : ""}
@@ -205,8 +211,8 @@ async function initialize(): Promise<void> {
         monitorKey: "preview",
         name: t("switcher.previewDisplay"),
         hosts: [
-          { id: "local", name: t("switcher.previewWindows"), platform: "windows", inputName: "HDMI 1", isLocal: true, available: true },
-          { id: "peer", name: t("switcher.previewMac"), platform: "mac", inputName: "DisplayPort", isLocal: false, available: true },
+          { id: "local", name: t("switcher.previewWindows"), platform: "windows", inputName: "HDMI 1", isLocal: true, available: true, isActive: true },
+          { id: "peer", name: t("switcher.previewMac"), platform: "mac", inputName: "DisplayPort", isLocal: false, available: true, isActive: false },
         ],
       }],
     };
