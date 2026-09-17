@@ -787,9 +787,11 @@ where
         .map_err(|error| DisplayMuxError::PeerUnavailable(error.to_string()))?;
     let request: AgentRequest = match serde_json::from_str(&line) {
         Ok(request) => request,
-        Err(_) => {
-            let error = DisplayMuxError::AuthenticationFailed;
-            tracing::warn!(error = %error, "agent request rejected");
+        Err(parse_error) => {
+            // Not an authentication failure: the request never got far enough
+            // to be checked. A host that predates an action cannot read it.
+            let error = DisplayMuxError::UnreadableRequest;
+            tracing::warn!(error = %error, detail = %parse_error, "agent request rejected");
             return write_agent_response(&mut writer, &rejection_response(&error)).await;
         }
     };
@@ -830,6 +832,11 @@ async fn write_agent_response(
 fn rejection_response(error: &DisplayMuxError) -> AgentResponse {
     let message = match error {
         DisplayMuxError::StaleRequest => "連線驗證失敗，請確認兩台主機的系統時間已同步後再試一次",
+        // Saying "wrong password" for everything sent users to change a
+        // password that was right while the real cause went unmentioned.
+        DisplayMuxError::UnreadableRequest => {
+            "另一台主機無法解讀這個要求，請將兩台主機更新到相同版本"
+        }
         _ => "配對密碼不一致，請在兩台主機輸入完全相同的配對密碼並重新儲存",
     };
     AgentResponse {
@@ -981,6 +988,18 @@ mod tests {
             request.verify(key),
             Err(DisplayMuxError::AuthenticationFailed)
         );
+    }
+
+    #[test]
+    fn an_unreadable_request_is_not_reported_as_a_wrong_password() {
+        // A host that predates an action cannot read it. Blaming the pairing
+        // password sends the user to change one that was right, and leaves the
+        // version gap that actually caused it unmentioned.
+        let response = rejection_response(&DisplayMuxError::UnreadableRequest);
+
+        assert!(!response.ready);
+        assert!(response.message.contains("版本"));
+        assert!(!response.message.contains("配對密碼不一致"));
     }
 
     #[test]

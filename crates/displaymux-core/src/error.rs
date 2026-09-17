@@ -35,6 +35,13 @@ pub enum DisplayMuxError {
     #[error("要求已過期或可能被重播")]
     StaleRequest,
 
+    /// The request could not be read at all. Almost always a host running a
+    /// version that predates whatever was sent, which must not be reported as
+    /// a wrong pairing password: the user then changes a password that was
+    /// right, and the version gap stays.
+    #[error("另一台主機無法解讀這個要求，通常是兩台主機版本不同")]
+    UnreadableRequest,
+
     #[error("無法完成螢幕操作：{0}")]
     Backend(String),
 }
@@ -71,6 +78,9 @@ impl DisplayMuxError {
             Self::AuthenticationFailed =>
                 "The other host rejected an unauthenticated request".to_owned(),
             Self::StaleRequest => "The request expired or may have been replayed".to_owned(),
+            Self::UnreadableRequest =>
+                "The other host could not read this request, usually because the two hosts are on different versions"
+                    .to_owned(),
             Self::Backend(detail) => format!(
                 "Unable to complete the display operation: {}",
                 english_detail(detail)
