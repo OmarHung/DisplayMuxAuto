@@ -432,6 +432,67 @@ enum SharedDisplayState {
     Unavailable,
 }
 
+/// Fills in the port of any shared display that has none, from the reading the
+/// scan already took. Returns whether anything changed.
+///
+/// A port was only ever read when a display was selected or its metadata
+/// changed, so a display added while it was showing another host — when its
+/// reading says nothing about this host — stayed blank however many times the
+/// user refreshed afterwards, including after switching the display here. The
+/// scan reads every controllable display's input anyway, so this costs no DDC
+/// traffic; it only stops throwing the answer away.
+///
+/// Only blank ports are filled. A port already set was either read when it
+/// could be believed or chosen by the user, and neither should be overwritten
+/// by a reading taken while another host is on screen.
+fn fill_unset_local_inputs(settings: &mut AppSettings, inventory: &MonitorInventory) -> bool {
+    let links = settings.monitor_identity_links.clone();
+    let mut filled = false;
+    for selected in &mut settings.shared_monitors {
+        if selected.local_input.is_some() {
+            continue;
+        }
+        let Some((monitor, input)) = inventory
+            .controllable
+            .iter()
+            .find(|monitor| is_selected_display(&links, selected, monitor))
+            .and_then(|monitor| Some((monitor, *inventory.current_inputs.get(&monitor.id)?)))
+        else {
+            continue;
+        };
+        if reading_is_this_host_port(monitor, input) {
+            selected.local_input = Some(input);
+            filled = true;
+        }
+    }
+    filled
+}
+
+/// Whether a VCP 0x60 reading can be this host's own port.
+///
+/// The code reports the input the display is *showing*, not the one the reader
+/// occupies, so a host that is off screen reads whoever is on screen. When the
+/// reading contradicts the connector this host is plugged into — which the
+/// platform reports independently of DDC/CI — it cannot be this host's port.
+/// Leaving it unset says "not configured yet"; storing it sends a switch to the
+/// wrong place.
+fn reading_is_this_host_port(monitor: &MonitorDescriptor, input: DisplayInput) -> bool {
+    let contradicts = monitor
+        .connection
+        .as_ref()
+        .and_then(|connection| connection.sink_interface)
+        .and_then(|sink| displaymux_core::input_matches_sink(sink, input))
+        == Some(false);
+    if contradicts {
+        tracing::info!(
+            monitor_id = monitor.id.as_str(),
+            input = input.value(),
+            "read input contradicts this host's connector; leaving the port unset"
+        );
+    }
+    !contradicts
+}
+
 /// Whether `monitor`, present right now, is the display `selected` names — its
 /// own identity or one the user merged into it. Deciding *which* display is
 /// meant is separate from deciding what may be written to: every switch still
@@ -1218,9 +1279,10 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
                         }
                     }
                 }
+                let ports_filled = fill_unset_local_inputs(&mut settings, &inventory);
                 let routes_changed =
                     sync_active_routes_with_live_inputs(&mut settings, &inventory, unix_time_ms());
-                if !changes.is_empty() || routes_changed {
+                if !changes.is_empty() || ports_filled || routes_changed {
                     store_settings(state, settings.clone())?;
                 }
                 announce_confirmed_local_inputs(state, &settings);
@@ -3870,24 +3932,7 @@ fn refresh_selected_input_data<C: MonitorControl>(
     selected.supported_inputs = None;
     selected.vendor_indexed_inputs = false;
     let current = controller.read_input(&monitor.id)?;
-    // VCP 0x60 reports the input the display is *showing*, not the one this
-    // host occupies, so a host that is off screen reads whoever is on screen.
-    // When the reading contradicts the connector this host is plugged into, it
-    // is demonstrably not this host's port: leave it unset rather than store a
-    // port that is known to be wrong and let a switch act on it.
-    let contradicts_connection = monitor
-        .connection
-        .as_ref()
-        .and_then(|connection| connection.sink_interface)
-        .and_then(|sink| displaymux_core::input_matches_sink(sink, current))
-        == Some(false);
-    if contradicts_connection {
-        tracing::info!(
-            monitor_id = monitor.id.as_str(),
-            input = current.value(),
-            "read input contradicts this host's connector; leaving the port unset"
-        );
-    } else {
+    if reading_is_this_host_port(monitor, current) {
         selected.local_input = Some(current);
     }
     let advertised = match controller.supported_inputs(&monitor.id) {
@@ -5751,6 +5796,86 @@ mod tests {
             local_host_id: "kept-id".to_owned(),
             ..AppSettings::default()
         }
+    }
+
+    fn inventory_showing(monitor: &MonitorDescriptor, input: u32) -> MonitorInventory {
+        MonitorInventory {
+            detected: vec![monitor.clone()],
+            controllable: vec![monitor.clone()],
+            current_inputs: HashMap::from([(
+                monitor.id.clone(),
+                DisplayInput::new(input).unwrap(),
+            )]),
+        }
+    }
+
+    #[test]
+    fn a_blank_port_is_filled_from_the_reading_the_scan_already_took() {
+        // The port was only read when the display was selected, so a display
+        // added while it was showing another host stayed blank no matter how
+        // often the user refreshed after switching it here.
+        let mut display = monitor("shared");
+        display.connection = Some(displaymux_core::MonitorConnection::classify(
+            Some(displaymux_core::HostOutput::DisplayPort),
+            None,
+            Some(displaymux_core::SinkInterface::DisplayPort),
+            false,
+        ));
+        let mut settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor::from(&display)],
+            ..AppSettings::default()
+        };
+        settings.shared_monitors[0].local_input = None;
+
+        assert!(fill_unset_local_inputs(
+            &mut settings,
+            &inventory_showing(&display, 0x0f)
+        ));
+        assert_eq!(
+            settings.shared_monitors[0].local_input,
+            Some(DisplayInput::new(0x0f).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_reading_the_wiring_contradicts_does_not_fill_a_blank_port() {
+        // HDMI 1 cannot be this host's port on a DisplayPort link: the display
+        // is showing somebody else, and storing it would aim a switch wrong.
+        let mut display = monitor("shared");
+        display.connection = Some(displaymux_core::MonitorConnection::classify(
+            Some(displaymux_core::HostOutput::DisplayPort),
+            None,
+            Some(displaymux_core::SinkInterface::DisplayPort),
+            false,
+        ));
+        let mut settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor::from(&display)],
+            ..AppSettings::default()
+        };
+        settings.shared_monitors[0].local_input = None;
+
+        assert!(!fill_unset_local_inputs(
+            &mut settings,
+            &inventory_showing(&display, 0x11)
+        ));
+        assert_eq!(settings.shared_monitors[0].local_input, None);
+    }
+
+    #[test]
+    fn a_port_already_set_is_never_overwritten_by_a_scan() {
+        let display = monitor("shared");
+        let chosen = DisplayInput::new(8).unwrap();
+        let mut settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor::from(&display)],
+            ..AppSettings::default()
+        };
+        settings.shared_monitors[0].local_input = Some(chosen);
+
+        assert!(!fill_unset_local_inputs(
+            &mut settings,
+            &inventory_showing(&display, 0x0f)
+        ));
+        assert_eq!(settings.shared_monitors[0].local_input, Some(chosen));
     }
 
     #[test]
