@@ -53,13 +53,15 @@ struct AdvertisedService {
     name: String,
     port: u16,
     properties: HashMap<String, String>,
+    /// As the library registered it, not as we would spell it. A host name may
+    /// contain dots — `Omars-MacBook-Pro-M4-Pro-5.local` does — and those are
+    /// escaped inside the instance label, so a reconstructed name does not
+    /// match and withdrawing the record silently does nothing, leaving the host
+    /// listed twice.
+    fullname: String,
 }
 
 impl AdvertisedService {
-    fn fullname(&self) -> String {
-        format!("{}.{DISPLAYMUX_SERVICE_TYPE}", self.name)
-    }
-
     fn info(&self) -> Result<ServiceInfo, DisplayMuxError> {
         let dns_host_name = format!("{}.local.", dns_label(&self.name));
         ServiceInfo::new(
@@ -175,15 +177,18 @@ impl MdnsPeerDiscovery {
             properties.insert("mac".to_owned(), address.clone());
         }
 
-        let advertised = AdvertisedService {
+        let mut advertised = AdvertisedService {
             name: friendly_name.clone(),
             port,
             properties,
+            fullname: String::new(),
         };
+        let info = advertised.info()?;
+        advertised.fullname = info.get_fullname().to_owned();
         let daemon =
             ServiceDaemon::new().map_err(|error| DisplayMuxError::Backend(error.to_string()))?;
         daemon
-            .register(advertised.info()?)
+            .register(info)
             .map_err(|error| DisplayMuxError::Backend(error.to_string()))?;
         let receiver = daemon
             .browse(DISPLAYMUX_SERVICE_TYPE)
@@ -240,13 +245,14 @@ impl MdnsPeerDiscovery {
         if advertised.name == name {
             return Ok(());
         }
-        let previous = advertised.fullname();
+        let previous = advertised.fullname.clone();
         let mut updated = advertised.clone();
         updated.name = name.to_owned();
         updated
             .properties
             .insert("name".to_owned(), name.to_owned());
         let info = updated.info()?;
+        updated.fullname = info.get_fullname().to_owned();
         // Withdraw the old record first: leaving it would have this host listed
         // twice, once under a name it no longer answers to.
         let _ = self.daemon.unregister(&previous);
@@ -268,7 +274,16 @@ impl PeerDiscovery for MdnsPeerDiscovery {
             .peers
             .read()
             .map_err(|_| DisplayMuxError::Backend("無法讀取區域網路搜尋結果".to_owned()))?;
-        let mut peers = current.values().cloned().collect::<Vec<_>>();
+        // Keyed by service record, and one host can hold more than one — a
+        // renamed host until its old record expires, or a host answering on
+        // several interfaces. The host id is what identifies it, so the list
+        // offers each host once.
+        let mut seen = HashSet::new();
+        let mut peers = current
+            .values()
+            .filter(|peer| seen.insert(peer.id.clone()))
+            .cloned()
+            .collect::<Vec<_>>();
         peers.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
         Ok(peers)
     }
