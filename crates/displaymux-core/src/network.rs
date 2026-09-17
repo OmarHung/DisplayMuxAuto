@@ -33,6 +33,10 @@ pub const DISPLAYMUX_SERVICE_TYPE: &str = "_displaymux._tcp.local.";
 pub const AGENT_PROTOCOL_VERSION: u32 = 2;
 const MAX_CLOCK_SKEW: Duration = Duration::from_secs(30);
 const MAX_PACKET_BYTES: usize = 8 * 1024;
+/// How long a connection may take to deliver its request line. Anyone on the
+/// network can open a socket here; only what arrives over it is authenticated,
+/// so a caller that sends nothing has to be given up on rather than waited for.
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -729,6 +733,7 @@ pub struct AgentServer {
     bind_address: SocketAddr,
     shared_key: Arc<[u8]>,
     seen_nonces: Arc<Mutex<HashSet<String>>>,
+    request_timeout: Duration,
 }
 
 impl AgentServer {
@@ -737,7 +742,15 @@ impl AgentServer {
             bind_address,
             shared_key: shared_key.into(),
             seen_nonces: Arc::new(Mutex::new(HashSet::new())),
+            request_timeout: REQUEST_READ_TIMEOUT,
         }
+    }
+
+    /// How long a caller has to deliver its request line. Exposed so a test can
+    /// wait a moment rather than the several seconds a real caller is given.
+    pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
     }
 
     pub async fn run<H, Fut>(self, handler: H) -> Result<(), DisplayMuxError>
@@ -758,9 +771,11 @@ impl AgentServer {
             let shared_key = Arc::clone(&self.shared_key);
             let seen_nonces = Arc::clone(&self.seen_nonces);
             let handler = Arc::clone(&handler);
+            let request_timeout = self.request_timeout;
             tokio::spawn(async move {
                 if let Err(error) =
-                    handle_connection(stream, shared_key, seen_nonces, handler).await
+                    handle_connection(stream, shared_key, seen_nonces, handler, request_timeout)
+                        .await
                 {
                     tracing::warn!(peer = %peer, error = %error, "agent request rejected");
                 }
@@ -774,6 +789,7 @@ async fn handle_connection<H, Fut>(
     shared_key: Arc<[u8]>,
     seen_nonces: Arc<Mutex<HashSet<String>>>,
     handler: Arc<H>,
+    request_timeout: Duration,
 ) -> Result<(), DisplayMuxError>
 where
     H: Fn(AgentAction) -> Fut + Send + Sync + 'static,
@@ -781,11 +797,19 @@ where
 {
     let (reader, mut writer) = stream.into_split();
     let mut line = String::new();
-    BufReader::new(reader)
-        .take(MAX_PACKET_BYTES as u64)
-        .read_line(&mut line)
-        .await
-        .map_err(|error| DisplayMuxError::PeerUnavailable(error.to_string()))?;
+    // Bounded in size and in time. The size cap alone leaves a caller that
+    // sends nothing at all holding this task open indefinitely, and nothing
+    // here is authenticated until the whole line has arrived — so the cost of
+    // that is available to anyone who can reach the port.
+    timeout(
+        request_timeout,
+        BufReader::new(reader)
+            .take(MAX_PACKET_BYTES as u64)
+            .read_line(&mut line),
+    )
+    .await
+    .map_err(|_| DisplayMuxError::PeerUnavailable("連線逾時".to_owned()))?
+    .map_err(|error| DisplayMuxError::PeerUnavailable(error.to_string()))?;
     let request: AgentRequest = match serde_json::from_str(&line) {
         Ok(request) => request,
         Err(parse_error) => {
@@ -1261,6 +1285,36 @@ mod tests {
 
         assert!(!route.confirmed);
         assert_eq!(route.input.value(), 0x08);
+    }
+
+    /// Anyone on the network can open this socket, and nothing over it is
+    /// authenticated until a whole line has arrived — so a caller that sends
+    /// no line must be given up on rather than held open.
+    #[tokio::test]
+    async fn a_caller_that_sends_nothing_is_given_up_on() {
+        use tokio::io::AsyncReadExt as _;
+
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = AgentServer::new(address, Arc::<[u8]>::from(&b"pairing-secret"[..]))
+            .with_request_timeout(Duration::from_millis(150));
+        tokio::spawn(async move { server.run(|_| async { AgentResponse::default() }).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut silent = TcpStream::connect(address).await.unwrap();
+        let mut buffer = Vec::new();
+        // The server closes its side once the deadline passes, so the read
+        // completes on end-of-file. Without the deadline this waits for ever.
+        let outcome = timeout(Duration::from_secs(5), silent.read_to_end(&mut buffer)).await;
+
+        assert!(
+            outcome.is_ok(),
+            "a connection that sent nothing was still being held open"
+        );
     }
 
     #[tokio::test]
