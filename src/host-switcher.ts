@@ -154,7 +154,14 @@ async function switchToSelected(): Promise<void> {
   try {
     const result = await invoke<OperationResult>("switch_host", { monitorId: row.monitorKey, targetId: row.host.id, onEvent });
     render({ title: result.title, detail: result.detail });
-    window.setTimeout(() => void hideSwitcher(), 450);
+    window.setTimeout(() => {
+      // Cleared here and not left to the window closing: this window is hidden
+      // rather than destroyed, so a flag left set survives into the next time
+      // it opens — and every control, every key and the refresh itself are all
+      // gated on it. It would never accept anything again.
+      switching = false;
+      void hideSwitcher();
+    }, 450);
   } catch (error) {
     switching = false;
     render({ title: t("switcher.failed"), detail: String(error), error: true });
@@ -223,7 +230,12 @@ async function initialize(): Promise<void> {
     return;
   }
   // The window is hidden rather than closed, so re-read hosts each time it opens.
-  window.addEventListener("focus", () => void reloadState());
+  window.addEventListener("focus", () => {
+    // A switch that never finished must not leave the window inert the next
+    // time it is summoned.
+    switching = false;
+    void reloadState();
+  });
 }
 
 /** Re-reads hosts and their order, keeping the same host selected. */
