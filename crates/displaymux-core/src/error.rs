@@ -44,6 +44,13 @@ pub enum DisplayMuxError {
 
     #[error("無法完成螢幕操作：{0}")]
     Backend(String),
+
+    /// A setting the user just entered, rejected with a message that already
+    /// names the problem. Backend's "無法完成螢幕操作" prefix belongs to a
+    /// display that would not respond; on a shortcut or a pairing password it
+    /// sends the reader looking at the display for a fault that is not there.
+    #[error("{zh}")]
+    Rejected { zh: String, en: String },
 }
 
 impl DisplayMuxError {
@@ -85,6 +92,7 @@ impl DisplayMuxError {
                 "Unable to complete the display operation: {}",
                 english_detail(detail)
             ),
+            Self::Rejected { en, .. } => en.clone(),
         }
     }
 }
@@ -177,5 +185,23 @@ mod tests {
         let message = macos.localized_message(false);
         assert!(message.contains("current HDMI/USB-C/Thunderbolt path"));
         assert!(!message.contains("無法"));
+    }
+
+    /// A rejected setting says what is wrong with it. Wrapping that in "unable
+    /// to complete the display operation" points at hardware that is fine.
+    #[test]
+    fn a_rejected_setting_is_not_reported_as_a_display_failure() {
+        let error = DisplayMuxError::Rejected {
+            zh: "這是作業系統保留的快捷鍵".to_owned(),
+            en: "The operating system keeps this shortcut for itself".to_owned(),
+        };
+
+        assert_eq!(error.localized_message(true), "這是作業系統保留的快捷鍵");
+        assert_eq!(
+            error.localized_message(false),
+            "The operating system keeps this shortcut for itself"
+        );
+        assert!(!error.localized_message(true).contains("螢幕操作"));
+        assert!(!error.localized_message(false).contains("display operation"));
     }
 }

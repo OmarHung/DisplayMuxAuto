@@ -135,9 +135,15 @@ fn set_locale(locale: String, app: AppHandle) -> Result<(), String> {
     if let Some(tray) = app.tray_by_id("displaymux") {
         use tauri::menu::MenuBuilder;
         let menu = MenuBuilder::new(&app)
-            .text("tray-open", ui_text("開啟 DisplayMuxAuto", "Open DisplayMuxAuto"))
+            .text(
+                "tray-open",
+                ui_text("開啟 DisplayMuxAuto", "Open DisplayMuxAuto"),
+            )
             .separator()
-            .text("tray-quit", ui_text("結束 DisplayMuxAuto", "Quit DisplayMuxAuto"))
+            .text(
+                "tray-quit",
+                ui_text("結束 DisplayMuxAuto", "Quit DisplayMuxAuto"),
+            )
             .build()
             .map_err(user_error)?;
         tray.set_menu(Some(menu)).map_err(user_error)?;
@@ -1960,13 +1966,10 @@ fn find_peer<'a>(settings: &'a AppSettings, peer_id: &str) -> Result<&'a HostRou
 
 fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
     if settings.local_host != local_host() {
-        return Err(DisplayMuxError::Backend(
-            ui_text(
-                "這台電腦的主機類型必須由作業系統自動判定",
-                "This computer's host type must be determined by the operating system",
-            )
-            .to_owned(),
-        ));
+        return Err(DisplayMuxError::Rejected {
+            zh: "這台電腦的主機類型必須由作業系統自動判定".to_owned(),
+            en: "This computer's host type must be determined by the operating system".to_owned(),
+        });
     }
     if settings.host_switcher_enabled {
         validate_host_switcher_shortcut(&settings.host_switcher_shortcut)?;
@@ -1982,13 +1985,10 @@ fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
                 .any(|assignment| invalid_input(assignment.input))
         });
     if has_invalid_input {
-        return Err(DisplayMuxError::Backend(
-            ui_text(
-                "請選擇有效的螢幕輸入 Port",
-                "Select a valid display input port",
-            )
-            .to_owned(),
-        ));
+        return Err(DisplayMuxError::Rejected {
+            zh: "請選擇有效的螢幕輸入 Port".to_owned(),
+            en: "Select a valid display input port".to_owned(),
+        });
     }
     for peer in &settings.peers {
         for assignment in &peer.inputs {
@@ -1997,13 +1997,11 @@ fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
                 .iter()
                 .any(|selected| selected.fingerprint.matches_exactly(&assignment.monitor));
             if !known_monitor {
-                return Err(DisplayMuxError::Backend(
-                    ui_text(
-                        "輸入設定對應到不存在的共用螢幕",
-                        "The input assignment refers to a shared display that is not selected",
-                    )
-                    .to_owned(),
-                ));
+                return Err(DisplayMuxError::Rejected {
+                    zh: "輸入設定對應到不存在的共用螢幕".to_owned(),
+                    en: "The input assignment refers to a shared display that is not selected"
+                        .to_owned(),
+                });
             }
         }
     }
@@ -2023,13 +2021,10 @@ fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
             .map(|input| input.value())
             .collect::<std::collections::HashSet<_>>();
         if unique_inputs.len() != assigned_inputs.len() {
-            return Err(DisplayMuxError::Backend(
-                ui_text(
-                    "每個主機必須使用不同的螢幕輸入 Port",
-                    "Each host must use a different display input port",
-                )
-                .to_owned(),
-            ));
+            return Err(DisplayMuxError::Rejected {
+                zh: "每個主機必須使用不同的螢幕輸入 Port".to_owned(),
+                en: "Each host must use a different display input port".to_owned(),
+            });
         }
         if let Some(supported) = &selected.supported_inputs {
             if settings
@@ -2038,13 +2033,10 @@ fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
                 .filter_map(|peer| peer.input_for(&selected.fingerprint))
                 .any(|assigned| !supported.contains(&assigned))
             {
-                return Err(DisplayMuxError::Backend(
-                    ui_text(
-                        "輸入值不在這台螢幕的 MCCS capabilities 清單中",
-                        "The input is not listed in this display's MCCS capabilities",
-                    )
-                    .to_owned(),
-                ));
+                return Err(DisplayMuxError::Rejected {
+                    zh: "輸入值不在這台螢幕的 MCCS capabilities 清單中".to_owned(),
+                    en: "The input is not listed in this display's MCCS capabilities".to_owned(),
+                });
             }
         }
     }
@@ -2060,64 +2052,45 @@ fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
         )
     })?;
     if !settings.shared_key.is_empty() && !has_valid_shared_key(&settings.shared_key) {
-        return Err(DisplayMuxError::Backend(match UiLocale::current() {
-            UiLocale::TraditionalChinese => {
-                format!("配對密碼至少需要 {MIN_SHARED_KEY_LENGTH} 個字元")
-            }
-            UiLocale::English => format!(
+        return Err(DisplayMuxError::Rejected {
+            zh: format!("配對密碼至少需要 {MIN_SHARED_KEY_LENGTH} 個字元"),
+            en: format!(
                 "The pairing password must contain at least {MIN_SHARED_KEY_LENGTH} characters"
             ),
-        }));
+        });
     }
     Ok(())
 }
 
 fn validate_host_switcher_shortcut(value: &str) -> Result<Shortcut, DisplayMuxError> {
-    let shortcut = Shortcut::from_str(value).map_err(|_| {
-        DisplayMuxError::Backend(
-            ui_text(
-                "無法辨識快捷鍵，請同時按下修飾鍵與一個一般按鍵",
-                "The shortcut was not recognized. Press a modifier and one regular key.",
-            )
-            .to_owned(),
-        )
+    let shortcut = Shortcut::from_str(value).map_err(|_| DisplayMuxError::Rejected {
+        zh: "無法辨識快捷鍵，請同時按下修飾鍵與一個一般按鍵".to_owned(),
+        en: "The shortcut was not recognized. Press a modifier and one regular key.".to_owned(),
     })?;
     let required_modifier = platform_primary_shortcut_modifier();
     if !shortcut.mods.intersects(required_modifier) {
-        return Err(DisplayMuxError::Backend(
-            ui_text(
-                "Windows 快捷鍵必須包含 Ctrl；macOS 快捷鍵必須包含 Command",
-                "The shortcut must include Ctrl on Windows or Command on macOS.",
-            )
-            .to_owned(),
-        ));
+        return Err(DisplayMuxError::Rejected {
+            zh: "Windows 快捷鍵必須包含 Ctrl；macOS 快捷鍵必須包含 Command".to_owned(),
+            en: "The shortcut must include Ctrl on Windows or Command on macOS.".to_owned(),
+        });
     }
     if shortcut.mods.bits().count_ones() > 2 {
-        return Err(DisplayMuxError::Backend(
-            ui_text(
-                "Ctrl 或 Command 之外最多只能再搭配一個修飾鍵",
-                "Use at most one additional modifier with Ctrl or Command.",
-            )
-            .to_owned(),
-        ));
+        return Err(DisplayMuxError::Rejected {
+            zh: "Ctrl 或 Command 之外最多只能再搭配一個修飾鍵".to_owned(),
+            en: "Use at most one additional modifier with Ctrl or Command.".to_owned(),
+        });
     }
     if is_system_shortcut(&shortcut) {
-        return Err(DisplayMuxError::Backend(
-            ui_text(
-                "這是作業系統保留的快捷鍵，按下時不會傳到這個程式，請改用其他組合",
-                "The operating system keeps this shortcut for itself, so pressing it never reaches this app. Choose another combination.",
-            )
-            .to_owned(),
-        ));
+        return Err(DisplayMuxError::Rejected {
+                zh: "這是作業系統保留的快捷鍵，按下時不會傳到這個程式，請改用其他組合".to_owned(),
+                en: "The operating system keeps this shortcut for itself, so pressing it never reaches this app. Choose another combination.".to_owned(),
+            });
     }
     if is_common_application_shortcut(&shortcut) {
-        return Err(DisplayMuxError::Backend(
-            ui_text(
-                "這是瀏覽器或常用應用程式的快捷鍵，請改用其他組合",
-                "This shortcut is commonly used by browsers or other applications. Choose another combination.",
-            )
-            .to_owned(),
-        ));
+        return Err(DisplayMuxError::Rejected {
+                zh: "這是瀏覽器或常用應用程式的快捷鍵，請改用其他組合".to_owned(),
+                en: "This shortcut is commonly used by browsers or other applications. Choose another combination.".to_owned(),
+            });
     }
     Ok(shortcut)
 }
@@ -2143,15 +2116,15 @@ fn platform_primary_shortcut_modifier() -> Modifiers {
 fn is_system_shortcut(shortcut: &Shortcut) -> bool {
     let cmd = Modifiers::SUPER;
     let taken = [
-        (cmd, Code::Space),                            // Spotlight
-        (cmd | Modifiers::ALT, Code::Space),           // Finder search window
-        (cmd | Modifiers::CONTROL, Code::Space),       // Emoji and symbols
-        (cmd | Modifiers::ALT, Code::KeyD),            // hide or show the Dock
-        (cmd | Modifiers::ALT, Code::Escape),          // Force Quit
-        (cmd | Modifiers::CONTROL, Code::KeyF),        // enter full screen
-        (cmd | Modifiers::CONTROL, Code::KeyQ),        // lock screen
-        (cmd | Modifiers::CONTROL, Code::KeyD),        // look up a word
-        (cmd | Modifiers::SHIFT, Code::Digit3),        // screenshot
+        (cmd, Code::Space),                      // Spotlight
+        (cmd | Modifiers::ALT, Code::Space),     // Finder search window
+        (cmd | Modifiers::CONTROL, Code::Space), // Emoji and symbols
+        (cmd | Modifiers::ALT, Code::KeyD),      // hide or show the Dock
+        (cmd | Modifiers::ALT, Code::Escape),    // Force Quit
+        (cmd | Modifiers::CONTROL, Code::KeyF),  // enter full screen
+        (cmd | Modifiers::CONTROL, Code::KeyQ),  // lock screen
+        (cmd | Modifiers::CONTROL, Code::KeyD),  // look up a word
+        (cmd | Modifiers::SHIFT, Code::Digit3),  // screenshot
         (cmd | Modifiers::SHIFT, Code::Digit4),
         (cmd | Modifiers::SHIFT, Code::Digit5),
     ];
@@ -3445,7 +3418,9 @@ async fn set_peer_input(
 ) -> Result<AppSettings, String> {
     let settings = run_display_task(app.clone(), move |state| {
         let mut settings = read_settings(state)?;
-        let fingerprint = find_shared_monitor(&settings, &monitor_id)?.fingerprint.clone();
+        let fingerprint = find_shared_monitor(&settings, &monitor_id)?
+            .fingerprint
+            .clone();
         let input = match input {
             Some(value) => Some(DisplayInput::new(value).map_err(core_user_error)?),
             None => None,
@@ -4608,9 +4583,15 @@ fn setup_windows_tray(app: &tauri::App) -> tauri::Result<()> {
     };
 
     let menu = MenuBuilder::new(app)
-        .text("tray-open", ui_text("開啟 DisplayMuxAuto", "Open DisplayMuxAuto"))
+        .text(
+            "tray-open",
+            ui_text("開啟 DisplayMuxAuto", "Open DisplayMuxAuto"),
+        )
         .separator()
-        .text("tray-quit", ui_text("結束 DisplayMuxAuto", "Quit DisplayMuxAuto"))
+        .text(
+            "tray-quit",
+            ui_text("結束 DisplayMuxAuto", "Quit DisplayMuxAuto"),
+        )
         .build()?;
     let mut tray = TrayIconBuilder::with_id("displaymux")
         .menu(&menu)
