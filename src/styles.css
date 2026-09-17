@@ -1412,19 +1412,30 @@ button.switch-all-host:disabled {
   gap: 10px;
 }
 
+/* One input control per shared display sits on the right, so a second display
+   leaves the host's own name a sliver to wrap inside — "Mac mini" broken over
+   two lines beside its own address. The row gives way instead. */
 .paired-route-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
   padding: 12px 16px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: #ffffff;
 }
 
+.paired-route-card .peer-identity {
+  flex: 1 1 190px;
+  min-width: 190px;
+}
+
 .paired-route-right {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
