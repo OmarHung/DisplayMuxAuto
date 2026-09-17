@@ -1850,33 +1850,44 @@ async function renameLocalHost(value: string): Promise<void> {
   }
 }
 
-let pendingReset: { scope: string; timer: number } | null = null;
+let pendingReset: { scope: string; button: HTMLButtonElement; timer: number } | null = null;
+
+/** A reset button's own description, which arming replaces and disarming puts
+ *  back. Re-derived from the scope rather than remembered from the element, so
+ *  it cannot be restored to whatever the button happened to say last. */
+function resetHint(scope: string): string {
+  return scope === "everything"
+    ? t("settings.resetEverythingHint")
+    : t("settings.resetDisplaysHint");
+}
+
+/** Puts an armed button back the way it was. The reset section is part of the
+ *  page built once at startup, so nothing re-renders it — a description left
+ *  saying "press again" would say that until the app restarts. */
+function disarmReset(): void {
+  if (!pendingReset) return;
+  window.clearTimeout(pendingReset.timer);
+  const label = pendingReset.button.querySelector("small");
+  if (label) label.textContent = resetHint(pendingReset.scope);
+  pendingReset.button.classList.remove("is-confirming");
+  pendingReset = null;
+}
 
 /** Asks once, then performs. The second press within ten seconds confirms; any
  *  other press, or the timeout, puts the button back. */
 function requestReset(scope: string, button: HTMLButtonElement): void {
-  if (pendingReset?.scope === scope) {
-    window.clearTimeout(pendingReset.timer);
-    pendingReset = null;
-    button.classList.remove("is-confirming");
+  const confirmed = pendingReset?.scope === scope;
+  disarmReset();
+  if (confirmed) {
     // Resetting restarts the agent and rewrites the settings file, so it is
     // not instant; without this the confirmed press looked like no press.
     void withBusyButton(button, () => performReset(scope));
     return;
   }
-  if (pendingReset) window.clearTimeout(pendingReset.timer);
   const label = button.querySelector("small");
-  const original = label?.textContent ?? "";
   if (label) label.textContent = t("settings.resetConfirm");
   button.classList.add("is-confirming");
-  pendingReset = {
-    scope,
-    timer: window.setTimeout(() => {
-      pendingReset = null;
-      if (label) label.textContent = original;
-      button.classList.remove("is-confirming");
-    }, 10_000),
-  };
+  pendingReset = { scope, button, timer: window.setTimeout(disarmReset, 10_000) };
 }
 
 async function performReset(scope: string): Promise<void> {
