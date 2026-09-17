@@ -51,6 +51,12 @@ const HOST_ORDER_CHANGED_EVENT = "host-order-changed";
 const HOST_NAMES_CHANGED_EVENT = "host-names-changed";
 /** Emitted by the backend when this or a paired host changes an input note. */
 const INPUT_LABELS_CHANGED_EVENT = "input-labels-changed";
+/** Which host a shared display is showing; this window says so on every row. */
+const ACTIVE_ROUTE_CHANGED_EVENT = "active-route-changed";
+/** A paired host's port, which this window shows beside that host. */
+const PEER_INPUTS_CHANGED_EVENT = "peer-inputs-changed";
+/** A merge changes which displays this window lists. */
+const MONITOR_IDENTITIES_CHANGED_EVENT = "monitor-identities-changed";
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({
@@ -205,6 +211,13 @@ async function initialize(): Promise<void> {
     await listen(HOST_ORDER_CHANGED_EVENT, () => void reloadState());
     await listen(HOST_NAMES_CHANGED_EVENT, () => void reloadState());
     await listen(INPUT_LABELS_CHANGED_EVENT, () => void reloadState());
+    // This window opens over whatever the user is doing and is read at a
+    // glance, so anything that changes a row has to reach it too. It showed a
+    // stale "currently showing" when a paired host switched a display, and
+    // stale ports when one reported its own.
+    await listen(ACTIVE_ROUTE_CHANGED_EVENT, () => void reloadState());
+    await listen(PEER_INPUTS_CHANGED_EVENT, () => void reloadState());
+    await listen(MONITOR_IDENTITIES_CHANGED_EVENT, () => void reloadState());
   } catch {
     // Preview mode has no Tauri backend; the static preview order never changes.
     return;

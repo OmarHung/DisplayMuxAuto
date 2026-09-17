@@ -795,6 +795,10 @@ async function loadInputOptionsByMonitor(monitorKeys: string[]): Promise<Record<
 
 /** Minimum gap between automatic rescans; each one issues DDC/CI reads. */
 const FOCUS_REFRESH_INTERVAL_MS = 10_000;
+/** How often the window re-scans on its own. A scan reads capabilities and
+ *  retries DDC, so this trades freshness against talking to the displays
+ *  constantly; `FOCUS_REFRESH_INTERVAL_MS` still floors the actual rate. */
+const PERIODIC_REFRESH_INTERVAL_MS = 15_000;
 /** Emitted by the backend when a paired host reports a switch. */
 const ACTIVE_ROUTE_CHANGED_EVENT = "active-route-changed";
 /** Emitted by the backend when this or a paired host saves a new host card order. */
@@ -807,6 +811,8 @@ const HOST_NAMES_CHANGED_EVENT = "host-names-changed";
 const INPUT_LABELS_CHANGED_EVENT = "input-labels-changed";
 /** Emitted by the backend when a paired host reports the port it occupies. */
 const PEER_INPUTS_CHANGED_EVENT = "peer-inputs-changed";
+/** A paired host declared two display identities to be one display. */
+const MONITOR_IDENTITIES_CHANGED_EVENT = "monitor-identities-changed";
 /** Longest input note the backend accepts, in characters. */
 const MAX_INPUT_LABEL_CHARS = 24;
 /** Shared displays whose input note list is expanded, by monitor key. */
@@ -856,9 +862,26 @@ async function refresh(): Promise<void> {
  */
 function refreshOnReturn(): void {
   if (isPreview || isRefreshing || document.visibilityState !== "visible") return;
-  if (!document.querySelector("#dashboard-page")?.classList.contains("is-active")) return;
   if (Date.now() - lastRefreshAt < FOCUS_REFRESH_INTERVAL_MS) return;
+  // Never while a field is being edited: a re-render would take the text with
+  // it. The next tick picks it up once the field is left.
+  if (isEditingAField()) return;
   void refresh();
+}
+
+/** Whether the user is part-way through typing something a re-render would
+ *  discard — a host name, an input note, or a pairing password. */
+function isEditingAField(): boolean {
+  const active = document.activeElement;
+  return active instanceof HTMLInputElement || active instanceof HTMLSelectElement;
+}
+
+/** Displays change without the app being told: a cable is moved, a display
+ *  sleeps, a display mode is switched, a paired host takes one over. None of
+ *  that raises an event here, so what the window shows is only ever as fresh
+ *  as the last thing the user did. */
+function startPeriodicRefresh(): void {
+  window.setInterval(refreshOnReturn, PERIODIC_REFRESH_INTERVAL_MS);
 }
 
 /** Re-reads only which host is active; no DDC scan and no settings form re-render. */
@@ -1610,6 +1633,11 @@ async function reloadHostNames(): Promise<void> {
   try {
     hostNames = await invoke<Record<string, string>>("get_host_names");
     renderSwitchPanel();
+    // The settings page names this computer too, and a paired host can be the
+    // one that renamed it.
+    if (document.activeElement?.id !== "local-host-name") {
+      setInput("#local-host-name", routeDisplayName("local"));
+    }
     refreshIcons();
   } catch (error) {
     showToast(t("toast.hostNameFailed"), String(error), true);
@@ -2413,11 +2441,15 @@ async function bootstrap(): Promise<void> {
       await listen(HOST_NAMES_CHANGED_EVENT, () => void reloadHostNames());
       await listen(INPUT_LABELS_CHANGED_EVENT, () => void reloadInputOptions());
       await listen(PEER_INPUTS_CHANGED_EVENT, () => void reloadPeerInputs());
+      // A merge changes which displays exist and what they are called, which
+      // only a full scan can work out, so this reloads everything.
+      await listen(MONITOR_IDENTITIES_CHANGED_EVENT, () => void refresh());
     } catch (error) {
       showToast(t("toast.activeHostSyncFailed"), String(error), true);
     }
     window.addEventListener("focus", refreshOnReturn);
     document.addEventListener("visibilitychange", refreshOnReturn);
+    startPeriodicRefresh();
   }
   void refreshReleaseHistory();
   if (!settings.onboardingCompleted) showOnboarding(0);
