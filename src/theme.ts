@@ -29,10 +29,18 @@ function applyResolvedTheme(preference: ThemePreference): void {
 }
 
 function syncNativeWindowTheme(preference: ThemePreference): void {
-  // null lets the native title bar follow the OS again.
-  getCurrentWindow()
-    .setTheme(preference === "system" ? null : preference)
-    .catch((error: unknown) => console.warn("Unable to sync the window theme", error));
+  // The page's own colours are already set by the time this runs, and the
+  // title bar is the only thing left. getCurrentWindow() throws outside a Tauri
+  // window rather than rejecting, and this is called while the module is still
+  // evaluating — unguarded, it takes the whole interface down over a title bar.
+  try {
+    // null lets the native title bar follow the OS again.
+    getCurrentWindow()
+      .setTheme(preference === "system" ? null : preference)
+      .catch((error: unknown) => console.warn("Unable to sync the window theme", error));
+  } catch (error) {
+    console.warn("Unable to reach the window to sync its theme", error);
+  }
 }
 
 let currentPreference: ThemePreference = "system";
