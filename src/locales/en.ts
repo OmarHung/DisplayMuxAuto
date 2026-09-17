@@ -111,6 +111,8 @@ const en = {
   "settings.mergeUndone": "Merge undone. The two identities count as separate displays again.",
   "settings.mergedInto": "Merged into {name}",
   "settings.notDetected": "Not detected right now",
+  "action.discard": "Discard changes",
+  "settings.unsaved": "Changes here are kept only once you press Save",
   "settings.inputsUnknown": "This display\u2019s inputs have not been read yet",
   "settings.localInputAria": "Input this computer uses on {monitor}",
   "settings.localComputerHint": "This name appears in the switch centre and syncs to paired hosts. Leave it empty to go back to the discovered machine name.",

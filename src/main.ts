@@ -397,8 +397,14 @@ app.innerHTML = `
                 </label>
               </div>
 
-              <div class="form-actions">
-                <button class="save-button full-width" type="submit"><i data-lucide="save"></i>${t("action.save")}</button>
+              <div class="form-actions" id="form-actions" hidden>
+                <p class="unsaved-note" aria-live="polite">
+                  <i data-lucide="alert-circle"></i>${t("settings.unsaved")}
+                </p>
+                <div class="form-actions-buttons">
+                  <button class="cancel-button" type="button" id="discard-button">${t("action.discard")}</button>
+                  <button class="save-button" type="submit"><i data-lucide="save"></i>${t("action.save")}</button>
+                </div>
               </div>
             </form>
 
@@ -558,7 +564,25 @@ if (themeSelect) {
     if (!setThemePreference(themeSelect.value)) themeSelect.value = themePreference;
   });
 }
+/** The controls that wait for the save button. Everything else on the settings
+ *  page has its own command and is saved as it is changed. */
+const SAVE_ON_SUBMIT_FIELDS = [
+  "#shared-key",
+  "#wait-seconds",
+  "#autostart",
+  "#check-updates",
+  "#host-switcher-enabled",
+] as const;
+
 document.querySelector<HTMLFormElement>("#settings-form")?.addEventListener("submit", (event) => void saveSettings(event));
+// Most of this page saves as it is changed; these few do not, and nothing said
+// so. Named one by one rather than watching the whole form, so a control that
+// saves itself never raises a warning that its change is waiting.
+for (const selector of SAVE_ON_SUBMIT_FIELDS) {
+  document.querySelector(selector)?.addEventListener("change", markUnsaved);
+  document.querySelector(selector)?.addEventListener("input", markUnsaved);
+}
+document.querySelector("#discard-button")?.addEventListener("click", discardUnsavedChanges);
 document.querySelector<HTMLInputElement>("#host-switcher-enabled")?.addEventListener("change", () => {
   renderShortcutSetting();
   if (document.querySelector<HTMLInputElement>("#host-switcher-enabled")?.checked) {
@@ -871,6 +895,33 @@ async function refresh(): Promise<void> {
  * display's own buttons shows up without pressing refresh. Only the dashboard
  * rescans: a full render would discard unsaved edits on the settings page.
  */
+/** Says that a change is waiting for the save button, since the same page
+ *  saves most things without one and the difference is invisible otherwise. */
+function markUnsaved(): void {
+  setUnsavedVisible(true);
+}
+
+function setUnsavedVisible(visible: boolean): void {
+  const actions = document.querySelector<HTMLElement>("#form-actions");
+  if (actions) actions.hidden = !visible;
+  if (visible) refreshIcons();
+}
+
+/** Puts the controls that wait for the save button back to what was saved, so
+ *  a change can be taken back without knowing what it used to be. */
+function discardUnsavedChanges(): void {
+  setInput("#shared-key", settings.sharedKey);
+  setInput("#wait-seconds", String(settings.waitSeconds));
+  const autostart = document.querySelector<HTMLInputElement>("#autostart");
+  if (autostart) autostart.checked = settings.autostart;
+  const checkUpdates = document.querySelector<HTMLInputElement>("#check-updates");
+  if (checkUpdates) checkUpdates.checked = settings.checkUpdates;
+  const hostSwitcherEnabled = document.querySelector<HTMLInputElement>("#host-switcher-enabled");
+  if (hostSwitcherEnabled) hostSwitcherEnabled.checked = settings.hostSwitcherEnabled;
+  renderShortcutSetting();
+  setUnsavedVisible(false);
+}
+
 function refreshOnReturn(): void {
   if (isPreview || isRefreshing || document.visibilityState !== "visible") return;
   if (Date.now() - lastRefreshAt < FOCUS_REFRESH_INTERVAL_MS) return;
@@ -2066,6 +2117,7 @@ async function saveSettings(event: SubmitEvent): Promise<void> {
       hostSwitcherShortcut: settings.hostSwitcherShortcut,
     };
     const result = await invoke<OperationResult>("save_settings", { settings });
+    setUnsavedVisible(false);
     showToast(result.title, result.detail); await refresh();
   } catch (error) { showToast(t("toast.settingsFailed"), String(error), true); }
 }

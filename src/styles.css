@@ -951,6 +951,24 @@ button.switch-all-host:disabled {
   margin-inline-start: auto;
 }
 
+/* Only these few controls wait for the button, so the page says which. */
+.unsaved-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--warning);
+  background: rgba(163, 91, 24, 0.08);
+  color: var(--warning);
+  font-size: 13px;
+}
+
+.unsaved-note svg { width: 15px; height: 15px; flex: 0 0 auto; }
+
+.unsaved-note[hidden] { display: none; }
+
 .reset-section {
   margin-top: 22px;
 }
@@ -1538,7 +1556,53 @@ button.switch-all-host:disabled {
   transform: translateX(20px);
 }
 
-.form-actions { padding-top: 12px; }
+/* The settings page is long and most of it saves itself, so the few controls
+   that still need saving can sit anywhere in it — including the top, a full
+   scroll away. The bar comes to the user instead, and only while something is
+   waiting for it: with nothing to save, a save button is just furniture. */
+.form-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  margin: 12px -24px -24px;
+  padding: 12px 24px 16px;
+  background: var(--panel-bg);
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 16px 16px;
+}
+
+.form-actions[hidden] { display: none; }
+
+.form-actions-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.form-actions-buttons .save-button {
+  flex: 1 1 auto;
+  height: 46px;
+  border-radius: 12px;
+  border: 0;
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.cancel-button {
+  flex: 0 0 auto;
+  height: 46px;
+  padding: 0 18px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cancel-button:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
 
 .save-button.full-width {
   width: 100%;
