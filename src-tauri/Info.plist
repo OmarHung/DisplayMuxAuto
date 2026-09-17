@@ -4,6 +4,12 @@
   <dict>
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
+    <!-- A status bar app: no Dock icon, nothing in Command-Tab. Declared here
+         rather than set at runtime so it holds from launch, with no Dock icon
+         appearing and then vanishing. Only applies to the built .app — a dev
+         build runs unbundled and still shows in the Dock. -->
+    <key>LSUIElement</key>
+    <true/>
     <key>NSLocalNetworkUsageDescription</key>
     <string>DisplayMuxAuto uses the local network to find and connect to your other computer.</string>
     <key>NSBonjourServices</key>

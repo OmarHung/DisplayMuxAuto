@@ -4667,6 +4667,56 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+/// The status item this app lives in on macOS.
+///
+/// It runs with no Dock icon, so this is the only way back to the window once
+/// it is closed. Before there was one, closing the window left the app running
+/// with nothing on screen pointing at it and no way to reopen it — the Dock
+/// icon was there but nothing answered a click.
+#[cfg(target_os = "macos")]
+fn setup_macos_status_item(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::{image::Image, menu::MenuBuilder, tray::TrayIconBuilder};
+
+    let menu = MenuBuilder::new(app)
+        .text(
+            "tray-open",
+            ui_text("開啟 DisplayMuxAuto", "Open DisplayMuxAuto"),
+        )
+        .separator()
+        .text(
+            "tray-quit",
+            ui_text("結束 DisplayMuxAuto", "Quit DisplayMuxAuto"),
+        )
+        .build()?;
+    // The menu bar draws a template image in whatever colour it is using, so
+    // the icon carries a shape in its alpha channel and no colour of its own.
+    // The app icon would come out as a filled rounded square.
+    //
+    // Raw pixels rather than a PNG: decoding one would mean compiling an image
+    // decoder into the app, which is a large dependency and a parser to keep
+    // patched, for a 44-pixel square that never changes.
+    const MENU_BAR_ICON_SIDE: u32 = 44;
+    let icon = Image::new(
+        include_bytes!("../icons/menubar.rgba"),
+        MENU_BAR_ICON_SIDE,
+        MENU_BAR_ICON_SIDE,
+    );
+    TrayIconBuilder::with_id("displaymux")
+        .menu(&menu)
+        .icon(icon)
+        .icon_as_template(true)
+        // Opening the menu on a left click is what every other status item
+        // does; this one has nowhere else to put "quit".
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray-open" => show_main_window(app),
+            "tray-quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 fn setup_windows_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::{
@@ -4859,6 +4909,26 @@ pub fn run() -> anyhow::Result<()> {
                             tracing::warn!(error = %error, "unable to register the host switcher shortcut");
                         }
                     }
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                setup_macos_status_item(app)?;
+                // Nothing in the Dock and nothing in Command-Tab. The window is
+                // opened from the menu bar or by the global shortcut, and
+                // switching displays never needed the window at all.
+                //
+                // Said twice, because neither half is enough on its own. The
+                // bundle's LSUIElement holds from the moment the process
+                // starts, but the windowing layer sets the policy back to
+                // Regular in applicationDidFinishLaunching — so without this
+                // call the Dock icon comes back. This call alone would let the
+                // icon appear first and then vanish.
+                if let Err(error) = app
+                    .handle()
+                    .set_activation_policy(tauri::ActivationPolicy::Accessory)
+                {
+                    tracing::warn!(error = %error, "unable to keep DisplayMuxAuto out of the Dock");
                 }
             }
             #[cfg(target_os = "windows")]
