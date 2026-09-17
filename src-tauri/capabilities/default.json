@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the DisplayMux main window",
+  "description": "Permissions for the DisplayMuxAuto main window",
   "windows": ["main"],
   "permissions": [
     "core:default",

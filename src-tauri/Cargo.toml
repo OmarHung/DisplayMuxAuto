@@ -2,7 +2,7 @@
 name = "displaymux-app"
 version = "0.1.11-beta.8"
 description = "Switch one shared monitor safely between Windows and macOS"
-authors = ["DisplayMux contributors"]
+authors = ["DisplayMuxAuto contributors"]
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

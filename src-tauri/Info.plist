@@ -5,7 +5,7 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>DisplayMux uses the local network to find and connect to your other computer.</string>
+    <string>DisplayMuxAuto uses the local network to find and connect to your other computer.</string>
     <key>NSBonjourServices</key>
     <array>
       <string>_displaymux._tcp</string>

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "host-switcher",
-  "description": "Minimal permissions for the DisplayMux host switcher",
+  "description": "Minimal permissions for the DisplayMuxAuto host switcher",
   "windows": ["host-switcher"],
   "permissions": ["core:default"]
 }

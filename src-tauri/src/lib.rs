@@ -135,9 +135,9 @@ fn set_locale(locale: String, app: AppHandle) -> Result<(), String> {
     if let Some(tray) = app.tray_by_id("displaymux") {
         use tauri::menu::MenuBuilder;
         let menu = MenuBuilder::new(&app)
-            .text("tray-open", ui_text("開啟 DisplayMux", "Open DisplayMux"))
+            .text("tray-open", ui_text("開啟 DisplayMuxAuto", "Open DisplayMuxAuto"))
             .separator()
-            .text("tray-quit", ui_text("結束 DisplayMux", "Quit DisplayMux"))
+            .text("tray-quit", ui_text("結束 DisplayMuxAuto", "Quit DisplayMuxAuto"))
             .build()
             .map_err(user_error)?;
         tray.set_menu(Some(menu)).map_err(user_error)?;
@@ -678,8 +678,8 @@ async fn discover_peers(state: State<'_, AppRuntime>) -> Result<Vec<DiscoveredPe
     sleep(Duration::from_millis(700)).await;
     let discovery = state.discovery.as_ref().ok_or_else(|| {
         ui_text(
-            "無法啟動區域網路搜尋；請確認防火牆允許 DisplayMux 使用私人網路",
-            "Unable to start local network discovery. Allow DisplayMux through the firewall on private networks.",
+            "無法啟動區域網路搜尋；請確認防火牆允許 DisplayMuxAuto 使用私人網路",
+            "Unable to start local network discovery. Allow DisplayMuxAuto through the firewall on private networks.",
         )
         .to_owned()
     })?;
@@ -953,8 +953,8 @@ fn check_host_switcher_shortcut(
         return Ok(ShortcutCheckResult {
             available: false,
             message: ui_text(
-                "此快捷鍵已由 DisplayMux 的其他功能使用",
-                "This shortcut is already used by another DisplayMux feature.",
+                "此快捷鍵已由 DisplayMuxAuto 的其他功能使用",
+                "This shortcut is already used by another DisplayMuxAuto feature.",
             )
             .to_owned(),
         });
@@ -1734,8 +1734,8 @@ fn plan_switch_input(
         return Ok(None);
     }
     Err(ui_text(
-        "此配對主機使用舊版 DisplayMux，僅支援單一共用螢幕；請將該主機更新到最新版本以切換多台螢幕",
-        "This paired host is running an older DisplayMux version that only supports a single shared display; update it to switch multiple displays.",
+        "此配對主機使用舊版 DisplayMuxAuto，僅支援單一共用螢幕；請將該主機更新到最新版本以切換多台螢幕",
+        "This paired host is running an older DisplayMuxAuto version that only supports a single shared display; update it to switch multiple displays.",
     )
     .to_owned())
 }
@@ -2552,8 +2552,8 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                             AgentResponse {
                                 ready: true,
                                 message: ui_text(
-                                    "DisplayMux Agent 已就緒",
-                                    "DisplayMux Agent is ready",
+                                    "DisplayMuxAuto Agent 已就緒",
+                                    "DisplayMuxAuto Agent is ready",
                                 )
                                 .to_owned(),
                                 display_route: display_routes.first().cloned(),
@@ -2688,7 +2688,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
             })
             .await;
         if let Err(error) = result {
-            tracing::error!(error = %error, "DisplayMux agent stopped");
+            tracing::error!(error = %error, "DisplayMuxAuto agent stopped");
         }
     }));
     Ok(())
@@ -3811,8 +3811,8 @@ fn store_settings(state: &AppRuntime, settings: AppSettings) -> Result<AppSettin
     persist_settings(&state.settings_path, &settings).map_err(core_user_error)?;
     let mut current = state.settings.write().map_err(|_| {
         ui_text(
-            "無法更新設定，請重新啟動 DisplayMux",
-            "Unable to update settings. Restart DisplayMux.",
+            "無法更新設定，請重新啟動 DisplayMuxAuto",
+            "Unable to update settings. Restart DisplayMuxAuto.",
         )
         .to_owned()
     })?;
@@ -3831,8 +3831,8 @@ fn read_settings_inner(state: &AppRuntime) -> Result<AppSettings, String> {
         .map(|settings| settings.clone())
         .map_err(|_| {
             ui_text(
-                "無法讀取設定，請重新啟動 DisplayMux",
-                "Unable to read settings. Restart DisplayMux.",
+                "無法讀取設定，請重新啟動 DisplayMuxAuto",
+                "Unable to read settings. Restart DisplayMuxAuto.",
             )
             .to_owned()
         })
@@ -4515,40 +4515,40 @@ fn launched_from_autostart(args: impl IntoIterator<Item = String>) -> bool {
 fn hide_main_window(window: &tauri::Window) {
     #[cfg(target_os = "windows")]
     if let Err(error) = window.set_skip_taskbar(true) {
-        tracing::warn!(error = %error, "unable to remove DisplayMux from the taskbar");
+        tracing::warn!(error = %error, "unable to remove DisplayMuxAuto from the taskbar");
     }
     if let Err(error) = window.hide() {
-        tracing::warn!(error = %error, "unable to hide DisplayMux in the system tray");
+        tracing::warn!(error = %error, "unable to hide DisplayMuxAuto in the system tray");
     }
 }
 
 #[cfg(target_os = "windows")]
 fn hide_windows_main_webview(window: &tauri::WebviewWindow) {
     if let Err(error) = window.set_skip_taskbar(true) {
-        tracing::warn!(error = %error, "unable to remove DisplayMux from the taskbar");
+        tracing::warn!(error = %error, "unable to remove DisplayMuxAuto from the taskbar");
     }
     if let Err(error) = window.hide() {
-        tracing::warn!(error = %error, "unable to hide DisplayMux in the system tray");
+        tracing::warn!(error = %error, "unable to hide DisplayMuxAuto in the system tray");
     }
 }
 
 fn show_main_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
-        tracing::warn!("unable to find the DisplayMux main window");
+        tracing::warn!("unable to find the DisplayMuxAuto main window");
         return;
     };
     #[cfg(target_os = "windows")]
     if let Err(error) = window.set_skip_taskbar(false) {
-        tracing::warn!(error = %error, "unable to restore DisplayMux to the taskbar");
+        tracing::warn!(error = %error, "unable to restore DisplayMuxAuto to the taskbar");
     }
     if let Err(error) = window.show() {
-        tracing::warn!(error = %error, "unable to show DisplayMux from the system tray");
+        tracing::warn!(error = %error, "unable to show DisplayMuxAuto from the system tray");
     }
     if let Err(error) = window.unminimize() {
-        tracing::warn!(error = %error, "unable to unminimize DisplayMux");
+        tracing::warn!(error = %error, "unable to unminimize DisplayMuxAuto");
     }
     if let Err(error) = window.set_focus() {
-        tracing::warn!(error = %error, "unable to focus DisplayMux");
+        tracing::warn!(error = %error, "unable to focus DisplayMuxAuto");
     }
 }
 
@@ -4560,13 +4560,13 @@ fn setup_windows_tray(app: &tauri::App) -> tauri::Result<()> {
     };
 
     let menu = MenuBuilder::new(app)
-        .text("tray-open", ui_text("開啟 DisplayMux", "Open DisplayMux"))
+        .text("tray-open", ui_text("開啟 DisplayMuxAuto", "Open DisplayMuxAuto"))
         .separator()
-        .text("tray-quit", ui_text("結束 DisplayMux", "Quit DisplayMux"))
+        .text("tray-quit", ui_text("結束 DisplayMuxAuto", "Quit DisplayMuxAuto"))
         .build()?;
     let mut tray = TrayIconBuilder::with_id("displaymux")
         .menu(&menu)
-        .tooltip("DisplayMux")
+        .tooltip("DisplayMuxAuto")
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "tray-open" => show_main_window(app),
@@ -4605,7 +4605,7 @@ pub fn run() -> anyhow::Result<()> {
         // This must remain the first plugin so a second launch exits before any
         // other plugin or application setup can create duplicate resources.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            tracing::info!("second DisplayMux launch redirected to the existing instance");
+            tracing::info!("second DisplayMuxAuto launch redirected to the existing instance");
             show_main_window(app);
         }))
         .plugin(tauri_plugin_autostart::init(
@@ -4660,7 +4660,7 @@ pub fn run() -> anyhow::Result<()> {
             }
             let detected = LocalHostIdentity::detect(local_host()).unwrap_or_else(|error| {
                 tracing::warn!(error = %error, "unable to read this computer's host name");
-                LocalHostIdentity::from_parts("DisplayMux".to_owned(), local_host(), None)
+                LocalHostIdentity::from_parts("DisplayMuxAuto".to_owned(), local_host(), None)
             });
             // Fixed once and then kept: every paired host stores this id, so
             // re-deriving it would silently strand this computer's pairings,
@@ -4683,7 +4683,7 @@ pub fn run() -> anyhow::Result<()> {
             let discovery = MdnsPeerDiscovery::start(&identity, DEFAULT_AGENT_PORT)
                 .map(Some)
                 .unwrap_or_else(|error| {
-                    tracing::warn!(error = %error, "unable to start DisplayMux mDNS discovery");
+                    tracing::warn!(error = %error, "unable to start DisplayMuxAuto mDNS discovery");
                     None
                 });
             app.manage(AppRuntime {
@@ -4726,7 +4726,7 @@ pub fn run() -> anyhow::Result<()> {
             tauri::async_runtime::spawn(async move {
                 if let Some(runtime) = handle.try_state::<AppRuntime>() {
                     if let Err(error) = restart_agent(&runtime, &handle).await {
-                        tracing::warn!(error = %error, "unable to start DisplayMux agent");
+                        tracing::warn!(error = %error, "unable to start DisplayMuxAuto agent");
                     }
                     exchange_host_layout_with_peers(&runtime, &handle);
                     adopt_peer_routes_at_startup(&handle);
@@ -4966,10 +4966,10 @@ mod tests {
     #[test]
     fn only_the_explicit_login_argument_starts_windows_hidden() {
         assert!(launched_from_autostart([
-            "DisplayMux.exe".to_owned(),
+            "DisplayMuxAuto.exe".to_owned(),
             "--autostart".to_owned(),
         ]));
-        assert!(!launched_from_autostart(["DisplayMux.exe".to_owned()]));
+        assert!(!launched_from_autostart(["DisplayMuxAuto.exe".to_owned()]));
     }
 
     #[test]
