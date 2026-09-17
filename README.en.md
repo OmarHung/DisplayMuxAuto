@@ -52,17 +52,25 @@ You can share more than one monitor; each host stores its own input port for eac
 
 ## Screenshots
 
+The computer names, addresses and display details shown below are anonymized sample data.
+
 ### Switch Center
 
-Once set up, each computer's monitor input is visible at a glance and you can switch to the target host from here.
+Which computer each shared monitor is currently handed to, and the input each one uses. With more than one shared monitor, a control at the top sends all of them to the same host at once.
 
-![DisplayMuxAuto switch center showing this PC on HDMI 1 and a Mac on DP](assets/screenshots/switch-center.en.png)
+![DisplayMuxAuto switch center with two shared monitors, one on this PC and one on the Mac](assets/screenshots/switch-center.en.png)
 
-### Display and Host Settings
+### Display and Host Settings (top)
 
-DisplayMuxAuto detects the local port for you, and fills in a paired host's port once it has been verified. The names, addresses and display details shown are anonymized sample data.
+Choosing shared monitors, naming this computer, its port on each monitor, and input notes.
 
-![DisplayMuxAuto display and host settings showing HDMI 1 locally and DP for a paired host](assets/screenshots/monitor-and-host-settings.en.png)
+![DisplayMuxAuto display and host settings, upper half, with two shared monitors and their ports](assets/screenshots/monitor-and-host-settings.en.png)
+
+### Display and Host Settings (lower)
+
+Added hosts and their inputs, the pairing password, the global shortcut, and reset at the bottom.
+
+![DisplayMuxAuto display and host settings, lower half, with added hosts, pairing password, shortcut and reset](assets/screenshots/hosts-and-reset.en.png)
 
 ## Before You Begin
 
@@ -150,6 +158,8 @@ On Windows, closing or minimizing the window leaves the app running in the syste
 
 With "Global host switcher" enabled in settings, a shortcut (`Ctrl/Cmd + Alt + Space` by default) summons a small window for handing the shared monitor to another host, without returning to the main window first. You can record your own shortcut; the app checks it against common application shortcuts before accepting it.
 
+![DisplayMuxAuto host switcher window listing this computer and the added Mac](assets/screenshots/host-switcher.en.png)
+
 ## One Display, Different Identities
 
 Some displays report a different identity when they change display mode — from 4K to 1080p, say — so the list makes it look as though a different monitor arrived, and the sharing and port settings that belonged to it appear to vanish.
@@ -157,6 +167,8 @@ Some displays report a different identity when they change display mode — from
 When that happens, the settings page lists the identity that belongs to no shared display, and you can merge it into one already in the list: this is the same display. From then on the two identities count as one monitor, switching and port settings carry over, and the declaration is shared with paired hosts. A merge can be undone.
 
 A merge only decides which identities count as the same display. It does not relax the safety check on switching: before any DDC/CI command goes out, the display's identity must still match exactly.
+
+![DisplayMuxAuto display identity merging: one merged card and one identity waiting to be merged](assets/screenshots/display-identity-merge.en.png)
 
 ## Reset
 

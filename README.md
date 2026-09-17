@@ -51,17 +51,25 @@ DisplayMuxAuto 只會切換你指定的共用螢幕。其他螢幕會保持原�
 
 ## 實際操作畫面
 
+以下畫面中的電腦名稱、位址與螢幕資訊皆為匿名展示資料。
+
 ### 切換中心
 
-設定完成後，可以直接看到每台電腦對應的螢幕輸入，並從切換中心切換至目標主機。
+可以直接看到每台共用螢幕目前交給哪台電腦，以及各自使用的輸入。共用螢幕不只一台時，上方會出現把全部螢幕一次切換過去的按鈕。
 
-![DisplayMuxAuto 切換中心，顯示本機使用 HDMI 1、Mac 使用 DP](assets/screenshots/switch-center.png)
+![DisplayMuxAuto 切換中心，兩台共用螢幕，一台顯示本機、一台顯示 Mac](assets/screenshots/switch-center.png)
 
-### 螢幕與主機設定
+### 螢幕與主機設定（上半）
 
-DisplayMuxAuto 會自動判讀本機 Port；加入已設定好的主機後，也會在驗證成功時自動帶入對方的 Port。畫面中的名稱、位址與螢幕資訊皆為匿名展示資料。
+選擇共用螢幕、這台電腦的名稱與各螢幕的輸入 Port，以及輸入備註。
 
-![DisplayMuxAuto 螢幕與主機設定，自動顯示本機 HDMI 1 與已配對主機 DP](assets/screenshots/monitor-and-host-settings.png)
+![DisplayMuxAuto 螢幕與主機設定上半部，兩台共用螢幕與各自的輸入 Port](assets/screenshots/monitor-and-host-settings.png)
+
+### 螢幕與主機設定（下半）
+
+已加入的主機與它們的輸入、配對密碼、全域快捷鍵，以及最下方的重置。
+
+![DisplayMuxAuto 螢幕與主機設定下半部，已加入主機、配對密碼、快捷鍵與重置](assets/screenshots/hosts-and-reset.png)
 
 ## 使用前準備
 
@@ -149,6 +157,8 @@ Windows 版關閉或最小化視窗後會留在系統匣執行。只有從系統
 
 在設定頁開啟「全域主機切換器」後，可以用快捷鍵（預設 `Ctrl/Cmd + Alt + Space`）叫出一個小視窗，直接選擇要把共用螢幕交給哪一台主機，不必先回到主視窗。快捷鍵可以自行錄製，介面會先檢查是否與常用程式衝突。
 
+![DisplayMuxAuto 的主機切換器小視窗，列出這台電腦與已加入的 Mac](assets/screenshots/host-switcher.png)
+
 ## 同一台螢幕的不同身分
 
 有些螢幕在切換顯示模式（例如從 4K 換成 1080p）時，會回報不同的識別碼，在清單中看起來就像換了一台螢幕 —— 原本的共用設定與接口設定也會跟著看似消失。
@@ -156,6 +166,8 @@ Windows 版關閉或最小化視窗後會留在系統匣執行。只有從系統
 發生這種情況時，設定頁會列出這個「不屬於任何共用螢幕」的身分，你可以把它合併到清單中已有的那一台，宣告「這是同一台」。合併之後兩個身分視為同一台螢幕，切換與接口設定都會沿用，而且這個宣告會同步給已配對的主機。合併可以取消。
 
 合併只影響「哪些身分算同一台螢幕」，不影響切換時的安全檢查：實際送出 DDC/CI 指令前，仍然只認完整相符的 EDID 識別資訊。
+
+![DisplayMuxAuto 的螢幕身分合併：一張已合併的卡片，以及一台待合併的身分](assets/screenshots/display-identity-merge.png)
 
 ## 重置
 
