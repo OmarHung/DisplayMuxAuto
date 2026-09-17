@@ -171,7 +171,6 @@ impl MdnsPeerDiscovery {
             ("id".to_owned(), local_id.clone()),
             ("name".to_owned(), friendly_name.clone()),
             ("platform".to_owned(), platform.to_owned()),
-            ("version".to_owned(), env!("CARGO_PKG_VERSION").to_owned()),
         ]);
         if let Some(address) = &mac_address {
             properties.insert("mac".to_owned(), address.clone());
