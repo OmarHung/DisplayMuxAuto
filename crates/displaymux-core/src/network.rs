@@ -714,7 +714,9 @@ impl AgentClient {
         let mut response = String::new();
         timeout(
             self.connect_timeout,
-            BufReader::new(reader).read_line(&mut response),
+            BufReader::new(reader)
+                .take(MAX_PACKET_BYTES as u64)
+                .read_line(&mut response),
         )
         .await
         .map_err(|_| DisplayMuxError::PeerUnavailable("回應逾時".to_owned()))?
