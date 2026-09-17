@@ -1,8 +1,13 @@
-# DisplayMux
+# DisplayMuxAuto
 
 [繁體中文](README.md) | English
 
-DisplayMux is a desktop utility for Windows 10/11 and macOS 12+ that lets multiple computers share a single monitor. It switches the monitor input directly from your computer, so you do not need to reach for the monitor's physical controls.
+> DisplayMuxAuto extends [DisplayMux](https://github.com/HenryHsu/DisplayMux) by Henry Hsu, under the MIT licence.
+> The original switches one shared monitor between two computers; this project builds on it so the two hosts work
+> out each other's ports, display identities and settings between themselves, leaving less to be entered by hand.
+> Release history before v0.1.6 points at the original project.
+
+DisplayMuxAuto is a desktop utility for Windows 10/11 and macOS 12+ that lets multiple computers share a single monitor. It switches the monitor input directly from your computer, so you do not need to reach for the monitor's physical controls.
 
 It controls only the shared monitor you select. It does not change your operating system's display arrangement or switch any of your other work displays.
 

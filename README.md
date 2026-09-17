@@ -1,8 +1,12 @@
-# DisplayMux
+# DisplayMuxAuto
 
 繁體中文 | [English](README.en.md)
 
-DisplayMux 是一款適用於 Windows 10／11 與 macOS 12+ 的桌面工具，讓多台電腦共用同一台螢幕時，可以直接從電腦切換螢幕輸入，不必伸手操作螢幕按鍵。
+> DisplayMuxAuto 是 [DisplayMux](https://github.com/HenryHsu/DisplayMux)（作者 Henry Hsu，MIT 授權）的延伸開發版本。
+> 原專案負責把一台共用螢幕在兩台電腦之間切換；本專案在其基礎上，讓兩台主機自動協調彼此的接口、螢幕身分與設定，
+> 減少手動輸入。v0.1.6 以前的版本紀錄指向原專案。
+
+DisplayMuxAuto 是一款適用於 Windows 10／11 與 macOS 12+ 的桌面工具，讓多台電腦共用同一台螢幕時，可以直接從電腦切換螢幕輸入，不必伸手操作螢幕按鍵。
 
 它只控制你選定的共用螢幕，不會改變作業系統的螢幕排列，也不會切換其他工作螢幕。
 

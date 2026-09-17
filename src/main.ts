@@ -258,7 +258,7 @@ app.innerHTML = `
       <div class="brand-block">
         <div class="brand-header">
           <div class="brand-icon"><i data-lucide="monitor"></i></div>
-          <span class="brand-title">DisplayMux</span>
+          <span class="brand-title">DisplayMuxAuto</span>
         </div>
         <label class="language-picker">
           <i data-lucide="languages"></i>
@@ -443,6 +443,8 @@ app.innerHTML = `
             <article><span>03</span><div><h3>${t("help.autoTitle")}</h3><p>${t("help.autoBody")}</p></div></article>
             <article><span>04</span><div><h3>${t("help.adapterTitle")}</h3><p>${t("help.adapterBody")}</p></div></article>
           </div>
+
+          <p class="upstream-note">${t("help.upstream")}</p>
 
           <section class="release-history" aria-labelledby="release-history-title">
             <p class="section-kicker">RELEASE HISTORY</p><h2 id="release-history-title">${t("help.releaseHistoryTitle")}</h2>
@@ -2246,7 +2248,7 @@ async function checkForUpdates(manual: boolean): Promise<void> {
 }
 
 function showUpdateDialog(update: UpdateInfo): void {
-  setText("#update-title", `DisplayMux ${update.version ?? ""}`);
+  setText("#update-title", `DisplayMuxAuto ${update.version ?? ""}`);
   setText("#update-version", t("update.currentVersion", { version: update.currentVersion }));
   const notes = document.querySelector<HTMLElement>("#update-notes");
   if (notes) renderMarkdown(notes, update.notes?.trim() || t("update.noneNotes"));

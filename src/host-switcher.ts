@@ -39,7 +39,7 @@ interface OperationResult {
 type Row = { kind: "header"; monitorName: string } | { kind: "host"; monitorKey: string; host: HostOption };
 
 const root = document.querySelector<HTMLElement>("#host-switcher-app")!;
-if (!root) throw new Error("DisplayMux host switcher root was not found");
+if (!root) throw new Error("DisplayMuxAuto host switcher root was not found");
 
 let state: HostSwitcherState = { monitors: [] };
 let rows: Row[] = [];

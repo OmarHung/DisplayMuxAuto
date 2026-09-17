@@ -969,6 +969,18 @@ button.switch-all-host:disabled {
 
 .unsaved-note[hidden] { display: none; }
 
+/* Who this is built on, where someone reading the app would look for it. */
+.upstream-note {
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--card-bg);
+  color: var(--subtle);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .reset-section {
   margin-top: 22px;
 }
