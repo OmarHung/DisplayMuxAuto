@@ -88,7 +88,7 @@ function render(message?: { title: string; detail: string; error?: boolean }): v
     <main class="switcher-shell" aria-labelledby="switcher-title">
       <header class="switcher-header">
         <div>
-          <p class="eyebrow">DISPLAYMUX</p>
+          <p class="eyebrow">DISPLAYMUXAUTO</p>
           <h1 id="switcher-title">${t("switcher.title")}</h1>
           <p>${escapeHtml(headerLine)}</p>
         </div>
