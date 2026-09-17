@@ -1,7 +1,7 @@
 import "@fontsource-variable/manrope";
 import {
-  Activity, ArrowLeftRight, CircleHelp, Computer, createIcons, Download, KeyRound, Laptop,
-  ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Pencil, Github, Languages, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
+  Activity, AlertCircle, ArrowLeftRight, CircleHelp, Computer, createIcons, Download, KeyRound, Laptop, Link,
+  ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Pencil, Github, Languages, Monitor, MonitorDot, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
   ShieldCheck, SunMoon, Trash2, UserRound, Zap,
 } from "lucide";
 import { getVersion } from "@tauri-apps/api/app";
@@ -518,7 +518,7 @@ app.innerHTML = `
   <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
 `;
 
-const iconSet = { Activity, ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Pencil, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Monitor, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, SunMoon, Trash2, UserRound, Zap };
+const iconSet = { Activity, AlertCircle, ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Pencil, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Link, Monitor, MonitorDot, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, SunMoon, Trash2, UserRound, Zap };
 const refreshIcons = () => createIcons({ icons: iconSet });
 refreshIcons();
 
