@@ -34,7 +34,7 @@ use tokio::{sync::Mutex, time::sleep};
 static NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 static UI_LOCALE: AtomicU64 = AtomicU64::new(0);
 const MIN_SHARED_KEY_LENGTH: usize = 8;
-const DEFAULT_HOST_SWITCHER_SHORTCUT: &str = "CommandOrControl+Alt+Space";
+const DEFAULT_HOST_SWITCHER_SHORTCUT: &str = "CommandOrControl+Shift+Space";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UiLocale {
@@ -2101,6 +2101,15 @@ fn validate_host_switcher_shortcut(value: &str) -> Result<Shortcut, DisplayMuxEr
             .to_owned(),
         ));
     }
+    if is_system_shortcut(&shortcut) {
+        return Err(DisplayMuxError::Backend(
+            ui_text(
+                "這是作業系統保留的快捷鍵，按下時不會傳到這個程式，請改用其他組合",
+                "The operating system keeps this shortcut for itself, so pressing it never reaches this app. Choose another combination.",
+            )
+            .to_owned(),
+        ));
+    }
     if is_common_application_shortcut(&shortcut) {
         return Err(DisplayMuxError::Backend(
             ui_text(
@@ -2122,6 +2131,45 @@ fn platform_primary_shortcut_modifier() -> Modifiers {
     {
         Modifiers::CONTROL
     }
+}
+
+/// Shortcuts the operating system claims before any application sees them.
+///
+/// Registering one of these succeeds — the system simply wins the key
+/// afterwards — so there is nothing to detect at runtime and no error to
+/// report. The app believes it holds a shortcut that can never reach it, which
+/// is what a list like this exists to prevent.
+#[cfg(target_os = "macos")]
+fn is_system_shortcut(shortcut: &Shortcut) -> bool {
+    let cmd = Modifiers::SUPER;
+    let taken = [
+        (cmd, Code::Space),                            // Spotlight
+        (cmd | Modifiers::ALT, Code::Space),           // Finder search window
+        (cmd | Modifiers::CONTROL, Code::Space),       // Emoji and symbols
+        (cmd | Modifiers::ALT, Code::KeyD),            // hide or show the Dock
+        (cmd | Modifiers::ALT, Code::Escape),          // Force Quit
+        (cmd | Modifiers::CONTROL, Code::KeyF),        // enter full screen
+        (cmd | Modifiers::CONTROL, Code::KeyQ),        // lock screen
+        (cmd | Modifiers::CONTROL, Code::KeyD),        // look up a word
+        (cmd | Modifiers::SHIFT, Code::Digit3),        // screenshot
+        (cmd | Modifiers::SHIFT, Code::Digit4),
+        (cmd | Modifiers::SHIFT, Code::Digit5),
+    ];
+    taken
+        .iter()
+        .any(|(mods, key)| shortcut.mods == *mods && shortcut.key == *key)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_system_shortcut(shortcut: &Shortcut) -> bool {
+    let ctrl = Modifiers::CONTROL;
+    let taken = [
+        (ctrl | Modifiers::SHIFT, Code::Escape), // Task Manager
+        (ctrl | Modifiers::ALT, Code::Delete),   // secure attention sequence
+    ];
+    taken
+        .iter()
+        .any(|(mods, key)| shortcut.mods == *mods && shortcut.key == *key)
 }
 
 fn is_common_application_shortcut(shortcut: &Shortcut) -> bool {
@@ -4699,16 +4747,43 @@ pub fn run() -> anyhow::Result<()> {
                 )),
             });
             if let Some(runtime) = app.try_state::<AppRuntime>() {
-                let settings = read_settings_inner(&runtime).map_err(anyhow::Error::msg)?;
+                let mut settings = read_settings_inner(&runtime).map_err(anyhow::Error::msg)?;
                 if settings.host_switcher_enabled {
-                    match validate_host_switcher_shortcut(&settings.host_switcher_shortcut) {
-                        Ok(shortcut) => {
-                            if let Err(error) = app.global_shortcut().register(shortcut) {
-                                tracing::warn!(error = %error, "unable to register the saved host switcher shortcut");
+                    // A saved shortcut the system turns out to own can never
+                    // fire, and a warning in a log is not something the user
+                    // reads. Fall back to the default and save that, so the
+                    // switcher works and the settings page shows the
+                    // combination that is actually registered.
+                    let saved = validate_host_switcher_shortcut(&settings.host_switcher_shortcut);
+                    if let Err(error) = &saved {
+                        tracing::warn!(
+                            error = %error,
+                            shortcut = settings.host_switcher_shortcut,
+                            "saved host switcher shortcut cannot be used; falling back to the default"
+                        );
+                    }
+                    let shortcut = match saved {
+                        Ok(shortcut) => Some(shortcut),
+                        Err(_) => match validate_host_switcher_shortcut(
+                            DEFAULT_HOST_SWITCHER_SHORTCUT,
+                        ) {
+                            Ok(shortcut) => {
+                                settings.host_switcher_shortcut =
+                                    DEFAULT_HOST_SWITCHER_SHORTCUT.to_owned();
+                                if let Err(error) = store_settings(&runtime, settings.clone()) {
+                                    tracing::warn!(error = %error, "unable to save the replacement host switcher shortcut");
+                                }
+                                Some(shortcut)
                             }
-                        }
-                        Err(error) => {
-                            tracing::warn!(error = %error, "saved host switcher shortcut is invalid");
+                            Err(error) => {
+                                tracing::warn!(error = %error, "the default host switcher shortcut is invalid");
+                                None
+                            }
+                        },
+                    };
+                    if let Some(shortcut) = shortcut {
+                        if let Err(error) = app.global_shortcut().register(shortcut) {
+                            tracing::warn!(error = %error, "unable to register the host switcher shortcut");
                         }
                     }
                 }
@@ -4916,9 +4991,28 @@ mod tests {
         );
     }
 
+    /// The shipped default was Command+Option+Space, which macOS binds to its
+    /// Finder search window. Registering it succeeds and the key never
+    /// arrives, so the switcher looked broken rather than taken.
+    #[test]
+    fn host_switcher_shortcut_refuses_what_the_system_already_owns() {
+        #[cfg(target_os = "macos")]
+        {
+            assert!(validate_host_switcher_shortcut("CommandOrControl+Alt+Space").is_err());
+            assert!(validate_host_switcher_shortcut("CommandOrControl+Space").is_err());
+            assert!(validate_host_switcher_shortcut("CommandOrControl+Control+Space").is_err());
+            assert!(validate_host_switcher_shortcut("CommandOrControl+Alt+KeyD").is_err());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(validate_host_switcher_shortcut("CommandOrControl+Shift+Escape").is_err());
+        }
+        assert!(validate_host_switcher_shortcut(DEFAULT_HOST_SWITCHER_SHORTCUT).is_ok());
+    }
+
     #[test]
     fn host_switcher_shortcut_requires_a_non_shift_modifier() {
-        assert!(validate_host_switcher_shortcut("CommandOrControl+Alt+Space").is_ok());
+        assert!(validate_host_switcher_shortcut(DEFAULT_HOST_SWITCHER_SHORTCUT).is_ok());
         assert!(validate_host_switcher_shortcut("CommandOrControl+KeyK").is_ok());
         assert!(validate_host_switcher_shortcut("CommandOrControl+Shift+KeyA").is_ok());
         assert!(validate_host_switcher_shortcut("Control+Super+KeyC").is_ok());
