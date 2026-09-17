@@ -11,209 +11,267 @@ DisplayMuxAuto is a desktop utility for Windows 10/11 and macOS 12+ that lets mu
 
 It controls only the shared monitor you select. It does not change your operating system's display arrangement or switch any of your other work displays.
 
-## When DisplayMux Is Useful
+## When DisplayMuxAuto Is Useful
 
-For example, you may have:
+For example, when you have:
+- One or more shared monitors connected to two computers at once
+- Other dedicated displays that should not be switched (optional)
 
-- One shared monitor connected to two computers
-- Other dedicated monitors that do not need to be switched (optional)
+DisplayMuxAuto only switches the shared monitors you select. Every other display keeps its picture and its place in the arrangement.
+You can share more than one monitor; each host stores its own input port for each shared monitor separately.
 
-DisplayMux switches only the selected shared monitor. Your other displays keep their existing content and arrangement.
+## What It Does
 
-A shared monitor can also be used by multiple Windows PCs or Macs. DisplayMux saves the input port used by each host.
+**Detecting and setting ports**
 
-## What's New in v0.1.3
+- After you pick a shared monitor, the port this computer occupies is detected and saved for you.
+- Detection has a ceiling: a display reports the input it is showing, never which one the reader is plugged into. Every port field can therefore be set by hand.
+- Only the inputs a display declares are offered, minus the ports already assigned to other hosts.
+- When a display's inputs cannot be read, no guessed list is offered. The field says they have not been read and keeps whatever is already set.
+- Inputs are named plainly — VGA, DVI, DP, HDMI 1, HDMI 2, Type-C — with no VCP values on screen.
+- Inputs that are hard to tell apart can be given a note of your own, such as "USB-C".
+- Detection only reads from the display. It never cycles through ports, so nothing goes black in order to be discovered.
 
-- After you select the shared monitor, DisplayMux automatically detects and saves the input port currently used by this computer.
-- It reads the monitor's advertised inputs and lists only supported ports that have not already been assigned.
-- When you add another configured DisplayMux host, its port is filled in automatically if pairing succeeds and both computers use the same shared monitor.
-- Input menus now use familiar names: VGA, DVI, DP, HDMI 1, HDMI 2, and Type-C.
-- Technical VCP values are no longer shown in the standard user interface.
-- Input detection only reads monitor information. It does not cycle through ports, so detection does not cause the screen to go black.
+**What the two hosts work out between themselves**
+
+- Adding a host that is already set up fills in the port it occupies, when that can be established safely.
+- What one host learns is shared with the others: each host's port, the display's declared input list, input notes, host names and order, and display identity merges.
+- A notice that does not arrive is said again on the next scan, until it lands.
+
+**Switching**
+
+- Pick the target host in the switch centre. There is no switching mode to choose.
+- With several shared monitors, one action sends all of them to the same host.
+- A global shortcut can summon a small host picker even while the main window is hidden.
+
+**Also**
+
+- When one display reports different identities in different display modes, you can declare that they are the same display.
+- Reset comes in two scopes: displays only, or back to a fresh installation.
+- The interface is available in English and Traditional Chinese, in light and dark appearance.
 
 ## Screenshots
 
 ### Switch Center
 
-After setup, you can see the monitor input assigned to each computer and switch to a target host from Switch Center.
+Once set up, each computer's monitor input is visible at a glance and you can switch to the target host from here.
 
-![DisplayMux Switch Center showing HDMI 1 for the local PC and DP for the Mac](assets/screenshots/switch-center.en.png)
+![DisplayMuxAuto switch center showing this PC on HDMI 1 and a Mac on DP](assets/screenshots/switch-center.en.png)
 
 ### Display and Host Settings
 
-DisplayMux detects the local computer's port automatically. When you add a configured host, it also fills in that host's port after successful verification. The names, addresses, and monitor details shown below are anonymized demonstration data.
+DisplayMuxAuto detects the local port for you, and fills in a paired host's port once it has been verified. The names, addresses and display details shown are anonymized sample data.
 
-![DisplayMux display and host settings showing HDMI 1 for the local PC and DP for a paired host](assets/screenshots/monitor-and-host-settings.en.png)
+![DisplayMuxAuto display and host settings showing HDMI 1 locally and DP for a paired host](assets/screenshots/monitor-and-host-settings.en.png)
 
 ## Before You Begin
 
-Make sure that:
+Check that:
 
 1. The shared monitor supports DDC/CI.
-2. DDC/CI is enabled in the monitor's on-screen display (OSD) settings.
-3. DisplayMux is installed and running on every computer that will participate in switching.
+2. DDC/CI is enabled in the monitor's OSD menu.
+3. Every computer taking part has DisplayMuxAuto installed and running.
 4. The computers you want to pair are on the same private local network.
-5. Every computer uses the same pairing password of at least eight characters.
+5. Every computer has exactly the same pairing password, at least 8 characters long.
 
-A working video signal does not necessarily mean that the cable, adapter, or dock also forwards DDC/CI. If DisplayMux cannot detect the monitor, see [Connection and Compatibility Limitations](#connection-and-compatibility-limitations).
+A monitor that shows a picture is not necessarily passing DDC/CI through the cable, adapter or dock you are using. If no monitor is detected, start with [Connection and Compatibility Limitations](#connection-and-compatibility-limitations) below.
 
 ## Quick Setup
 
 ### 1. Select the Shared Monitor
 
-Open the Display and Host Settings page and refresh the monitor list:
+Open the Display and Host settings page and refresh the monitor list:
 
-- If only one controllable external monitor is available, DisplayMux selects it automatically.
-- If multiple controllable monitors are available, select the one you want to share.
+- On first setup, if there is exactly one controllable external monitor, DisplayMuxAuto selects it for you.
+- Otherwise choose by hand. You can select more than one shared monitor.
+- Once you have made a choice — including removing a monitor from sharing, or running a reset — nothing is selected for you again, and a monitor you removed stays removed.
 
-DisplayMux identifies the target by its manufacturer, model, and serial number. It does not guess based on the **primary display** setting or display arrangement.
+DisplayMuxAuto locks on to the monitor's manufacturer, model and serial number. It never guesses from **primary display** or display arrangement order.
 
-### 2. Confirm the Local Port
+### 2. Confirm This Computer's Port
 
-After you select a monitor, DisplayMux immediately reads its current input and automatically saves the port used by this computer. Manual setup is normally unnecessary.
+After you select a monitor, DisplayMuxAuto reads its current input right away and saves the port this computer uses.
 
-The interface displays familiar names such as VGA, DVI, DP, HDMI, and Type-C, so you do not need to look up technical codes.
+What detection reads is which input the display is showing. If this computer is not on that display at the time, there is nothing to detect — choose the port you actually plugged into from the list. A port set by hand is shared with the other hosts exactly like a detected one.
+
+Ports appear as VGA, DVI, DP, HDMI or Type-C, so there are no technical codes to look up.
 
 ### 3. Set a Pairing Password
 
-Enter exactly the same pairing password on every computer. The password must contain at least eight characters and is used to authenticate control requests on the local network, including requests associated with waking a computer.
+Enter exactly the same pairing password on every computer, at least 8 characters long.
+
+The password signs and verifies the requests hosts make of each other on the local network — asking for status, asking another host to perform a switch, and sending a wake. Hosts with different passwords cannot control each other.
 
 ### 4. Add Other Hosts
 
-Find another computer under Nearby DisplayMux Hosts, then select Add.
+Find the other computer under "Add other hosts on this network" and press Add.
 
-If that computer has already configured its shared monitor, DisplayMux automatically fills in its port when all of the following conditions are met:
+If that computer has already selected its shared monitor, DisplayMuxAuto fills in the port it uses when all of the following hold:
 
-- The pairing password is verified successfully
-- Both computers selected exactly the same monitor identity
-- The other computer's port is a supported input on this monitor
-- The port has not been assigned to the local computer or another host
-- Both computers are running v0.1.3 or later
+- The pairing password verifies
+- Both computers identify the same monitor
+- The other computer's port is an input this monitor can use
+- That port is not already assigned to this computer or another host
 
-If DisplayMux cannot verify the port safely, it leaves the manual selection in place instead of guessing where the other computer is connected.
+When this cannot be established safely, the choice is left to you. DisplayMuxAuto does not guess which port another computer is plugged into.
+
+Syncing between hosts — ports, input lists, host names, input notes and identity merges — needs v0.1.11 or later on both sides. Switching still works with an older host, but none of that information travels.
 
 ### 5. Save and Repeat on the Other Computers
 
-Save the settings, then repeat these steps on every computer that participates in switching. Enabling Start at Login is recommended so other hosts can discover and wake this computer and ask it to assist with switching.
+Most settings are saved as you change them: which monitors are shared, each host's input port, input notes, host names and order, and display identity merges.
+
+These five wait for the Save button, and a note with a cancel appears at the bottom of the form while one of them is waiting:
+
+- Pairing password
+- Wake wait in seconds
+- Start at login
+- Check for updates at startup
+- The global host switcher and its shortcut
+
+Repeat the same steps on every computer taking part. Turning on "Start at login" is recommended, so the other hosts can find, wake and ask this computer to perform a switch.
 
 ## Everyday Use
 
-After setup, choose the target computer in Switch Center.
+Once set up, pick the target host in the switch centre. With several shared monitors, "All displays" sends every one of them to the same host in a single action.
 
-When switching to a remote host, DisplayMux:
+When switching to a remote host, DisplayMuxAuto:
 
-1. Attempts to wake the target host using Wake-on-LAN.
-2. Checks whether the target host's DisplayMux Agent is ready.
-3. First attempts to switch the shared monitor through DDC/CI from the current computer.
-4. If the local DDC/CI path fails, asks the verified remote host to perform the switch.
+1. Attempts to wake the target host over Wake-on-LAN.
+2. Checks whether the target host's DisplayMuxAuto Agent is ready.
+3. Prefers switching the shared monitor over DDC/CI from this computer.
+4. Falls back to asking a verified remote host to perform the switch if the local DDC/CI path fails.
 
-If the network Agent is temporarily unavailable, DisplayMux still attempts to use local DDC/CI. The monitor may briefly show a black screen if the target computer is not yet producing a video signal.
+If the network Agent is temporarily unreachable, DisplayMuxAuto still tries local DDC/CI. If the target computer is not yet producing a picture, the monitor may go briefly black.
 
-On Windows, closing or minimizing the window leaves DisplayMux running in the system tray. The application exits only when you select Exit DisplayMux from the tray menu.
+On Windows, closing or minimizing the window leaves the app running in the system tray. Only "Quit DisplayMuxAuto" from the tray actually exits.
+
+### Global Host Switcher
+
+With "Global host switcher" enabled in settings, a shortcut (`Ctrl/Cmd + Alt + Space` by default) summons a small window for handing the shared monitor to another host, without returning to the main window first. You can record your own shortcut; the app checks it against common application shortcuts before accepting it.
+
+## One Display, Different Identities
+
+Some displays report a different identity when they change display mode — from 4K to 1080p, say — so the list makes it look as though a different monitor arrived, and the sharing and port settings that belonged to it appear to vanish.
+
+When that happens, the settings page lists the identity that belongs to no shared display, and you can merge it into one already in the list: this is the same display. From then on the two identities count as one monitor, switching and port settings carry over, and the declaration is shared with paired hosts. A merge can be undone.
+
+A merge only decides which identities count as the same display. It does not relax the safety check on switching: before any DDC/CI command goes out, the display's identity must still match exactly.
+
+## Reset
+
+Two scopes are offered at the bottom of the settings page, each needing a second press to confirm:
+
+- **Reset display settings** — clears shared monitors, identity merges and input notes. Paired hosts and the pairing password are kept.
+- **Reset everything** — back to a fresh installation, including paired hosts and the pairing password. This computer's host identity is kept, so there is nothing to clear on the other computer.
+
+A reset cannot be undone. Nothing is selected for sharing again afterwards.
 
 ## Input Port List
 
-DisplayMux prefers the input list advertised by the monitor and excludes ports that have already been assigned.
+DisplayMuxAuto uses the input list the display itself provides, minus the ports already assigned.
 
-If the monitor, hub, dock, or adapter cannot provide that list, the interface falls back to a compact set of common options:
+If the display, hub, dock or adapter cannot provide one, no guessed list is offered. The field says the display's inputs have not been read and keeps the current setting. A generic list describes no particular display, and on a given one every entry may be wrong — and a wrong port aims the switch at an input with nothing on it.
 
-- VGA
-- DVI
-- DP
-- HDMI 1
-- HDMI 2
-- Type-C
+If another paired host can read that display, it shares what it found and the field becomes usable again.
 
-Some monitors use vendor-specific values for Type-C or other inputs. DisplayMux retains the raw value reported by the monitor for internal switching, but displays Other Input when the name cannot be identified reliably.
+Some displays use vendor-specific values for Type-C or other inputs. DisplayMuxAuto keeps the raw value the display reported for switching, but shows "Other input" when it cannot name it with confidence, rather than labelling it wrongly. You can give such an input a note of your own.
 
-After changing the monitor, cable, dock, or physical connection port, select the shared monitor again and review the configuration on every host.
+After changing a monitor, cable, dock or the port you are actually plugged into, select the shared monitor again and check each host's settings.
 
 ## Monitor Not Found or Unable to Switch
 
-Check the following in order:
+Check, in order:
 
-1. DDC/CI is enabled in the monitor's OSD settings.
-2. You selected the external shared monitor rather than a laptop's built-in display.
-3. Test a direct cable connection between the monitor and computer.
-4. Temporarily remove any KVM, adapter, or dock to identify whether an intermediate device is causing the problem.
-5. Refresh the DisplayMux monitor and host lists.
-6. Confirm that both computers use the same pairing password and have correct system clocks.
-7. Confirm that the firewall allows mDNS and the DisplayMux Agent on private networks.
+1. DDC/CI is enabled in the monitor's OSD.
+2. The selected monitor is the external shared one, not a laptop's built-in panel.
+3. Test with a direct cable between the monitor and the computer.
+4. Temporarily remove any KVM, adapter or dock to see whether the problem sits in between.
+5. Refresh DisplayMuxAuto's monitor and host lists.
+6. Confirm both computers use the same pairing password and that their clocks are correct.
+7. Confirm the firewall allows mDNS and the DisplayMuxAuto Agent on private networks.
 
-If a direct connection works but a dock provides video only, the dock or its driver is probably not forwarding DDC/CI. Pairing again cannot restore a hardware control path that is not present.
+If a direct connection can control the monitor but a dock only carries the picture, the dock or its driver is not passing DDC/CI through. Pairing again cannot restore a hardware channel that is not there.
 
 ## Connection and Compatibility Limitations
 
 ### Windows
 
-On Windows, DisplayMux uses the system DDC/CI interface to enumerate and control physical monitors. Only monitors whose current input can actually be read appear in the selection list.
+Windows enumerates and controls physical monitors through the system DDC/CI interface. Only monitors whose current input can actually be read appear in the selectable list.
 
 ### macOS
 
-DDC/CI availability on macOS depends on the Mac model, macOS version, port, cable, adapter, and whether a dock forwards the complete control signal.
+Whether DDC/CI works on macOS depends on the Mac model, the macOS version, the port, and whether the cable, adapter or dock passes the signal through intact.
 
-Connections that are more likely to work include:
+Connections with a better chance of working:
 
-- A direct connection to the built-in HDMI port on a Mac mini
-- A direct Thunderbolt-to-DisplayPort connection
-- A Thunderbolt-to-HDMI connection
+- Mac mini built-in HDMI, connected directly
+- Thunderbolt to DisplayPort, connected directly
+- Thunderbolt to HDMI
 
-The following devices may carry video without exposing DDC/CI to third-party applications:
+These may carry the picture without offering DDC/CI to third-party software:
 
 - Some MST docks
 - DisplayLink docks
-- Silicon Motion InstantView, SM76x, or SM77x devices
-- HDMI or USB-C adapters that do not fully forward DDC
+- Silicon Motion InstantView / SM76x / SM77x devices
+- HDMI or USB-C adapters that do not pass DDC through
 
-The ability to adjust brightness through DisplayLink or a dock vendor's own software does not mean that DisplayMux can access the physical monitor's control channel.
+A DisplayLink or dock utility being able to change brightness does not mean DisplayMuxAuto can reach the physical monitor's control channel.
 
 ## Wake-on-LAN and Networking
 
-- mDNS uses `5353/UDP` to discover DisplayMux hosts on the same local network.
-- The DisplayMux Agent uses `47653/TCP` by default.
-- On macOS, you can enable Wake for network access.
-- On Windows, you can enable Wake-on-LAN in the network adapter and BIOS/UEFI settings.
-- Wake behavior after a complete shutdown depends on the computer's hardware, firmware, and operating system and cannot be guaranteed by DisplayMux.
+- mDNS uses `5353/UDP` to find DisplayMuxAuto hosts on the same local network.
+- The DisplayMuxAuto Agent uses `47653/TCP` by default.
+- On macOS, enable "Wake for network access".
+- On Windows, enable Wake-on-LAN in the network adapter and in BIOS/UEFI.
+- Whether a fully powered-off computer can be woken depends on its hardware, firmware and operating system settings. DisplayMuxAuto cannot guarantee it.
 
-IP addresses, MAC addresses, and Agent ports are discovered and saved automatically. Search again to update the information after a DHCP address changes.
+IP addresses, MAC addresses and the Agent port are picked up and stored while searching for hosts. After a DHCP address changes, searching again updates them; a paired host that has moved is only followed once an authenticated connection confirms it.
 
 ## Security and Privacy
 
-- DisplayMux controls only the unique target whose complete monitor identity matches the saved configuration.
-- The operation stops if the target is missing, required identity information is unavailable, or multiple matching monitors are found.
-- Paired hosts authenticate control requests using HMAC-SHA256, time limits, and nonce replay protection.
-- Pairing passwords are not written to normal operation logs.
-- Wake-on-LAN packets are used only for waking and do not authorize a monitor switch by themselves.
-- mDNS broadcasts only the information needed for host discovery on the local network.
-- Update checks do not transmit pairing passwords, monitor settings, computer names, private network addresses, or monitor identity information.
+- DisplayMuxAuto only controls the single target whose full monitor identity matches.
+- The operation stops if the target is missing, the identity is incomplete, or several matching monitors appear at once.
+- Requests between paired hosts are verified with HMAC-SHA256, a time limit and nonce replay protection.
+- The pairing password is never written to ordinary operation logs.
+- Wake-on-LAN packets only wake a computer. They do not authorize a switch.
+- mDNS only broadcasts what host discovery needs, on the local network.
+- Update checks send no pairing password, monitor settings, computer name, local address or monitor identity.
 
 ## Installation and Updates
 
-Download the Windows installer or macOS Universal DMG from a trusted DisplayMux GitHub Release.
+Download the Windows installer or the macOS Universal DMG from a trusted DisplayMuxAuto GitHub Release.
 
-DisplayMux can check GitHub Releases for newer versions, but it does not download or install an update without confirmation. After the user chooses to install an update, the application verifies the update package signature first.
+DisplayMuxAuto can check GitHub Releases for a newer version, but never downloads or installs one without confirmation. Once you choose to install, the update package's signature is verified first.
+
+### Upgrading from Before the Rename
+
+The app was renamed from DisplayMux to DisplayMuxAuto in v0.1.11. Your settings survive — the identifier they are stored under is unchanged — but the installation itself differs by platform:
+
+- **Windows**: the installer removes the old DisplayMux install and its autostart entry before installing.
+- **macOS**: the updater replaces the app in place, so there is no second copy, but the file is still named `DisplayMux.app`. Rename it in Applications if you would like.
 
 ### macOS Gatekeeper
 
-The current macOS DMG uses an ad-hoc signature and has not yet been signed and notarized with an Apple Developer ID. Gatekeeper may require manual approval the first time you launch DisplayMux:
+The macOS DMG is currently ad-hoc signed, not signed and notarized with an Apple Developer ID. On first launch, Gatekeeper may ask for manual approval:
 
-1. Drag `DisplayMux.app` into `/Applications` and try to open it once.
-2. Open System Settings > Privacy & Security.
-3. Find DisplayMux in the Security section and select Open Anyway.
-4. Authenticate and confirm again.
+1. Drag `DisplayMuxAuto.app` to `/Applications` and try opening it once.
+2. Open System Settings → Privacy & Security.
+3. Find DisplayMuxAuto under Security and press "Open Anyway".
+4. Authenticate and confirm.
 
-Allow the application to run only after confirming that it came from a trusted Release for this project. See Apple's [Open apps safely on your Mac](https://support.apple.com/102445) for more information.
+Only allow it when you are sure the app came from this project's trusted release. See Apple's [Open apps safely on your Mac](https://support.apple.com/102445) for details.
 
 ## Development and Building
 
-Development requirements: Rust 1.85+, Node.js 22+, and pnpm 10+. Building on macOS also requires the Xcode Command Line Tools.
+Requirements: Rust 1.85+, Node.js 22+, pnpm 10+. Building on macOS also needs the Xcode Command Line Tools.
 
 ```powershell
 pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-Run the complete verification suite:
+Full verification:
 
 ```powershell
 pnpm build
@@ -222,31 +280,31 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Create release installers:
+Production bundles:
 
 ```powershell
 pnpm tauri build
 ```
 
-On macOS, use the dedicated script to create an ad-hoc-signed Universal DMG:
+On macOS, a dedicated script builds an ad-hoc signed Universal DMG:
 
 ```bash
 ./scripts/build-macos-dmg.sh
 ```
 
-Artifacts are written to `target/release/bundle/`. Windows produces an NSIS installer by default; macOS produces an `.app` bundle and a `.dmg`.
+Artifacts land in `target/release/bundle/`. Windows produces an NSIS installer by default; macOS produces `.app` and `.dmg`.
 
 ### CLI Diagnostics
 
-The CLI is intended for developers diagnosing monitor identity and switching. It is not required for normal use:
+The CLI is Windows-only and is meant for developers diagnosing monitor identification and switching. It is not part of normal use:
 
 ```powershell
 cargo run -p displaymux-cli -- list
 cargo run -p displaymux-cli -- switch <manufacturer> <product> <serial|-> <input> --dry-run
 ```
 
-Remove `--dry-run` to perform an actual switch only after confirming that the target is correct.
+Only drop `--dry-run` once you have confirmed the target is correct.
 
 ## License
 
-DisplayMux is available under the [MIT License](LICENSE).
+DisplayMuxAuto is released under the [MIT License](LICENSE), keeping the original DisplayMux copyright notice.
