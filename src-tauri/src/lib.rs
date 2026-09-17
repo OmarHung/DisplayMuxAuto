@@ -4075,8 +4075,35 @@ fn persist_settings(path: &Path, settings: &AppSettings) -> Result<(), DisplayMu
     }
     let serialized = serde_json::to_vec_pretty(settings)
         .map_err(|error| DisplayMuxError::Backend(error.to_string()))?;
-    fs::write(path, serialized).map_err(|error| DisplayMuxError::Backend(error.to_string()))
+    fs::write(path, serialized).map_err(|error| DisplayMuxError::Backend(error.to_string()))?;
+    restrict_to_owner(path);
+    Ok(())
 }
+
+/// Keeps the settings file readable only by the account that owns it.
+///
+/// It holds the pairing password in the clear, and that password is the whole
+/// of the agent's authentication — anyone who reads it can direct this
+/// computer's displays from anywhere on the network. Written under the default
+/// mask it lands world-readable, so on a machine with more than one account
+/// the others could simply open it.
+///
+/// Best effort on purpose: a file that cannot be tightened is still a file the
+/// user needs, so this reports rather than refuses.
+#[cfg(unix)]
+fn restrict_to_owner(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Err(error) = fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
+        tracing::warn!(error = %error, "unable to restrict the settings file to this user");
+    }
+}
+
+/// Windows puts the file under the user's own AppData, which is already denied
+/// to other accounts by its inherited ACL, and rewriting that ACL by hand is
+/// more likely to lock the user out than to help.
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &Path) {}
 
 fn next_nonce() -> String {
     let now = SystemTime::now()
@@ -4981,6 +5008,24 @@ mod tests {
     /// The shipped default was Command+Option+Space, which macOS binds to its
     /// Finder search window. Registering it succeeds and the key never
     /// arrives, so the switcher looked broken rather than taken.
+    /// The file holds the pairing password in the clear, and that password is
+    /// the whole of the agent's authentication.
+    #[cfg(unix)]
+    #[test]
+    fn the_settings_file_is_not_left_readable_by_other_accounts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory =
+            std::env::temp_dir().join(format!("displaymux-perms-{}", std::process::id()));
+        let path = directory.join("settings.json");
+        persist_settings(&path, &AppSettings::default()).unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+
+        fs::remove_dir_all(&directory).ok();
+        assert_eq!(mode, 0o600, "settings were written as {mode:o}");
+    }
+
     #[test]
     fn host_switcher_shortcut_refuses_what_the_system_already_owns() {
         #[cfg(target_os = "macos")]
