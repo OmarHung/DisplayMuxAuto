@@ -3870,7 +3870,26 @@ fn refresh_selected_input_data<C: MonitorControl>(
     selected.supported_inputs = None;
     selected.vendor_indexed_inputs = false;
     let current = controller.read_input(&monitor.id)?;
-    selected.local_input = Some(current);
+    // VCP 0x60 reports the input the display is *showing*, not the one this
+    // host occupies, so a host that is off screen reads whoever is on screen.
+    // When the reading contradicts the connector this host is plugged into, it
+    // is demonstrably not this host's port: leave it unset rather than store a
+    // port that is known to be wrong and let a switch act on it.
+    let contradicts_connection = monitor
+        .connection
+        .as_ref()
+        .and_then(|connection| connection.sink_interface)
+        .and_then(|sink| displaymux_core::input_matches_sink(sink, current))
+        == Some(false);
+    if contradicts_connection {
+        tracing::info!(
+            monitor_id = monitor.id.as_str(),
+            input = current.value(),
+            "read input contradicts this host's connector; leaving the port unset"
+        );
+    } else {
+        selected.local_input = Some(current);
+    }
     let advertised = match controller.supported_inputs(&monitor.id) {
         Ok(inputs) if !inputs.is_empty() => Some(inputs),
         Ok(_) => None,
