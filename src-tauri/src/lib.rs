@@ -715,6 +715,15 @@ async fn select_peer(
         })?;
     let mut settings = read_settings(&state)?;
     upsert_discovered_peer(&mut settings, &peer);
+    // A host just paired has been told none of it, whatever was said before it
+    // existed. Forgetting what has been announced makes the next scan tell it
+    // everything this computer knows.
+    if let Ok(mut announced) = state.announced_inputs.lock() {
+        announced.clear();
+    }
+    if let Ok(mut announced) = state.announced_input_lists.lock() {
+        announced.clear();
+    }
     let route = settings
         .peers
         .iter()
@@ -2746,12 +2755,17 @@ fn announce_active_input(
 
 /// Sends `action` to every paired host without waiting. Hosts that are
 /// offline or run an agent predating the action are only logged.
-fn broadcast_to_peers(state: &AppRuntime, action: &AgentAction) {
+/// Sends a notice to every paired host. Returns whether there was anyone to
+/// send it to, so a caller that remembers what it has announced does not
+/// remember announcing something to nobody — displays are usually chosen
+/// before the first host is paired, and that reading would otherwise be
+/// recorded as told and never repeated.
+fn broadcast_to_peers(state: &AppRuntime, action: &AgentAction) -> bool {
     let Ok(settings) = read_settings(state) else {
-        return;
+        return false;
     };
-    if !has_valid_shared_key(&settings.shared_key) {
-        return;
+    if !has_valid_shared_key(&settings.shared_key) || settings.peers.is_empty() {
+        return false;
     }
     let settings = Arc::new(settings);
     for index in 0..settings.peers.len() {
@@ -2780,6 +2794,7 @@ fn broadcast_to_peers(state: &AppRuntime, action: &AgentAction) {
             }
         });
     }
+    true
 }
 
 /// Frontend event telling the dashboard and host switcher to re-read the order.
@@ -3707,17 +3722,20 @@ fn announce_discovered_inputs(state: &AppRuntime, settings: &AppSettings) {
         return;
     };
     for (fingerprint, inputs, vendor_indexed) in discovered {
-        if !announced.insert(monitor_key(&fingerprint)) {
+        let key = monitor_key(&fingerprint);
+        if announced.contains(&key) {
             continue;
         }
-        broadcast_to_peers(
+        if broadcast_to_peers(
             state,
             &AgentAction::DisplayInputsDiscovered {
                 monitor: fingerprint,
                 inputs,
                 vendor_indexed,
             },
-        );
+        ) {
+            announced.insert(key);
+        }
     }
 }
 
@@ -3740,15 +3758,16 @@ fn announce_confirmed_local_inputs(state: &AppRuntime, settings: &AppSettings) {
         if announced.get(&key) == Some(&input) {
             continue;
         }
-        announced.insert(key, input);
-        broadcast_to_peers(
+        if broadcast_to_peers(
             state,
             &AgentAction::LocalInputConfirmed {
                 host_id: host_id.clone(),
                 monitor: fingerprint,
                 input,
             },
-        );
+        ) {
+            announced.insert(key, input);
+        }
     }
 }
 
