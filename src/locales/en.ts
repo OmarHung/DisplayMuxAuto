@@ -9,7 +9,7 @@ const en = {
   "language.english": "English",
   "language.traditionalChinese": "Traditional Chinese",
   "theme.label": "Appearance",
-  "theme.system": "System appearance",
+  "theme.system": "Follow system",
   "theme.light": "Light",
   "theme.dark": "Dark",
   "page.dashboard": "Shared Display Switch Center",

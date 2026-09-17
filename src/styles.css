@@ -148,6 +148,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   font-weight: 700;
   cursor: pointer;
 }
+/* A native select clips rather than ellipsises, so a long option loses its
+   last letter and reads like a typo. */
+.language-picker select { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .language-picker select option { color: #17211e; background: #ffffff; }
 .language-picker .language-chevron {
   position: absolute;
