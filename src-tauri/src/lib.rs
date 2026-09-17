@@ -4359,9 +4359,13 @@ fn refresh_selected_input_data<C: MonitorControl>(
     selected: &mut SelectedMonitor,
 ) -> Result<(), DisplayMuxError> {
     // Reading VCP 0x60 is non-disruptive. Never write or cycle ports for discovery.
-    selected.local_input = None;
-    selected.supported_inputs = None;
-    selected.vendor_indexed_inputs = false;
+    //
+    // Nothing already stored is cleared on the way in. A display answers the
+    // host it is showing and no other, so a read failing here is ordinary —
+    // and what is stored may be the port the user typed in precisely because
+    // this read cannot reach them. Wiping first meant one unreadable moment
+    // took the port with it, then put it back on whichever later scan
+    // succeeded: a value that came and went for no reason the user could see.
     let current = controller.read_input(&monitor.id)?;
     if reading_is_this_host_port(monitor, current) {
         selected.local_input = Some(current);
@@ -4378,11 +4382,15 @@ fn refresh_selected_input_data<C: MonitorControl>(
             None
         }
     };
+    // Likewise for the input list: unreadable capabilities are not a reason to
+    // discard a list, which may have come from the paired host that could read
+    // this display when this one could not.
     let Some(advertised) = advertised else {
         return Ok(());
     };
     if advertised.contains(&current) {
         selected.supported_inputs = Some(advertised);
+        selected.vendor_indexed_inputs = false;
         return Ok(());
     }
 
@@ -5339,6 +5347,67 @@ mod tests {
         ) -> Result<(), DisplayMuxError> {
             unreachable!("selection tests never write an input")
         }
+    }
+
+    /// A display answers the host it is showing and no other, so this read
+    /// failing is ordinary — and what it would discard may be the port the
+    /// user set by hand because the read cannot reach them.
+    struct UnreadableController;
+
+    impl MonitorControl for UnreadableController {
+        fn enumerate(&self) -> Result<Vec<MonitorDescriptor>, DisplayMuxError> {
+            Ok(Vec::new())
+        }
+
+        fn read_input(
+            &self,
+            _monitor: &displaymux_core::MonitorId,
+        ) -> Result<DisplayInput, DisplayMuxError> {
+            Err(DisplayMuxError::Backend("DDC/CI unavailable".to_owned()))
+        }
+
+        fn supported_inputs(
+            &self,
+            _monitor: &displaymux_core::MonitorId,
+        ) -> Result<Vec<DisplayInput>, DisplayMuxError> {
+            Err(DisplayMuxError::Backend("DDC/CI unavailable".to_owned()))
+        }
+
+        fn input_value_maximum(
+            &self,
+            _monitor: &displaymux_core::MonitorId,
+        ) -> Result<Option<u32>, DisplayMuxError> {
+            Err(DisplayMuxError::Backend("DDC/CI unavailable".to_owned()))
+        }
+
+        fn write_input(
+            &self,
+            _monitor: &displaymux_core::MonitorId,
+            _input: DisplayInput,
+        ) -> Result<(), DisplayMuxError> {
+            unreachable!("selection tests never write an input")
+        }
+    }
+
+    #[test]
+    fn a_display_that_cannot_be_read_keeps_the_port_already_stored() {
+        let external = monitor("external");
+        let mut selected = SelectedMonitor::from(&external);
+        selected.local_input = Some(DisplayInput::new(0x11).unwrap());
+        selected.supported_inputs = Some(vec![DisplayInput::new(0x11).unwrap()]);
+
+        let outcome = refresh_selected_input_data(&UnreadableController, &external, &mut selected);
+
+        assert!(outcome.is_err(), "an unreadable display should report so");
+        assert_eq!(
+            selected.local_input.map(|input| input.value()),
+            Some(0x11),
+            "a stored port was discarded because one read failed"
+        );
+        assert!(
+            selected.supported_inputs.is_some(),
+            "a stored input list was discarded because one read failed"
+        );
     }
 
     #[test]
