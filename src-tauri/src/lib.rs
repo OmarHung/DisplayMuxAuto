@@ -1688,8 +1688,17 @@ async fn switch_host(
     app: AppHandle,
 ) -> Result<OperationResult, String> {
     let result = run_host_switch(monitor_id, target_id, on_event, &state).await;
-    if let Err(message) = &result {
-        report_failure_if_allowed(&app, message);
+    match &result {
+        // Every window shows which host is active, and only the one that asked
+        // for this switch knows it happened. The host switcher is one of them:
+        // a switch made from it left the main window on the old host until the
+        // next scan or a manual refresh.
+        Ok(_) => {
+            if let Err(error) = app.emit(ACTIVE_ROUTE_CHANGED_EVENT, ()) {
+                tracing::warn!(error = %error, "unable to notify windows of a switch");
+            }
+        }
+        Err(message) => report_failure_if_allowed(&app, message),
     }
     result
 }
