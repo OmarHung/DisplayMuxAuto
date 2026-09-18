@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hide-host-switcher"
+description = "Enables the hide_host_switcher command without any pre-configured scope."
+commands.allow = ["hide_host_switcher"]
+
+[[permission]]
+identifier = "deny-hide-host-switcher"
+description = "Denies the hide_host_switcher command without any pre-configured scope."
+commands.deny = ["hide_host_switcher"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-switch-host"
+description = "Enables the switch_host command without any pre-configured scope."
+commands.allow = ["switch_host"]
+
+[[permission]]
+identifier = "deny-switch-host"
+description = "Denies the switch_host command without any pre-configured scope."
+commands.deny = ["switch_host"]

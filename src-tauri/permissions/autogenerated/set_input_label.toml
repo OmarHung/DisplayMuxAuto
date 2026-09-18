@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-input-label"
+description = "Enables the set_input_label command without any pre-configured scope."
+commands.allow = ["set_input_label"]
+
+[[permission]]
+identifier = "deny-set-input-label"
+description = "Denies the set_input_label command without any pre-configured scope."
+commands.deny = ["set_input_label"]

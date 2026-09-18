@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-remove-shared-monitor"
+description = "Enables the remove_shared_monitor command without any pre-configured scope."
+commands.allow = ["remove_shared_monitor"]
+
+[[permission]]
+identifier = "deny-remove-shared-monitor"
+description = "Denies the remove_shared_monitor command without any pre-configured scope."
+commands.deny = ["remove_shared_monitor"]

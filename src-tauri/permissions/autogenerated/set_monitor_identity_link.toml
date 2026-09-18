@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-monitor-identity-link"
+description = "Enables the set_monitor_identity_link command without any pre-configured scope."
+commands.allow = ["set_monitor_identity_link"]
+
+[[permission]]
+identifier = "deny-set-monitor-identity-link"
+description = "Denies the set_monitor_identity_link command without any pre-configured scope."
+commands.deny = ["set_monitor_identity_link"]

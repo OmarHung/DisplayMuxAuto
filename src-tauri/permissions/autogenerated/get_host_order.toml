@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-host-order"
+description = "Enables the get_host_order command without any pre-configured scope."
+commands.allow = ["get_host_order"]
+
+[[permission]]
+identifier = "deny-get-host-order"
+description = "Denies the get_host_order command without any pre-configured scope."
+commands.deny = ["get_host_order"]

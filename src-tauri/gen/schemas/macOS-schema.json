@@ -345,6 +345,414 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the add_shared_monitor command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-add-shared-monitor",
+          "markdownDescription": "Enables the add_shared_monitor command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the check_for_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-check-for-update",
+          "markdownDescription": "Enables the check_for_update command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the check_host_switcher_shortcut command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-check-host-switcher-shortcut",
+          "markdownDescription": "Enables the check_host_switcher_shortcut command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the complete_onboarding command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-complete-onboarding",
+          "markdownDescription": "Enables the complete_onboarding command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the diagnostics_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-diagnostics-status",
+          "markdownDescription": "Enables the diagnostics_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the discover_peers command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-discover-peers",
+          "markdownDescription": "Enables the discover_peers command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the exchange_host_layout command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-exchange-host-layout",
+          "markdownDescription": "Enables the exchange_host_layout command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_dashboard_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-dashboard-state",
+          "markdownDescription": "Enables the get_dashboard_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_host_names command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-host-names",
+          "markdownDescription": "Enables the get_host_names command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_host_order command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-host-order",
+          "markdownDescription": "Enables the get_host_order command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_host_switcher_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-host-switcher-state",
+          "markdownDescription": "Enables the get_host_switcher_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_input_options command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-input-options",
+          "markdownDescription": "Enables the get_input_options command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-settings",
+          "markdownDescription": "Enables the get_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the hide_host_switcher command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-hide-host-switcher",
+          "markdownDescription": "Enables the hide_host_switcher command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the install_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-install-update",
+          "markdownDescription": "Enables the install_update command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the prepare_diagnostic_report command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-prepare-diagnostic-report",
+          "markdownDescription": "Enables the prepare_diagnostic_report command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the probe_peer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-probe-peer",
+          "markdownDescription": "Enables the probe_peer command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_peer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-peer",
+          "markdownDescription": "Enables the remove_peer command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_shared_monitor command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-shared-monitor",
+          "markdownDescription": "Enables the remove_shared_monitor command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reset_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-reset-settings",
+          "markdownDescription": "Enables the reset_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_diagnostic_report command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-diagnostic-report",
+          "markdownDescription": "Enables the save_diagnostic_report command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-settings",
+          "markdownDescription": "Enables the save_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the select_peer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-select-peer",
+          "markdownDescription": "Enables the select_peer command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the send_diagnostic_report command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-send-diagnostic-report",
+          "markdownDescription": "Enables the send_diagnostic_report command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_diagnostics_consent command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-diagnostics-consent",
+          "markdownDescription": "Enables the set_diagnostics_consent command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_host_name command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-host-name",
+          "markdownDescription": "Enables the set_host_name command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_host_order command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-host-order",
+          "markdownDescription": "Enables the set_host_order command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_input_label command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-input-label",
+          "markdownDescription": "Enables the set_input_label command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_local_input command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-local-input",
+          "markdownDescription": "Enables the set_local_input command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_locale command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-locale",
+          "markdownDescription": "Enables the set_locale command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_monitor_identity_link command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-monitor-identity-link",
+          "markdownDescription": "Enables the set_monitor_identity_link command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_peer_input command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-peer-input",
+          "markdownDescription": "Enables the set_peer_input command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the switch_host command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-switch-host",
+          "markdownDescription": "Enables the switch_host command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the wake_peer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-wake-peer",
+          "markdownDescription": "Enables the wake_peer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the add_shared_monitor command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-add-shared-monitor",
+          "markdownDescription": "Denies the add_shared_monitor command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check_for_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-check-for-update",
+          "markdownDescription": "Denies the check_for_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check_host_switcher_shortcut command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-check-host-switcher-shortcut",
+          "markdownDescription": "Denies the check_host_switcher_shortcut command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the complete_onboarding command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-complete-onboarding",
+          "markdownDescription": "Denies the complete_onboarding command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the diagnostics_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-diagnostics-status",
+          "markdownDescription": "Denies the diagnostics_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the discover_peers command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-discover-peers",
+          "markdownDescription": "Denies the discover_peers command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the exchange_host_layout command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-exchange-host-layout",
+          "markdownDescription": "Denies the exchange_host_layout command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_dashboard_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-dashboard-state",
+          "markdownDescription": "Denies the get_dashboard_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_host_names command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-host-names",
+          "markdownDescription": "Denies the get_host_names command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_host_order command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-host-order",
+          "markdownDescription": "Denies the get_host_order command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_host_switcher_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-host-switcher-state",
+          "markdownDescription": "Denies the get_host_switcher_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_input_options command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-input-options",
+          "markdownDescription": "Denies the get_input_options command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-settings",
+          "markdownDescription": "Denies the get_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the hide_host_switcher command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-hide-host-switcher",
+          "markdownDescription": "Denies the hide_host_switcher command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the install_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-install-update",
+          "markdownDescription": "Denies the install_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the prepare_diagnostic_report command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-prepare-diagnostic-report",
+          "markdownDescription": "Denies the prepare_diagnostic_report command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the probe_peer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-probe-peer",
+          "markdownDescription": "Denies the probe_peer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_peer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-peer",
+          "markdownDescription": "Denies the remove_peer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_shared_monitor command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-shared-monitor",
+          "markdownDescription": "Denies the remove_shared_monitor command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reset_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-reset-settings",
+          "markdownDescription": "Denies the reset_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_diagnostic_report command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-diagnostic-report",
+          "markdownDescription": "Denies the save_diagnostic_report command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-settings",
+          "markdownDescription": "Denies the save_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the select_peer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-select-peer",
+          "markdownDescription": "Denies the select_peer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the send_diagnostic_report command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-send-diagnostic-report",
+          "markdownDescription": "Denies the send_diagnostic_report command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_diagnostics_consent command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-diagnostics-consent",
+          "markdownDescription": "Denies the set_diagnostics_consent command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_host_name command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-host-name",
+          "markdownDescription": "Denies the set_host_name command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_host_order command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-host-order",
+          "markdownDescription": "Denies the set_host_order command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_input_label command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-input-label",
+          "markdownDescription": "Denies the set_input_label command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_local_input command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-local-input",
+          "markdownDescription": "Denies the set_local_input command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_locale command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-locale",
+          "markdownDescription": "Denies the set_locale command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_monitor_identity_link command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-monitor-identity-link",
+          "markdownDescription": "Denies the set_monitor_identity_link command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_peer_input command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-peer-input",
+          "markdownDescription": "Denies the set_peer_input command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the switch_host command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-switch-host",
+          "markdownDescription": "Denies the switch_host command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the wake_peer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-wake-peer",
+          "markdownDescription": "Denies the wake_peer command without any pre-configured scope."
+        },
+        {
           "description": "This permission set configures if your\napplication can enable or disable auto\nstarting the application on boot.\n\n#### Granted Permissions\n\nIt allows all to check, enable and\ndisable the automatic start on boot.\n\n\n#### This default permission set includes:\n\n- `allow-enable`\n- `allow-disable`\n- `allow-is-enabled`",
           "type": "string",
           "const": "autostart:default",

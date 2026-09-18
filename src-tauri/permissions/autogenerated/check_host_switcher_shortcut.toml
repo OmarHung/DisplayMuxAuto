@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-check-host-switcher-shortcut"
+description = "Enables the check_host_switcher_shortcut command without any pre-configured scope."
+commands.allow = ["check_host_switcher_shortcut"]
+
+[[permission]]
+identifier = "deny-check-host-switcher-shortcut"
+description = "Denies the check_host_switcher_shortcut command without any pre-configured scope."
+commands.deny = ["check_host_switcher_shortcut"]

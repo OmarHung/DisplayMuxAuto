@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-local-input"
+description = "Enables the set_local_input command without any pre-configured scope."
+commands.allow = ["set_local_input"]
+
+[[permission]]
+identifier = "deny-set-local-input"
+description = "Denies the set_local_input command without any pre-configured scope."
+commands.deny = ["set_local_input"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wake-peer"
+description = "Enables the wake_peer command without any pre-configured scope."
+commands.allow = ["wake_peer"]
+
+[[permission]]
+identifier = "deny-wake-peer"
+description = "Denies the wake_peer command without any pre-configured scope."
+commands.deny = ["wake_peer"]

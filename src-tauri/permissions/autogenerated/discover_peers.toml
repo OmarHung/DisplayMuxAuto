@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-discover-peers"
+description = "Enables the discover_peers command without any pre-configured scope."
+commands.allow = ["discover_peers"]
+
+[[permission]]
+identifier = "deny-discover-peers"
+description = "Denies the discover_peers command without any pre-configured scope."
+commands.deny = ["discover_peers"]

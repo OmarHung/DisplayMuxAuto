@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-host-name"
+description = "Enables the set_host_name command without any pre-configured scope."
+commands.allow = ["set_host_name"]
+
+[[permission]]
+identifier = "deny-set-host-name"
+description = "Denies the set_host_name command without any pre-configured scope."
+commands.deny = ["set_host_name"]

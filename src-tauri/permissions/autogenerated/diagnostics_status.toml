@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-diagnostics-status"
+description = "Enables the diagnostics_status command without any pre-configured scope."
+commands.allow = ["diagnostics_status"]
+
+[[permission]]
+identifier = "deny-diagnostics-status"
+description = "Denies the diagnostics_status command without any pre-configured scope."
+commands.deny = ["diagnostics_status"]

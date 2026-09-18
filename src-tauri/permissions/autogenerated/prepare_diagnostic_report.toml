@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-prepare-diagnostic-report"
+description = "Enables the prepare_diagnostic_report command without any pre-configured scope."
+commands.allow = ["prepare_diagnostic_report"]
+
+[[permission]]
+identifier = "deny-prepare-diagnostic-report"
+description = "Denies the prepare_diagnostic_report command without any pre-configured scope."
+commands.deny = ["prepare_diagnostic_report"]

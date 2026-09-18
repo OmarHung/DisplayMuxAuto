@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-select-peer"
+description = "Enables the select_peer command without any pre-configured scope."
+commands.allow = ["select_peer"]
+
+[[permission]]
+identifier = "deny-select-peer"
+description = "Denies the select_peer command without any pre-configured scope."
+commands.deny = ["select_peer"]

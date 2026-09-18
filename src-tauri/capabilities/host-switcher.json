@@ -3,5 +3,11 @@
   "identifier": "host-switcher",
   "description": "Minimal permissions for the MuxSU host switcher",
   "windows": ["host-switcher"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "allow-get-host-switcher-state",
+    "allow-hide-host-switcher",
+    "allow-set-locale",
+    "allow-switch-host"
+  ]
 }
