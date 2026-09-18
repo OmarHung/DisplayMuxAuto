@@ -194,21 +194,25 @@ impl LocalHostIdentity {
     }
 }
 
+/// What this host tells everyone on the network about itself. Not its MAC
+/// address: an advertisement is readable by, and forgeable by, any device
+/// there, so paired hosts learn it from this host's signed replies instead.
+fn advertised_properties(identity: &LocalHostIdentity) -> HashMap<String, String> {
+    HashMap::from([
+        ("id".to_owned(), identity.id.clone()),
+        ("name".to_owned(), identity.name.clone()),
+        (
+            "platform".to_owned(),
+            platform_name(identity.platform).to_owned(),
+        ),
+    ])
+}
+
 impl MdnsPeerDiscovery {
     pub fn start(identity: &LocalHostIdentity, port: u16) -> Result<Self, DisplayMuxError> {
         let friendly_name = identity.name.clone();
-        let mac_address = identity.mac_address.clone();
-        let platform = platform_name(identity.platform);
         let local_id = identity.id.clone();
-
-        let mut properties = HashMap::from([
-            ("id".to_owned(), local_id.clone()),
-            ("name".to_owned(), friendly_name.clone()),
-            ("platform".to_owned(), platform.to_owned()),
-        ]);
-        if let Some(address) = &mac_address {
-            properties.insert("mac".to_owned(), address.clone());
-        }
+        let properties = advertised_properties(identity);
 
         let mut advertised = AdvertisedService {
             name: friendly_name.clone(),
@@ -342,17 +346,12 @@ fn discovered_peer(service: &mdns_sd::ResolvedService) -> Option<DiscoveredPeer>
         .get_property_val_str("id")
         .map(str::to_owned)
         .unwrap_or_else(|| service.get_fullname().to_owned());
-    let mac_address = service
-        .get_property_val_str("mac")
-        .and_then(|value| value.parse::<MacAddress>().ok())
-        .map(|value| value.to_string());
     Some(DiscoveredPeer {
         id,
         name,
         platform,
         address,
         port: service.get_port(),
-        mac_address,
     })
 }
 
@@ -737,6 +736,10 @@ pub struct AgentResponse {
     /// with `input: None` are intentional clears and must not be discarded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub host_inputs: Vec<AgentHostInput>,
+    /// The responder's wake-on-LAN address, in reply to `Ping`. Sent here,
+    /// signed, rather than in the discovery advertisement anyone could forge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac_address: Option<String>,
     /// The responder's redacted diagnostic snapshot as JSON, only in reply to
     /// `DiagnosticsRequested`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1264,6 +1267,26 @@ mod tests {
             preferred_address(addresses.iter().copied()),
             Some("192.168.1.25".parse().unwrap())
         );
+    }
+
+    /// Anyone on the network reads an advertisement, and anyone can forge
+    /// one, so the MAC address travels only in signed replies.
+    #[test]
+    fn the_advertisement_does_not_carry_the_mac_address() {
+        let identity = LocalHostIdentity::with_id(
+            "aabbccddeeff-windows".to_owned(),
+            "Desk PC".to_owned(),
+            DestinationHost::Windows,
+            Some("AA:BB:CC:DD:EE:FF".to_owned()),
+        );
+
+        let properties = advertised_properties(&identity);
+
+        assert_eq!(
+            properties.get("id").map(String::as_str),
+            Some("aabbccddeeff-windows")
+        );
+        assert!(!properties.contains_key("mac"));
     }
 
     #[test]

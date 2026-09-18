@@ -189,7 +189,6 @@ pub struct DiscoveredPeer {
     pub platform: DestinationHost,
     pub address: IpAddr,
     pub port: u16,
-    pub mac_address: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

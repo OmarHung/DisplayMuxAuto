@@ -450,6 +450,9 @@ struct AppRuntime {
     /// default for its host card, so this computer reads the same on both
     /// sides until the user renames it.
     local_host_name: String,
+    /// This computer's wake-on-LAN address, sent to paired hosts in signed
+    /// `Ping` replies.
+    local_mac_address: Option<String>,
     /// The input last announced to paired hosts per shared display, keyed by
     /// `monitor_key`, so a repeating scan announces a value only once.
     ///
@@ -867,6 +870,7 @@ async fn select_peer(
                 let _ = apply_verified_peer_route(&mut settings, &route.id, display_route);
             }
             let _ = apply_host_input_updates(&mut settings, &response.host_inputs, unix_time_ms());
+            let _ = adopt_peer_mac_address(&mut settings, &route.id, &response);
         }
     }
     ensure_host_input_history(&mut settings);
@@ -1723,8 +1727,9 @@ fn adopt_peer_routes(
         apply_host_input_updates(&mut settings, &response.host_inputs, unix_time_ms());
     let host_inputs_accepted = host_inputs_update.is_some();
     let host_inputs_changed = host_inputs_update.unwrap_or(false);
+    let mac_address_changed = adopt_peer_mac_address(&mut settings, peer_id, response);
     if routes.is_empty() {
-        if host_inputs_accepted {
+        if host_inputs_accepted || mac_address_changed {
             store_settings(state, settings)?;
         }
         return Ok(RouteAdoption {
@@ -1799,7 +1804,7 @@ fn adopt_peer_routes(
             }
         });
     }
-    if applied || host_inputs_accepted {
+    if applied || host_inputs_accepted || mac_address_changed {
         store_settings(state, settings)?;
     }
     Ok(RouteAdoption {
@@ -2496,7 +2501,6 @@ fn upsert_discovered_peer(settings: &mut AppSettings, peer: &DiscoveredPeer) {
         existing.platform = peer.platform;
         existing.address = peer.address.to_string();
         existing.port = peer.port;
-        existing.mac_address = peer.mac_address.clone().unwrap_or_default();
         return;
     }
     settings.peers.push(HostRoute {
@@ -2505,9 +2509,35 @@ fn upsert_discovered_peer(settings: &mut AppSettings, peer: &DiscoveredPeer) {
         platform: peer.platform,
         address: peer.address.to_string(),
         port: peer.port,
-        mac_address: peer.mac_address.clone().unwrap_or_default(),
+        // Learned from the host's signed reply, never from discovery.
+        mac_address: String::new(),
         inputs: Vec::new(),
     });
+}
+
+/// Takes a paired host's wake-on-LAN address from its signed reply, the only
+/// place it is sent. Returns whether the saved address changed.
+fn adopt_peer_mac_address(
+    settings: &mut AppSettings,
+    peer_id: &str,
+    response: &AgentResponse,
+) -> bool {
+    let Some(address) = response
+        .mac_address
+        .as_deref()
+        .and_then(|value| MacAddress::from_str(value).ok())
+        .map(|value| value.to_string())
+    else {
+        return false;
+    };
+    let Some(peer) = settings.peers.iter_mut().find(|peer| peer.id == peer_id) else {
+        return false;
+    };
+    if peer.mac_address == address {
+        return false;
+    }
+    peer.mac_address = address;
+    true
 }
 
 /// A peer's `Ping` response may report one route (pre-v2) or several
@@ -2755,7 +2785,6 @@ async fn refresh_paired_endpoints(
         };
         existing.name.clone_from(&peer.name);
         existing.platform = peer.platform;
-        existing.mac_address = peer.mac_address.clone().unwrap_or_default();
         if let Some((address, port)) = moved {
             existing.address = address;
             existing.port = port;
@@ -2781,11 +2810,13 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
         stretched_pairing_key(&settings.shared_key),
     );
     let live_settings = Arc::clone(&state.settings);
+    let local_mac_address = state.local_mac_address.clone();
     let app = app.clone();
     *current_task = Some(tauri::async_runtime::spawn(async move {
         let result = server
             .run(move |action| {
                 let live_settings = Arc::clone(&live_settings);
+                let local_mac_address = local_mac_address.clone();
                 let app = app.clone();
                 async move {
                     match action {
@@ -2875,6 +2906,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                 input_labels,
                                 monitor_identity_links,
                                 host_inputs,
+                                mac_address: local_mac_address,
                                 diagnostics: None,
                                 // Filled in by the listener, which holds the
                                 // nonce this reply has to be bound to.
@@ -3409,10 +3441,12 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
             let their_labels = theirs.input_labels.clone();
             let their_identity_links = theirs.monitor_identity_links.clone();
             let their_host_inputs = theirs.host_inputs.clone();
+            let their_id = peer.id.clone();
             let app_for_adopt = app.clone();
             let adopted = run_display_task(app_for_adopt.clone(), move |state| {
                 let mut latest = read_settings(state)?;
                 let now_ms = unix_time_ms();
+                let mac_address_changed = adopt_peer_mac_address(&mut latest, &their_id, &theirs);
                 let order_changed = apply_host_order_notice(
                     &mut latest,
                     theirs.host_order,
@@ -3433,6 +3467,7 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
                     || labels_changed
                     || identities_changed
                     || host_inputs_accepted
+                    || mac_address_changed
                 {
                     store_settings(state, latest)?
                 } else {
@@ -4544,6 +4579,7 @@ fn adopt_peer_routes_at_startup(app: &AppHandle) {
             let accepted = host_inputs_update.is_some();
             let mut changed = host_inputs_update.unwrap_or(false);
             adopted |= changed;
+            changed |= adopt_peer_mac_address(&mut saved, &peer.id, &response);
             for route in agent_display_routes(&response) {
                 if apply_verified_peer_route(&mut saved, &peer.id, route)
                     == PeerRouteOutcome::Applied
@@ -6005,6 +6041,7 @@ pub fn run() -> anyhow::Result<()> {
                 discovery,
                 local_host_id: identity.id,
                 local_host_name: identity.name,
+                local_mac_address: identity.mac_address,
                 announced_inputs: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 announced_input_lists: Arc::new(std::sync::Mutex::new(
                     std::collections::HashSet::new(),
@@ -7926,7 +7963,6 @@ mod tests {
             platform: DestinationHost::Windows,
             address: address.parse().unwrap(),
             port,
-            mac_address: None,
         }
     }
 
@@ -8807,6 +8843,31 @@ mod tests {
 
         peer.address = "8.8.8.8".to_owned();
         assert!(route_endpoint(&peer).is_err());
+    }
+
+    #[test]
+    fn a_paired_hosts_wake_address_comes_only_from_its_signed_reply() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, None);
+        settings.peers[0].mac_address = "11:22:33:44:55:66".to_owned();
+
+        // Discovery is unauthenticated, so it no longer touches the address.
+        upsert_discovered_peer(&mut settings, &discovered("peer", "192.168.1.30", 47_653));
+        assert_eq!(settings.peers[0].mac_address, "11:22:33:44:55:66");
+
+        let malformed = AgentResponse {
+            mac_address: Some("not a mac".to_owned()),
+            ..AgentResponse::default()
+        };
+        assert!(!adopt_peer_mac_address(&mut settings, "peer", &malformed));
+        assert_eq!(settings.peers[0].mac_address, "11:22:33:44:55:66");
+
+        let signed = AgentResponse {
+            mac_address: Some("aa-bb-cc-dd-ee-ff".to_owned()),
+            ..AgentResponse::default()
+        };
+        assert!(adopt_peer_mac_address(&mut settings, "peer", &signed));
+        assert_eq!(settings.peers[0].mac_address, "AA:BB:CC:DD:EE:FF");
     }
 
     #[test]

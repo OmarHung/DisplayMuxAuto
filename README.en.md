@@ -244,7 +244,7 @@ A DisplayLink or dock utility being able to change brightness does not mean MuxS
 - On Windows, enable Wake-on-LAN in the network adapter and in BIOS/UEFI.
 - Whether a fully powered-off computer can be woken depends on its hardware, firmware and operating system settings. MuxSU cannot guarantee it.
 
-IP addresses, MAC addresses and the Agent port are picked up and stored while searching for hosts. After a DHCP address changes, searching again updates them; a paired host that has moved is only followed once an authenticated connection confirms it.
+IP addresses and the Agent port are picked up and stored while searching for hosts. MAC addresses are never broadcast; each host sends its own in authenticated replies. After a DHCP address changes, searching again updates them; a paired host that has moved is only followed once an authenticated connection confirms it.
 
 ## Security and Privacy
 
