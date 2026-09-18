@@ -38,6 +38,19 @@ static UI_LOCALE: AtomicU64 = AtomicU64::new(0);
 static PAIRING_KEY_CACHE: OnceLock<StdMutex<Option<(String, Arc<[u8]>)>>> = OnceLock::new();
 const MIN_SHARED_KEY_LENGTH: usize = 15;
 const DEFAULT_HOST_SWITCHER_SHORTCUT: &str = "CommandOrControl+Shift+Space";
+/// Most port assignments one notice or response may carry: the largest host
+/// order times a generous number of shared displays.
+const MAX_SHARED_HOST_INPUTS: usize = 256;
+/// How far ahead of this clock a paired host may date shared state. Agents
+/// already refuse requests more than 30 seconds off; the rest is drift.
+const MAX_REVISION_AHEAD_MS: u64 = 60_000;
+
+/// Whether a revision from a paired host could have been written by now.
+/// Shared state keeps the newest revision, so one dated far ahead would win
+/// every later edit until this clock caught up.
+fn is_plausible_revision(updated_at_ms: u64, now_ms: u64) -> bool {
+    updated_at_ms <= now_ms.saturating_add(MAX_REVISION_AHEAD_MS)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UiLocale {
@@ -853,9 +866,7 @@ async fn select_peer(
             for display_route in agent_display_routes(&response) {
                 let _ = apply_verified_peer_route(&mut settings, &route.id, display_route);
             }
-            for assignment in &response.host_inputs {
-                let _ = apply_host_input_update(&mut settings, assignment);
-            }
+            let _ = apply_host_input_updates(&mut settings, &response.host_inputs, unix_time_ms());
         }
     }
     ensure_host_input_history(&mut settings);
@@ -874,11 +885,20 @@ async fn select_peer(
 #[tauri::command]
 fn remove_peer(peer_id: String, state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
     let mut settings = read_settings(&state)?;
+    forget_peer(&mut settings, &peer_id);
+    store_settings(&state, settings)
+}
+
+/// Drops a peer with everything kept on its behalf: queued notices and its
+/// port history, which would otherwise ride along in every Ping response.
+fn forget_peer(settings: &mut AppSettings, peer_id: &str) {
     settings.peers.retain(|peer| peer.id != peer_id);
     settings
         .pending_peer_notices
         .retain(|notice| notice.peer_id != peer_id);
-    store_settings(&state, settings)
+    settings
+        .host_inputs
+        .retain(|assignment| assignment.host_id != peer_id);
 }
 
 /// Runs blocking display work (enumeration, DDC/CI) off the main thread,
@@ -1680,14 +1700,10 @@ fn adopt_peer_routes(
 ) -> Result<RouteAdoption, String> {
     let routes = agent_display_routes(response);
     let mut settings = read_settings(state)?;
-    let mut host_inputs_accepted = false;
-    let mut host_inputs_changed = false;
-    for assignment in &response.host_inputs {
-        if let Some(changed) = apply_host_input_update(&mut settings, assignment) {
-            host_inputs_accepted = true;
-            host_inputs_changed |= changed;
-        }
-    }
+    let host_inputs_update =
+        apply_host_input_updates(&mut settings, &response.host_inputs, unix_time_ms());
+    let host_inputs_accepted = host_inputs_update.is_some();
+    let host_inputs_changed = host_inputs_update.unwrap_or(false);
     if routes.is_empty() {
         if host_inputs_accepted {
             store_settings(state, settings)?;
@@ -3254,8 +3270,10 @@ fn apply_host_order_notice(
     settings: &mut AppSettings,
     order: Vec<String>,
     updated_at_ms: u64,
+    now_ms: u64,
 ) -> bool {
     if updated_at_ms <= settings.host_order_updated_at_ms
+        || !is_plausible_revision(updated_at_ms, now_ms)
         || !host_order::is_valid_shared_host_order(&order)
     {
         return false;
@@ -3322,27 +3340,22 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
             let app_for_adopt = app.clone();
             let adopted = run_display_task(app_for_adopt.clone(), move |state| {
                 let mut latest = read_settings(state)?;
+                let now_ms = unix_time_ms();
                 let order_changed = apply_host_order_notice(
                     &mut latest,
                     theirs.host_order,
                     theirs.host_order_updated_at_ms,
+                    now_ms,
                 );
-                let merged = host_alias::merged_aliases(&latest.host_aliases, &theirs.host_aliases);
-                let names_changed = merged.is_some();
-                if let Some(merged) = merged {
-                    latest.host_aliases = merged;
-                }
-                let labels_changed = adopt_input_labels(&mut latest, &theirs.input_labels);
+                let names_changed = adopt_host_aliases(&mut latest, &theirs.host_aliases, now_ms);
+                let labels_changed =
+                    adopt_input_labels(&mut latest, &theirs.input_labels, now_ms);
                 let identities_changed =
                     adopt_monitor_identities(&mut latest, &theirs.monitor_identity_links);
-                let mut host_inputs_changed = false;
-                let mut host_inputs_accepted = false;
-                for assignment in &theirs.host_inputs {
-                    if let Some(changed) = apply_host_input_update(&mut latest, assignment) {
-                        host_inputs_accepted = true;
-                        host_inputs_changed |= changed;
-                    }
-                }
+                let host_inputs_update =
+                    apply_host_input_updates(&mut latest, &theirs.host_inputs, now_ms);
+                let host_inputs_accepted = host_inputs_update.is_some();
+                let host_inputs_changed = host_inputs_update.unwrap_or(false);
                 let latest = if order_changed
                     || names_changed
                     || labels_changed
@@ -3523,7 +3536,7 @@ async fn receive_host_order_notice(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = app.state::<AppRuntime>();
         let mut settings = read_settings(&state)?;
-        if apply_host_order_notice(&mut settings, order, updated_at_ms) {
+        if apply_host_order_notice(&mut settings, order, updated_at_ms, unix_time_ms()) {
             store_settings(&state, settings)?;
             if let Err(error) = app.emit(HOST_ORDER_CHANGED_EVENT, ()) {
                 tracing::warn!(error = %error, "unable to notify windows of a host order change");
@@ -3640,8 +3653,7 @@ async fn receive_host_aliases_notice(app: AppHandle, aliases: Vec<HostAlias>) ->
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = app.state::<AppRuntime>();
         let mut settings = read_settings(&state)?;
-        if let Some(merged) = host_alias::merged_aliases(&settings.host_aliases, &aliases) {
-            settings.host_aliases = merged;
+        if adopt_host_aliases(&mut settings, &aliases, unix_time_ms()) {
             store_settings(&state, settings)?;
             if let Err(error) = app.emit(HOST_NAMES_CHANGED_EVENT, ()) {
                 tracing::warn!(error = %error, "unable to notify windows of a host name change");
@@ -3682,9 +3694,29 @@ fn labels_on_local_monitors(settings: &AppSettings, labels: &[InputLabel]) -> Ve
     })
 }
 
+/// Merges a paired host's custom host names into `settings`. Returns whether
+/// any changed.
+fn adopt_host_aliases(settings: &mut AppSettings, incoming: &[HostAlias], now_ms: u64) -> bool {
+    let incoming: Vec<HostAlias> = incoming
+        .iter()
+        .filter(|alias| is_plausible_revision(alias.updated_at_ms, now_ms))
+        .cloned()
+        .collect();
+    match host_alias::merged_aliases(&settings.host_aliases, &incoming) {
+        Some(merged) => {
+            settings.host_aliases = merged;
+            true
+        }
+        None => false,
+    }
+}
+
 /// Merges a paired host's input notes into `settings`. Returns whether any changed.
-fn adopt_input_labels(settings: &mut AppSettings, incoming: &[InputLabel]) -> bool {
-    let incoming = labels_on_local_monitors(settings, incoming);
+fn adopt_input_labels(settings: &mut AppSettings, incoming: &[InputLabel], now_ms: u64) -> bool {
+    let incoming: Vec<InputLabel> = labels_on_local_monitors(settings, incoming)
+        .into_iter()
+        .filter(|label| is_plausible_revision(label.updated_at_ms, now_ms))
+        .collect();
     match input_label::merged_labels(&settings.input_labels, &incoming) {
         Some(merged) => {
             settings.input_labels = merged;
@@ -4018,7 +4050,7 @@ async fn receive_input_labels_notice(app: AppHandle, labels: Vec<InputLabel>) ->
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = app.state::<AppRuntime>();
         let mut settings = read_settings(&state)?;
-        if adopt_input_labels(&mut settings, &labels) {
+        if adopt_input_labels(&mut settings, &labels, unix_time_ms()) {
             store_settings(&state, settings)?;
             if let Err(error) = app.emit(INPUT_LABELS_CHANGED_EVENT, ()) {
                 tracing::warn!(error = %error, "unable to notify windows of an input note change");
@@ -4230,7 +4262,43 @@ async fn receive_local_input_confirmed(
 /// Applies a versioned host/display assignment. `Some(false)` means the
 /// version/tombstone was accepted but the visible value already agreed;
 /// `None` means the display/host is unknown or the entry is stale.
-fn apply_host_input_update(settings: &mut AppSettings, update: &AgentHostInput) -> Option<bool> {
+/// Applies a paired host's batch of assignments. A batch larger than any real
+/// group could send is refused whole. `None` means nothing was accepted;
+/// otherwise whether any assignment changed a port.
+fn apply_host_input_updates(
+    settings: &mut AppSettings,
+    updates: &[AgentHostInput],
+    now_ms: u64,
+) -> Option<bool> {
+    if updates.len() > MAX_SHARED_HOST_INPUTS {
+        return None;
+    }
+    let mut accepted = false;
+    let mut changed = false;
+    for update in updates {
+        if let Some(value_changed) = apply_host_input_update(settings, update, now_ms) {
+            accepted = true;
+            changed |= value_changed;
+        }
+    }
+    accepted.then_some(changed)
+}
+
+fn apply_host_input_update(
+    settings: &mut AppSettings,
+    update: &AgentHostInput,
+    now_ms: u64,
+) -> Option<bool> {
+    // Only hosts this one knows may enter the ledger: it is persisted and
+    // returned in every Ping, so an unknown id could grow it without bound.
+    let is_local = update.host_id == settings.local_host_id;
+    let is_known = is_local || settings.peers.iter().any(|peer| peer.id == update.host_id);
+    if !is_known
+        || !host_order::is_valid_host_id(&update.host_id)
+        || !is_plausible_revision(update.updated_at_ms, now_ms)
+    {
+        return None;
+    }
     let monitor_index = shared_monitor_index_for_peer(
         &settings.shared_monitors,
         &settings.monitor_identity_links,
@@ -4295,21 +4363,21 @@ fn apply_host_input_update(settings: &mut AppSettings, update: &AgentHostInput) 
         }
     }
 
-    let changed = displaced_conflict
-        || if update.host_id == settings.local_host_id {
-            let selected = &mut settings.shared_monitors[monitor_index];
-            let changed = selected.local_input != update.input;
-            selected.local_input = update.input;
-            changed
-        } else {
-            let peer = settings
-                .peers
-                .iter_mut()
-                .find(|peer| peer.id == update.host_id)?;
-            let changed = peer.input_for(&fingerprint) != update.input;
-            peer.set_input_for(&fingerprint, update.input);
-            changed
-        };
+    let target_changed = if is_local {
+        let selected = &mut settings.shared_monitors[monitor_index];
+        let changed = selected.local_input != update.input;
+        selected.local_input = update.input;
+        changed
+    } else {
+        let peer = settings
+            .peers
+            .iter_mut()
+            .find(|peer| peer.id == update.host_id)?;
+        let changed = peer.input_for(&fingerprint) != update.input;
+        peer.set_input_for(&fingerprint, update.input);
+        changed
+    };
+    let changed = displaced_conflict || target_changed;
 
     settings.host_inputs.retain(|entry| {
         entry.host_id != update.host_id || !entry.monitor.matches_exactly(&fingerprint)
@@ -4359,15 +4427,9 @@ async fn receive_host_inputs_notice(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = app.state::<AppRuntime>();
         let mut settings = read_settings(&state)?;
-        let mut accepted = false;
-        let mut changed = false;
-        for assignment in &assignments {
-            if let Some(value_changed) = apply_host_input_update(&mut settings, assignment) {
-                accepted = true;
-                changed |= value_changed;
-            }
-        }
-        if accepted {
+        let update = apply_host_input_updates(&mut settings, &assignments, unix_time_ms());
+        let changed = update.unwrap_or(false);
+        if update.is_some() {
             store_settings(&state, settings)?;
         }
         if changed {
@@ -4467,15 +4529,11 @@ fn adopt_peer_routes_at_startup(app: &AppHandle) {
                 Ok(saved) => saved,
                 Err(_) => return,
             };
-            let mut changed = false;
-            let mut accepted = false;
-            for assignment in &response.host_inputs {
-                if let Some(value_changed) = apply_host_input_update(&mut saved, assignment) {
-                    accepted = true;
-                    changed |= value_changed;
-                    adopted |= value_changed;
-                }
-            }
+            let host_inputs_update =
+                apply_host_input_updates(&mut saved, &response.host_inputs, unix_time_ms());
+            let accepted = host_inputs_update.is_some();
+            let mut changed = host_inputs_update.unwrap_or(false);
+            adopted |= changed;
             for route in agent_display_routes(&response) {
                 if apply_verified_peer_route(&mut saved, &peer.id, route)
                     == PeerRouteOutcome::Applied
@@ -7555,6 +7613,7 @@ mod tests {
             &mut settings,
             vec!["pc-b".to_owned(), "mac-a".to_owned()],
             200,
+            LEDGER_NOW_MS,
         );
 
         assert!(changed);
@@ -7588,15 +7647,60 @@ mod tests {
         assert!(!apply_host_order_notice(
             &mut settings,
             vec!["pc-b".to_owned()],
-            100
+            100,
+            LEDGER_NOW_MS
         ));
         assert!(!apply_host_order_notice(
             &mut settings,
             vec!["pc-b".to_owned(), "pc-b".to_owned()],
-            300
+            300,
+            LEDGER_NOW_MS
         ));
         assert_eq!(settings.host_order, saved);
         assert_eq!(settings.host_order_updated_at_ms, 100);
+    }
+
+    #[test]
+    fn shared_state_dated_past_the_clock_tolerance_is_ignored() {
+        let now = LEDGER_NOW_MS;
+        let poisoned = now + MAX_REVISION_AHEAD_MS + 1;
+        let shared = monitor("shared");
+        let mut settings = AppSettings {
+            local_host_id: "this-host".to_owned(),
+            shared_monitors: vec![SelectedMonitor::from(&shared)],
+            host_order: vec!["mac-a".to_owned(), "pc-b".to_owned()],
+            host_order_updated_at_ms: 100,
+            ..AppSettings::default()
+        };
+
+        assert!(!apply_host_order_notice(
+            &mut settings,
+            vec!["pc-b".to_owned(), "mac-a".to_owned()],
+            poisoned,
+            now
+        ));
+        assert!(!adopt_host_aliases(
+            &mut settings,
+            &[HostAlias {
+                host_id: "pc-b".to_owned(),
+                name: "Poisoned".to_owned(),
+                updated_at_ms: poisoned,
+            }],
+            now
+        ));
+        assert!(!adopt_input_labels(
+            &mut settings,
+            &[InputLabel {
+                monitor: shared.fingerprint.clone(),
+                input: DisplayInput::new(8).unwrap(),
+                label: "Poisoned".to_owned(),
+                updated_at_ms: poisoned,
+            }],
+            now
+        ));
+        assert_eq!(settings.host_order_updated_at_ms, 100);
+        assert!(settings.host_aliases.is_empty());
+        assert!(settings.input_labels.is_empty());
     }
 
     /// A time well past any settle period, for tests about other behaviour.
@@ -8348,8 +8452,8 @@ mod tests {
             updated_at_ms: 10,
         }];
 
-        assert!(adopt_input_labels(&mut settings, &notice));
-        assert!(!adopt_input_labels(&mut settings, &notice));
+        assert!(adopt_input_labels(&mut settings, &notice, LEDGER_NOW_MS));
+        assert!(!adopt_input_labels(&mut settings, &notice, LEDGER_NOW_MS));
 
         assert_eq!(settings.input_labels[0].monitor, ours);
         let name = noted_input_label(&settings, &selected, input);
@@ -8574,7 +8678,10 @@ mod tests {
             input: None,
             updated_at_ms: 20,
         };
-        assert_eq!(apply_host_input_update(&mut settings, &cleared), Some(true));
+        assert_eq!(
+            apply_host_input_update(&mut settings, &cleared, LEDGER_NOW_MS),
+            Some(true)
+        );
         assert_eq!(settings.shared_monitors[0].local_input, None);
 
         let stale = AgentHostInput {
@@ -8582,9 +8689,131 @@ mod tests {
             updated_at_ms: 15,
             ..cleared
         };
-        assert_eq!(apply_host_input_update(&mut settings, &stale), None);
+        assert_eq!(
+            apply_host_input_update(&mut settings, &stale, LEDGER_NOW_MS),
+            None
+        );
         assert_eq!(settings.shared_monitors[0].local_input, None);
         assert_eq!(settings.host_inputs[0].input, None);
+    }
+
+    /// Later than every revision the host input tests write.
+    const LEDGER_NOW_MS: u64 = 1_000_000;
+
+    fn host_input(
+        host_id: &str,
+        shared: &MonitorDescriptor,
+        input: u32,
+        at: u64,
+    ) -> AgentHostInput {
+        AgentHostInput {
+            host_id: host_id.to_owned(),
+            monitor: shared.fingerprint.clone(),
+            input: DisplayInput::new(input).ok(),
+            updated_at_ms: at,
+        }
+    }
+
+    #[test]
+    fn a_host_input_for_an_unknown_host_is_rejected_even_when_it_takes_a_port() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, None);
+        settings.local_host_id = "this-host".to_owned();
+
+        // 0x07 belongs to "peer", so accepting this would displace it.
+        let stranger = host_input("stranger", &shared, 0x07, 500);
+
+        assert_eq!(
+            apply_host_input_update(&mut settings, &stranger, LEDGER_NOW_MS),
+            None
+        );
+        assert_eq!(
+            settings.peers[0].input_for(&shared.fingerprint),
+            DisplayInput::new(0x07).ok()
+        );
+        assert!(settings.host_inputs.is_empty());
+    }
+
+    #[test]
+    fn a_host_input_that_displaces_another_host_still_assigns_the_port() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, None);
+        settings.local_host_id = "this-host".to_owned();
+
+        let moved = host_input("peer", &shared, 0x08, 500);
+
+        assert_eq!(
+            apply_host_input_update(&mut settings, &moved, LEDGER_NOW_MS),
+            Some(true)
+        );
+        assert_eq!(settings.shared_monitors[0].local_input, None);
+        assert_eq!(
+            settings.peers[0].input_for(&shared.fingerprint),
+            DisplayInput::new(0x08).ok()
+        );
+    }
+
+    #[test]
+    fn a_host_input_dated_past_the_clock_tolerance_is_rejected() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, None);
+        settings.local_host_id = "this-host".to_owned();
+
+        let poisoned = host_input(
+            "peer",
+            &shared,
+            0x0f,
+            LEDGER_NOW_MS + MAX_REVISION_AHEAD_MS + 1,
+        );
+        assert_eq!(
+            apply_host_input_update(&mut settings, &poisoned, LEDGER_NOW_MS),
+            None
+        );
+        assert!(settings.host_inputs.is_empty());
+
+        let drifted = host_input("peer", &shared, 0x0f, LEDGER_NOW_MS + MAX_REVISION_AHEAD_MS);
+        assert_eq!(
+            apply_host_input_update(&mut settings, &drifted, LEDGER_NOW_MS),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn an_oversized_host_input_batch_is_rejected_whole() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, None);
+        settings.local_host_id = "this-host".to_owned();
+        let flood: Vec<AgentHostInput> = (0..=MAX_SHARED_HOST_INPUTS as u64)
+            .map(|index| host_input("peer", &shared, 0x0f, 100 + index))
+            .collect();
+
+        assert_eq!(
+            apply_host_input_updates(&mut settings, &flood, LEDGER_NOW_MS),
+            None
+        );
+        assert!(settings.host_inputs.is_empty());
+
+        assert_eq!(
+            apply_host_input_updates(&mut settings, &flood[..1], LEDGER_NOW_MS),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn forgetting_a_peer_drops_its_host_input_history() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, None);
+        settings.local_host_id = "this-host".to_owned();
+        settings.host_inputs = vec![
+            host_input("this-host", &shared, 0x08, 10),
+            host_input("peer", &shared, 0x07, 10),
+        ];
+
+        forget_peer(&mut settings, "peer");
+
+        assert!(settings.peers.is_empty());
+        assert_eq!(settings.host_inputs.len(), 1);
+        assert_eq!(settings.host_inputs[0].host_id, "this-host");
     }
 
     #[test]
