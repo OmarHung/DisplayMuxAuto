@@ -3120,6 +3120,11 @@ fn update_delivery_settings(
     Ok(())
 }
 
+/// Attempts before a notice is given up on. At the five-minute retry ceiling
+/// this is about a week of MuxSU running. A peer that is still unreachable
+/// catches up anyway: every response it gives carries the shared state.
+const MAX_NOTICE_ATTEMPTS: u32 = 2_000;
+
 fn retry_delay_ms(attempts: u32) -> u64 {
     let exponent = attempts.min(9);
     1_000_u64.saturating_mul(1_u64 << exponent).min(300_000)
@@ -3175,20 +3180,17 @@ async fn deliver_pending_notice(runtime: NoticeDeliveryRuntime, notice_id: Strin
             }
             Err(error) => {
                 let now = unix_time_ms();
+                let mut dropped = false;
                 if let Err(persist_error) = update_delivery_settings(&runtime, |settings| {
-                    if let Some(queued) = settings
-                        .pending_peer_notices
-                        .iter_mut()
-                        .find(|queued| queued.id == notice.id)
-                    {
-                        queued.attempts = queued.attempts.saturating_add(1);
-                        queued.next_attempt_at_ms =
-                            now.saturating_add(retry_delay_ms(queued.attempts));
-                    }
+                    dropped = record_failed_notice_attempt(settings, &notice.id, now);
                 }) {
                     tracing::warn!(peer = peer.name.as_str(), error = %persist_error, "unable to save a notice retry");
                 }
-                tracing::info!(peer = peer.name.as_str(), error = %error, "paired host did not ACK the notice; retry scheduled");
+                if dropped {
+                    tracing::warn!(peer = peer.name.as_str(), error = %error, "paired host never ACKed the notice; giving up");
+                } else {
+                    tracing::info!(peer = peer.name.as_str(), error = %error, "paired host did not ACK the notice; retry scheduled");
+                }
             }
         }
     }
@@ -3198,19 +3200,55 @@ async fn deliver_pending_notice(runtime: NoticeDeliveryRuntime, notice_id: Strin
     }
 }
 
-fn retry_pending_notices(state: &AppRuntime) {
-    let now = unix_time_ms();
-    let ids = read_settings(state)
-        .map(|settings| {
-            settings
-                .pending_peer_notices
-                .iter()
-                .filter(|notice| notice.next_attempt_at_ms <= now)
-                .map(|notice| notice.id.clone())
-                .collect::<Vec<_>>()
+/// Schedules the next attempt after a failed delivery, or drops the notice
+/// once it has used every attempt. Returns whether it was dropped.
+fn record_failed_notice_attempt(settings: &mut AppSettings, notice_id: &str, now_ms: u64) -> bool {
+    let Some(index) = settings
+        .pending_peer_notices
+        .iter()
+        .position(|queued| queued.id == notice_id)
+    else {
+        return false;
+    };
+    let queued = &mut settings.pending_peer_notices[index];
+    queued.attempts = queued.attempts.saturating_add(1);
+    if queued.attempts >= MAX_NOTICE_ATTEMPTS {
+        settings.pending_peer_notices.remove(index);
+        return true;
+    }
+    queued.next_attempt_at_ms = now_ms.saturating_add(retry_delay_ms(queued.attempts));
+    false
+}
+
+/// The notices to send now: each peer's oldest one, once it is due, unless a
+/// request to that peer is already in flight. Newer notices wait behind it,
+/// so a peer receives its changes in the order they were made.
+fn due_notice_ids(
+    notices: &[PendingPeerNotice],
+    in_flight: &std::collections::HashSet<String>,
+    now_ms: u64,
+) -> Vec<String> {
+    let mut seen_peers = std::collections::HashSet::new();
+    notices
+        .iter()
+        .filter(|notice| seen_peers.insert(notice.peer_id.as_str()))
+        .filter(|notice| {
+            notice.next_attempt_at_ms <= now_ms && !in_flight.contains(&notice.peer_id)
         })
-        .unwrap_or_default();
+        .map(|notice| notice.id.clone())
+        .collect()
+}
+
+fn retry_pending_notices(state: &AppRuntime) {
     let runtime = notice_delivery_runtime(state);
+    let in_flight = runtime
+        .in_flight
+        .lock()
+        .map(|in_flight| in_flight.clone())
+        .unwrap_or_default();
+    let ids = read_settings(state)
+        .map(|settings| due_notice_ids(&settings.pending_peer_notices, &in_flight, unix_time_ms()))
+        .unwrap_or_default();
     for id in ids {
         tauri::async_runtime::spawn(deliver_pending_notice(runtime.clone(), id));
     }
@@ -8853,6 +8891,57 @@ mod tests {
         };
         assert!(notice_supersedes(&full_snapshot, &one_off_confirmation));
         assert!(!notice_supersedes(&one_off_confirmation, &full_snapshot));
+    }
+
+    fn queued(id: &str, peer_id: &str, next_attempt_at_ms: u64) -> PendingPeerNotice {
+        PendingPeerNotice {
+            id: id.to_owned(),
+            peer_id: peer_id.to_owned(),
+            action: AgentAction::Ping,
+            attempts: 0,
+            next_attempt_at_ms,
+        }
+    }
+
+    #[test]
+    fn each_peer_is_sent_only_its_oldest_notice_once_due() {
+        let notices = [
+            queued("a1", "peer-a", 10),
+            queued("a2", "peer-a", 0),
+            queued("b1", "peer-b", 500),
+            queued("b2", "peer-b", 0),
+            queued("c1", "peer-c", 0),
+            queued("d1", "peer-d", 0),
+        ];
+        let in_flight = std::collections::HashSet::from(["peer-d".to_owned()]);
+
+        // peer-b's oldest notice is not due yet, so its newer one must wait
+        // too; peer-d already has a request in flight.
+        assert_eq!(due_notice_ids(&notices, &in_flight, 100), vec!["a1", "c1"]);
+    }
+
+    #[test]
+    fn a_notice_is_dropped_once_it_has_used_every_attempt() {
+        let mut settings = AppSettings {
+            pending_peer_notices: vec![PendingPeerNotice {
+                attempts: MAX_NOTICE_ATTEMPTS - 2,
+                ..queued("n", "peer", 0)
+            }],
+            ..AppSettings::default()
+        };
+
+        assert!(!record_failed_notice_attempt(&mut settings, "n", 1_000));
+        assert_eq!(
+            settings.pending_peer_notices[0].attempts,
+            MAX_NOTICE_ATTEMPTS - 1
+        );
+        assert_eq!(
+            settings.pending_peer_notices[0].next_attempt_at_ms,
+            1_000 + retry_delay_ms(MAX_NOTICE_ATTEMPTS - 1)
+        );
+
+        assert!(record_failed_notice_attempt(&mut settings, "n", 2_000));
+        assert!(settings.pending_peer_notices.is_empty());
     }
 
     #[test]
