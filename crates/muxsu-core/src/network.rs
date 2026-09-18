@@ -5,7 +5,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     num::NonZeroU32,
     str::FromStr,
-    sync::{Arc, RwLock as StdRwLock},
+    sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -37,6 +37,15 @@ const PAIRING_KEY_SALT: &[u8] = b"MuxSU pairing key v1";
 const PAIRING_KEY_BYTES: usize = 32;
 const MAX_CLOCK_SKEW: Duration = Duration::from_secs(30);
 const MAX_PACKET_BYTES: usize = 8 * 1024;
+/// Most connections the agent handles at once, and from any one address. Each
+/// may be held for the request timeout before anything is authenticated, so
+/// without a cap anyone who can reach the port could exhaust this host's
+/// sockets and keep paired hosts out.
+const MAX_OPEN_CONNECTIONS: usize = 64;
+const MAX_OPEN_CONNECTIONS_PER_ADDRESS: usize = 8;
+/// Pause after a failed accept, such as running out of file descriptors, so
+/// the agent neither spins nor stops serving.
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 /// How long a connection may take to deliver its request line. Anyone on the
 /// network can open a socket here; only what arrives over it is authenticated,
 /// so a caller that sends nothing has to be given up on rather than waited for.
@@ -858,6 +867,57 @@ pub struct AgentServer {
     shared_key: Arc<[u8]>,
     seen_nonces: Arc<Mutex<HashMap<String, u64>>>,
     request_timeout: Duration,
+    connection_limits: ConnectionLimits,
+}
+
+/// Counts the connections open from each address, so the agent can refuse a
+/// new one past its caps.
+#[derive(Clone)]
+struct ConnectionLimits {
+    total: usize,
+    per_address: usize,
+    open: Arc<StdMutex<HashMap<IpAddr, usize>>>,
+}
+
+/// One admitted connection. Frees its place when dropped.
+struct ConnectionSlot {
+    address: IpAddr,
+    open: Arc<StdMutex<HashMap<IpAddr, usize>>>,
+}
+
+impl ConnectionLimits {
+    fn new(total: usize, per_address: usize) -> Self {
+        Self {
+            total,
+            per_address,
+            open: Arc::new(StdMutex::new(HashMap::new())),
+        }
+    }
+
+    fn try_admit(&self, address: IpAddr) -> Option<ConnectionSlot> {
+        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        let from_address = open.get(&address).copied().unwrap_or_default();
+        if open.values().sum::<usize>() >= self.total || from_address >= self.per_address {
+            return None;
+        }
+        open.insert(address, from_address + 1);
+        Some(ConnectionSlot {
+            address,
+            open: Arc::clone(&self.open),
+        })
+    }
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = open.get_mut(&self.address) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                open.remove(&self.address);
+            }
+        }
+    }
 }
 
 impl AgentServer {
@@ -867,7 +927,18 @@ impl AgentServer {
             shared_key: shared_key.into(),
             seen_nonces: Arc::new(Mutex::new(HashMap::new())),
             request_timeout: REQUEST_READ_TIMEOUT,
+            connection_limits: ConnectionLimits::new(
+                MAX_OPEN_CONNECTIONS,
+                MAX_OPEN_CONNECTIONS_PER_ADDRESS,
+            ),
         }
+    }
+
+    /// How many connections may be open at once, in total and from one
+    /// address. Exposed so a test can reach the caps with a few connections.
+    pub fn with_connection_limits(mut self, total: usize, per_address: usize) -> Self {
+        self.connection_limits = ConnectionLimits::new(total, per_address);
+        self
     }
 
     /// How long a caller has to deliver its request line. Exposed so a test can
@@ -888,15 +959,24 @@ impl AgentServer {
         let handler = Arc::new(handler);
 
         loop {
-            let (stream, peer) = listener
-                .accept()
-                .await
-                .map_err(|error| DisplayMuxError::Backend(error.to_string()))?;
+            let (stream, peer) = match listener.accept().await {
+                Ok(accepted) => accepted,
+                Err(error) => {
+                    tracing::warn!(error = %error, "agent could not accept a connection");
+                    tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
+                    continue;
+                }
+            };
+            let Some(slot) = self.connection_limits.try_admit(peer.ip()) else {
+                tracing::debug!(peer = %peer, "agent connection refused: too many open");
+                continue;
+            };
             let shared_key = Arc::clone(&self.shared_key);
             let seen_nonces = Arc::clone(&self.seen_nonces);
             let handler = Arc::clone(&handler);
             let request_timeout = self.request_timeout;
             tokio::spawn(async move {
+                let _slot = slot;
                 if let Err(error) =
                     handle_connection(stream, shared_key, seen_nonces, handler, request_timeout)
                         .await
@@ -1617,6 +1697,57 @@ mod tests {
         assert!(
             outcome.is_ok(),
             "a connection that sent nothing was still being held open"
+        );
+    }
+
+    /// Nothing is authenticated before a request line arrives, so the number
+    /// of connections anyone can hold open must be bounded, per address and
+    /// in total.
+    #[test]
+    fn open_connections_are_limited_per_address_and_in_total() {
+        let limits = ConnectionLimits::new(3, 2);
+        let first = IpAddr::from([192, 168, 1, 10]);
+        let second = IpAddr::from([192, 168, 1, 11]);
+
+        let a = limits.try_admit(first).expect("first connection");
+        let _b = limits.try_admit(first).expect("second connection");
+        assert!(limits.try_admit(first).is_none(), "per-address cap ignored");
+
+        let _c = limits.try_admit(second).expect("another address");
+        assert!(limits.try_admit(second).is_none(), "total cap ignored");
+
+        drop(a);
+        assert!(
+            limits.try_admit(first).is_some(),
+            "a closed connection did not free its slot"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_over_the_limit_is_closed_at_once() {
+        use tokio::io::AsyncReadExt as _;
+
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = AgentServer::new(address, Arc::<[u8]>::from(&b"pairing-secret"[..]))
+            .with_connection_limits(4, 1);
+        tokio::spawn(async move { server.run(|_| async { AgentResponse::default() }).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Holds this address's only slot for the full request timeout.
+        let _held = TcpStream::connect(address).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut refused = TcpStream::connect(address).await.unwrap();
+        let mut buffer = Vec::new();
+        let outcome = timeout(Duration::from_secs(1), refused.read_to_end(&mut buffer)).await;
+
+        assert!(
+            outcome.is_ok(),
+            "a connection over the limit was held open instead of refused"
         );
     }
 
