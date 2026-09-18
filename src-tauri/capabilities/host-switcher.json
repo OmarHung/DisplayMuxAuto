@@ -4,7 +4,8 @@
   "description": "Minimal permissions for the MuxSU host switcher",
   "windows": ["host-switcher"],
   "permissions": [
-    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "allow-get-host-switcher-state",
     "allow-hide-host-switcher",
     "allow-set-locale",

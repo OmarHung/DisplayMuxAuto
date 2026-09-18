@@ -76,3 +76,26 @@ for (const window of JSON.parse(read("src-tauri/tauri.conf.json")).app.windows) 
     assert.deepEqual(sorted(commandsGrantedTo(window.label)), sorted(invoked));
   });
 }
+
+/** Core permissions a window's capabilities grant, as written. */
+function corePermissionsGrantedTo(label) {
+  const granted = new Set();
+  for (const file of readdirSync(join(root, "src-tauri/capabilities"))) {
+    const capability = JSON.parse(read(`src-tauri/capabilities/${file}`));
+    if (!capability.windows.includes(label)) continue;
+    for (const permission of capability.permissions) {
+      const identifier = typeof permission === "string" ? permission : permission.identifier;
+      if (identifier.startsWith("core:")) granted.add(identifier);
+    }
+  }
+  return granted;
+}
+
+// `core:default` would also let it emit events to the main window and drive the
+// tray and menus. The switcher only listens for the backend's change events.
+test("the host-switcher window is granted no core capability beyond listening", () => {
+  assert.deepEqual(sorted(corePermissionsGrantedTo("host-switcher")), [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+  ]);
+});
