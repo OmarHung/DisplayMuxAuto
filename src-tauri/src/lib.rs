@@ -4764,6 +4764,27 @@ fn hide_main_window(window: &tauri::Window) {
     if let Err(error) = window.hide() {
         tracing::warn!(error = %error, "unable to hide MuxSU in the system tray");
     }
+    #[cfg(target_os = "macos")]
+    show_in_dock(window.app_handle(), false);
+}
+
+/// Puts MuxSU in the Dock and Command-Tab while its window is open, and takes
+/// it back out when the window closes.
+///
+/// With no window open the app is a menu bar item and nothing more; that is
+/// what the Dock icon was taken away for. But an open window with no Dock icon
+/// cannot be reached with Command-Tab and disappears behind other windows with
+/// no way to bring it forward except the menu bar.
+#[cfg(target_os = "macos")]
+fn show_in_dock(app: &AppHandle, window_open: bool) {
+    let policy = if window_open {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    };
+    if let Err(error) = app.set_activation_policy(policy) {
+        tracing::warn!(error = %error, window_open, "unable to change MuxSU's place in the Dock");
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -4785,6 +4806,9 @@ fn show_main_window(app: &AppHandle) {
     if let Err(error) = window.set_skip_taskbar(false) {
         tracing::warn!(error = %error, "unable to restore MuxSU to the taskbar");
     }
+    // Before showing, so the window opens in an app that can take focus.
+    #[cfg(target_os = "macos")]
+    show_in_dock(app, true);
     if let Err(error) = window.show() {
         tracing::warn!(error = %error, "unable to show MuxSU from the system tray");
     }
@@ -4798,8 +4822,8 @@ fn show_main_window(app: &AppHandle) {
 
 /// The status item this app lives in on macOS.
 ///
-/// It runs with no Dock icon, so this is the only way back to the window once
-/// it is closed. Before there was one, closing the window left the app running
+/// It leaves the Dock when its window closes, so this is the only way back to
+/// the window once it is closed. Before there was one, closing the window left the app running
 /// with nothing on screen pointing at it and no way to reopen it — the Dock
 /// icon was there but nothing answered a click.
 #[cfg(target_os = "macos")]
@@ -5265,22 +5289,16 @@ pub fn run() -> anyhow::Result<()> {
             #[cfg(target_os = "macos")]
             {
                 setup_macos_status_item(app)?;
-                // Nothing in the Dock and nothing in Command-Tab. The window is
-                // opened from the menu bar or by the global shortcut, and
-                // switching displays never needed the window at all.
-                //
-                // Said twice, because neither half is enough on its own. The
-                // bundle's LSUIElement holds from the moment the process
-                // starts, but the windowing layer sets the policy back to
-                // Regular in applicationDidFinishLaunching — so without this
-                // call the Dock icon comes back. This call alone would let the
-                // icon appear first and then vanish.
-                if let Err(error) = app
-                    .handle()
-                    .set_activation_policy(tauri::ActivationPolicy::Accessory)
-                {
-                    tracing::warn!(error = %error, "unable to keep MuxSU out of the Dock");
-                }
+                // In the Dock while the window is open, out of it otherwise
+                // (see `show_in_dock`). The bundle's LSUIElement keeps the icon
+                // away from launch, so an app started with no window never
+                // flashes one; but the windowing layer resets the policy to
+                // Regular once launching finishes, so it is set here either way.
+                let window_open = app
+                    .get_webview_window("main")
+                    .and_then(|window| window.is_visible().ok())
+                    .unwrap_or(false);
+                show_in_dock(app.handle(), window_open);
             }
             #[cfg(target_os = "windows")]
             {
