@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MuxSU — 安全掃描報告</title>
+<style>
+  :root{
+    --crit:#b3121f; --high:#d9541e; --med:#c99700; --low:#5a7d9a; --info:#6b7280;
+    --ok:#1a7f4b; --bg:#f6f7f9; --card:#fff; --ink:#1f2933; --muted:#6b7280;
+    --line:#e3e6ea; --code-bg:#1e2530; --code-ink:#e6edf3;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,"Segoe UI","PingFang TC","Microsoft JhengHei",sans-serif;
+    line-height:1.7; font-size:15px;
+  }
+  header.hero{
+    background:linear-gradient(135deg,#1f2933 0%,#2d3b4a 100%); color:#fff;
+    padding:48px 40px 40px;
+  }
+  header.hero h1{margin:0 0 6px; font-size:26px; letter-spacing:.5px}
+  header.hero .sub{color:#c3ccd6; font-size:14px}
+  .meta-grid{
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+    gap:14px; margin-top:26px;
+  }
+  .meta-grid div{background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.12);
+    border-radius:8px; padding:12px 14px; font-size:13px}
+  .meta-grid b{display:block; color:#8fa3b5; font-weight:600; font-size:11px;
+    text-transform:uppercase; letter-spacing:.6px; margin-bottom:4px}
+  main{max-width:1080px; margin:0 auto; padding:0 24px 80px}
+  section{background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:28px 32px; margin:26px 0; box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  h2{font-size:20px; margin:0 0 18px; padding-bottom:10px; border-bottom:2px solid var(--line)}
+  h3{font-size:16px; margin:26px 0 6px}
+  p{margin:8px 0}
+  .muted{color:var(--muted)}
+  a{color:#2563a8; text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  .sev-cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:14px; margin:6px 0 4px}
+  .sev-card{border-radius:10px; padding:16px 18px; color:#fff}
+  .sev-card .n{font-size:34px; font-weight:700; line-height:1}
+  .sev-card .l{font-size:13px; opacity:.92; margin-top:4px}
+  .c-crit{background:var(--crit)} .c-high{background:var(--high)}
+  .c-med{background:var(--med)} .c-low{background:var(--low)}
+
+  table{width:100%; border-collapse:collapse; margin:14px 0; font-size:14px}
+  th,td{text-align:left; padding:9px 11px; border-bottom:1px solid var(--line); vertical-align:top}
+  th{background:#f0f2f5; font-size:12px; text-transform:uppercase; letter-spacing:.4px; color:#4b5563}
+  tbody tr:hover{background:#fafbfc}
+  td.num{text-align:center; font-variant-numeric:tabular-nums}
+
+  .badge{display:inline-block; padding:2px 9px; border-radius:20px; font-size:11px;
+    font-weight:700; color:#fff; white-space:nowrap}
+  .b-crit{background:var(--crit)} .b-high{background:var(--high)}
+  .b-med{background:var(--med)} .b-low{background:var(--low)} .b-info{background:var(--info)}
+  .b-ok{background:var(--ok)}
+  .owasp{display:inline-block; padding:2px 8px; border-radius:5px; background:#eef1f4;
+    color:#3b4a59; font-size:11px; font-weight:600; margin-left:6px}
+
+  .finding{border:1px solid var(--line); border-left-width:5px; border-radius:9px;
+    padding:18px 20px; margin:16px 0; background:#fff}
+  .finding.crit{border-left-color:var(--crit)}
+  .finding.high{border-left-color:var(--high)}
+  .finding.med{border-left-color:var(--med)}
+  .finding.low{border-left-color:var(--low)}
+  .finding.info{border-left-color:var(--info)}
+  .finding h4{margin:0 0 4px; font-size:15px}
+  .finding .fid{font-family:ui-monospace,Menlo,monospace; color:var(--muted); font-weight:700; margin-right:6px}
+  .finding .loc{font-family:ui-monospace,Menlo,monospace; font-size:12.5px; color:#7a4b12;
+    background:#fdf5ea; padding:2px 7px; border-radius:5px; display:inline-block; margin:6px 0; word-break:break-all}
+  .lbl{font-weight:700; color:#374151; font-size:13px; margin-top:10px}
+  pre{background:var(--code-bg); color:var(--code-ink); padding:13px 15px; border-radius:8px;
+    overflow-x:auto; font-size:12.5px; line-height:1.55; margin:6px 0}
+  code{font-family:ui-monospace,Menlo,"Cascadia Code",monospace}
+  p code, li code, td code{background:#eef1f4; color:#b3121f; padding:1px 5px; border-radius:4px; font-size:12.5px}
+  .fix{background:#eef7f0; border:1px solid #cfe6d6; border-radius:7px; padding:10px 13px; margin-top:10px}
+  .fix .lbl{color:var(--ok); margin-top:0}
+
+  .toc{columns:2; column-gap:36px; font-size:14px}
+  .toc a{display:block; padding:3px 0}
+  @media(max-width:640px){.toc{columns:1}}
+  ul.pos li{margin:5px 0}
+  .road li{margin:7px 0}
+  .note{background:#fff8e6; border:1px solid #f0dca0; border-radius:8px; padding:14px 16px; margin:12px 0}
+  footer{text-align:center; color:var(--muted); font-size:13px; padding:30px 0}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>MuxSU — 安全掃描報告</h1>
+  <div class="sub">Rust · Tauri 2 · TypeScript（原生 DOM）· LAN 對等協定（TCP + mDNS，HMAC-SHA256 / PBKDF2）· DDC/CI · Windows / macOS</div>
+  <div class="meta-grid">
+    <div><b>掃描日期</b>2026-09-19</div>
+    <div><b>標準依據</b>OWASP API Top 10 (2023) + Web Top 10 (2021)</div>
+    <div><b>掃描方式</b>4 路平行程式碼審查（code-security-skills）＋ 主控端實證複核</div>
+    <div><b>總發現數</b>Critical 0 · High 2 · Medium 7 · Low/Info 16</div>
+  </div>
+</header>
+
+<main>
+
+<section>
+  <h2>範圍與方法</h2>
+  <table>
+    <tr><th style="width:130px">項目</th><th>內容</th></tr>
+    <tr><td>LAN 協定核心</td><td><code>crates/muxsu-core/src/</code>、<code>crates/muxsu-cli/</code>（Rust，tokio TCP、mdns-sd、hmac/sha2/ring）— 基準 HEAD <code>ce2fd9e</code>（v0.5.0）</td></tr>
+    <tr><td>桌面 App / 前端</td><td><code>src-tauri/</code>（Tauri 2 commands、capabilities、CSP、updater、診斷上傳、NSIS hook）、<code>src/</code>（TypeScript）— 基準 HEAD</td></tr>
+    <tr><td>未 commit 改動</td><td><code>git diff</code>：<code>network.rs</code>、<code>muxsu-core/lib.rs</code>、<code>src-tauri/src/lib.rs</code>（+1090 行）、<code>src/main.ts</code> — 協定 v3→v4、<code>HostInputsChanged</code>、<code>host_inputs</code>、outbox 重試</td></tr>
+    <tr><td>依賴與機密</td><td>Cargo（570 crates）＋ pnpm（約 164 項）＋ 187 個 commit 的版控歷史 ＋ <code>.github/workflows/release.yml</code>、<code>scripts/</code></td></tr>
+    <tr><td>信任邊界</td><td>① 同網段任意裝置（未知配對密碼）② 持有群組共享配對密碼的主機（可能被入侵／密碼外洩）③ 本機 WebView 視窗 ↔ Rust IPC ④ 對外：GitHub API、Updater、Sentry</td></tr>
+    <tr><td>資料敏感度</td><td>配對密碼（明文存於本機 settings.json）、主機名稱／別名、IP／MAC、螢幕 EDID 序號、診斷紀錄</td></tr>
+  </table>
+  <div class="note">
+    <b>重要前提：</b>靜態原始碼審查，未經動態滲透驗證；標「須確認」項目應以實碼/實機複驗收斂。MuxSU <b>已公開發行 v0.5.0</b>（GitHub Releases，含自動更新），HEAD 範圍發現影響現有使用者；「未 commit 改動」章節的發現<b>尚未發布</b>，屬 commit 前必修。專案名稱、上線狀態與區塊劃分由主控端依 README／tauri.conf.json 推斷（非互動模式未另行詢問）。依賴稽核 agent 於本機以 Homebrew 安裝了 <code>cargo-audit</code>、<code>osv-scanner</code>（專案檔案未變動）。
+  </div>
+</section>
+
+<section>
+  <h2>風險總覽</h2>
+  <div class="sev-cards">
+    <div class="sev-card c-crit"><div class="n">0</div><div class="l">Critical 嚴重</div></div>
+    <div class="sev-card c-high"><div class="n">2</div><div class="l">High 高</div></div>
+    <div class="sev-card c-med"><div class="n">7</div><div class="l">Medium 中</div></div>
+    <div class="sev-card c-low"><div class="n">16</div><div class="l">Low / Info</div></div>
+  </div>
+  <p class="muted">核心結論：<b>未發現「同網段、未知配對密碼的攻擊者」能切換螢幕、竄改設定或冒充主機的路徑。</b>兩項 High 均位於尚未 commit 的新同步機制，攻擊者需持有群組配對密碼（或由時鐘異常自然觸發）。</p>
+
+  <h3>各區塊嚴重度分布</h3>
+  <table>
+    <thead><tr><th>區塊</th><th class="num">Critical</th><th class="num">High</th><th class="num">Medium</th><th class="num">Low / Info</th></tr></thead>
+    <tbody>
+      <tr><td>LAN 協定核心（HEAD）</td><td class="num">0</td><td class="num">0</td><td class="num">2</td><td class="num">5</td></tr>
+      <tr><td>桌面 App / 前端（HEAD）</td><td class="num">0</td><td class="num">0</td><td class="num">1</td><td class="num">6</td></tr>
+      <tr><td>未 commit 改動（協定 v4）</td><td class="num">0</td><td class="num">2</td><td class="num">4</td><td class="num">2</td></tr>
+      <tr><td>依賴 CVE / 版控機密 / CI</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">3</td></tr>
+    </tbody>
+  </table>
+
+  <h3>OWASP 對照矩陣</h3>
+  <table>
+    <tr><th style="width:230px">分類</th><th style="width:90px">狀態</th><th>主要發現</th></tr>
+    <tr><td>API1 BOLA</td><td><span class="badge b-med">Medium</span></td><td>D-M1、D-M2：群組密鑰下 <code>host_id</code> 聲明未綁定發送者；A-F1、A-F2</td></tr>
+    <tr><td>API2 Broken Authentication</td><td><span class="badge b-ok">良好</span></td><td>HMAC 全訊息 + PBKDF2 600k + nonce/timestamp + 回應簽章；僅群組共享密鑰模型限制（A-F2）</td></tr>
+    <tr><td>API3 Object Property Level</td><td><span class="badge b-low">Low</span></td><td>A-F3 mDNS 明碼廣播 hostname/MAC；A-F4、T-I1 診斷欄位</td></tr>
+    <tr><td>API4 Unrestricted Resource Consumption</td><td><span class="badge b-high">High</span></td><td>D-H1 host_inputs 無界成長致 Ping 回應 &gt; 8KB；A-F5 無連線數上限；D-M3 無限重試</td></tr>
+    <tr><td>API5 BFLA</td><td><span class="badge b-med">Medium</span></td><td>T-M1 自訂 Tauri command 未依視窗授權（IPC 層）；LAN 協定無角色分級，不適用</td></tr>
+    <tr><td>API6 Sensitive Business Flows</td><td><span class="badge b-high">High</span></td><td>D-H2 <code>updated_at_ms</code> 無上限，LWW 毒化；D-M4 重設螢幕清空全群組</td></tr>
+    <tr><td>API7 SSRF</td><td><span class="badge b-low">Low</span></td><td>T-L4 mDNS 位址未限私有網段（連線前仍需簽章，影響有限）</td></tr>
+    <tr><td>API8 Security Misconfiguration</td><td><span class="badge b-med">Medium</span></td><td>A-F6 監聽 <code>0.0.0.0</code>；T-L3 DSN 允許 http</td></tr>
+    <tr><td>API9 Improper Inventory</td><td><span class="badge b-ok">無發現</span></td><td>協定版本明確（v4），舊版請求安全拒絕</td></tr>
+    <tr><td>API10 Unsafe Consumption</td><td><span class="badge b-low">Low</span></td><td>A-F8 DDC capabilities 括號深度 u32 下溢（本機硬體輸入）</td></tr>
+    <tr><td>A03 Injection（XSS / 指令注入）</td><td><span class="badge b-ok">無發現</span></td><td>前端一律 <code>escapeHtml()</code>；全專案無 <code>Command::new</code></td></tr>
+    <tr><td>A05 Misconfiguration（CSP / capabilities）</td><td><span class="badge b-ok">良好</span></td><td>CSP 無 unsafe-inline/eval；opener URL 白名單</td></tr>
+    <tr><td>A06 Vulnerable Components</td><td><span class="badge b-ok">無 CVE</span></td><td>cargo-audit / osv-scanner / pnpm audit 皆 0；7 個 Linux-only unmaintained crate（不可達）</td></tr>
+    <tr><td>A08 Software &amp; Data Integrity</td><td><span class="badge b-low">Low</span></td><td>C-L1 action SHA 無法經 API 追溯（內容已驗證與官方一致）；Updater 走 minisign 簽章</td></tr>
+  </table>
+
+  <h3>目錄</h3>
+  <div class="toc">
+    <a href="#must">commit／下一版前必修彙整</a>
+    <a href="#diff">未 commit 改動（協定 v4）</a>
+    <a href="#core">LAN 協定核心</a>
+    <a href="#app">桌面 App / 前端</a>
+    <a href="#deps">依賴 CVE、版控機密與 CI</a>
+    <a href="#pos">已就位的正面控制</a>
+    <a href="#road">修復路線圖</a>
+  </div>
+</section>
+
+<section id="must">
+  <h2>commit／下一版前必修彙整</h2>
+  <table>
+    <thead><tr><th class="num" style="width:50px">#</th><th>項目</th><th style="width:150px">區塊</th><th style="width:90px">嚴重度</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>D-H1 <code>apply_host_input_update</code> 驗證 host_id（已知主機＋格式）、修掉 <code>displaced_conflict ||</code> 短路、加筆數上限與修剪</td><td>未 commit 改動</td><td><span class="badge b-high">High</span></td></tr>
+      <tr><td class="num">2</td><td>D-H2 拒收 <code>updated_at_ms &gt; now + 30s</code> 的條目（alias / label / host_order 合併一併套用）</td><td>未 commit 改動</td><td><span class="badge b-high">High</span></td></tr>
+      <tr><td class="num">3</td><td>D-M4 重設螢幕只 tombstone 並廣播本機自己的條目</td><td>未 commit 改動</td><td><span class="badge b-med">Medium</span></td></tr>
+      <tr><td class="num">4</td><td>D-M1 拒收遠端寫入 <code>local_host_id</code> 的指派</td><td>未 commit 改動</td><td><span class="badge b-med">Medium</span></td></tr>
+      <tr><td class="num">5</td><td>D-M3 outbox 加 TTL／最大嘗試次數，永久性錯誤不重試</td><td>未 commit 改動</td><td><span class="badge b-med">Medium</span></td></tr>
+      <tr><td class="num">6</td><td>A-F5 <code>AgentServer</code> 加併發連線上限（Semaphore）與 per-IP 節流</td><td>LAN 協定核心</td><td><span class="badge b-med">Medium</span></td></tr>
+      <tr><td class="num">7</td><td>T-M1 敏感 Tauri command 依視窗授權（host-switcher 只給切換相關指令）</td><td>桌面 App</td><td><span class="badge b-med">Medium</span></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="diff">
+  <h2>未 commit 改動（協定 v4 · HostInputsChanged / host_inputs / outbox）</h2>
+  <p class="muted">行號為工作樹現況。此區尚未發布，建議修正後再 commit。</p>
+
+  <h3 style="color:var(--high)">High</h3>
+  <div class="finding high">
+    <h4><span class="fid">D-H1</span>host_inputs 無界成長＋未知 host_id 可入庫 → Ping 回應超過 8KB，該主機無法再被切換 <span class="owasp">API4:2023</span></h4>
+    <div class="loc">src-tauri/src/lib.rs:4233-4323（apply_host_input_update）· 4298-4308（短路）· 2808（Ping 回應）· 1942 · crates/muxsu-core/src/network.rs:39（MAX_PACKET_BYTES = 8KB）</div>
+    <div class="lbl">證據（主控端已親自核對）</div>
+<pre><code>let changed = displaced_conflict
+    || if update.host_id == settings.local_host_id { ... } else {
+        let peer = settings.peers.iter_mut()
+            .find(|peer| peer.id == update.host_id)?;   // displaced_conflict 為 true 時被短路跳過
+        ...
+    };
+settings.host_inputs.push(AgentHostInput {
+    host_id: update.host_id.clone(),                     // 任意 host_id、任意長度寫入並持久化
+    ...
+});</code></pre>
+    <div class="lbl">攻擊情境</div>
+    <p>持有群組密碼者送出 <code>HostInputsChanged</code>，<code>host_id</code> 為約 7KB 的字串、<code>input</code> 為某主機目前佔用的 port，藉「頂掉衝突」讓短路生效，垃圾條目寫入 settings.json。受害主機的 Ping 回應整包附上 <code>host_inputs</code>，超過 8KB 後被 client 截斷、JSON 解析失敗；而每次切換到該主機前都必須 Ping 成功，因此<b>該主機永久無法被切換或同步</b>，只有「重設全部」能復原。即使沒有攻擊者，多主機 × 多螢幕的 tombstone 與已移除主機條目也永遠不會清理，長期會自然逼近上限。與既有 alias／label 的 <code>MAX_SHARED_*</code>、<code>is_valid_host_id</code> 慣例不一致。</p>
+    <p><b>附帶功能 bug：</b>同一個短路也讓合法更新在「頂掉衝突」時，<b>不會</b>把新 port 套用到目標主機（<code>set_input_for</code>／<code>local_input</code> 不執行），只寫入帳本，造成帳本與實際設定不一致。</p>
+    <div class="fix"><div class="lbl">修復</div>在迴圈開頭驗證 <code>host_id</code> 必須是 <code>local_host_id</code> 或 <code>peers</code> 之一，並通過 <code>host_order::is_valid_host_id</code>；先解析目標主機再處理衝突（移除 <code>||</code> 短路）；新增 <code>MAX_SHARED_HOST_INPUTS</code>，超量整包拒收；<code>remove_peer</code>、取消共用螢幕、重設時修剪無關條目，tombstone 設 TTL；Ping 回應與快照序列化後檢查大小預算。</div>
+  </div>
+
+  <div class="finding high">
+    <h4><span class="fid">D-H2</span><code>updated_at_ms</code> 無上限 → LWW 毒化、群組永久無法收斂 <span class="owasp">API6:2023</span></h4>
+    <div class="loc">src-tauri/src/lib.rs:4248 · 4343（record_host_input_update）· 1310-1312（重設）· 3425</div>
+    <div class="lbl">證據</div>
+<pre><code>if update.updated_at_ms &lt;= current_version { return None; }   // 未對未來值夾限
+// 本機後續編輯：now_ms.max(previous.saturating_add(1)) → 永遠停在 u64::MAX</code></pre>
+    <div class="lbl">攻擊情境</div>
+    <p>持密者送一筆 <code>updated_at_ms = u64::MAX</code> 的 tombstone，即可讓某主機在某螢幕的 port 指派被永久清空，之後任何人（包括本機 UI 與「重設螢幕」）都改不回來。非惡意情境：某台主機時鐘曾大幅超前（CMOS 電池沒電），那段期間的編輯進入 outbox，NTP 校正後送出的未來時間戳會一直「贏」到真實時間追上為止。</p>
+    <div class="fix"><div class="lbl">修復</div>接收端拒收或夾值 <code>updated_at_ms &gt; now_ms + MAX_CLOCK_SKEW(30s) + 容忍值</code>（協定已要求 ±30 秒時鐘差，不會誤傷正常主機）；<code>record_host_input_update</code> 拒絕未來值的 previous。既有的 alias／label／host_order 合併有同樣缺口，建議一併修。</div>
+  </div>
+
+  <h3 style="color:var(--med)">Medium</h3>
+  <table>
+    <tr><th style="width:70px">編號</th><th>問題</th><th style="width:230px">位置</th><th style="width:90px">OWASP</th></tr>
+    <tr><td>D-M1</td><td>任一持密者可覆寫<b>本機自己</b>與其他主機的 port 指派，繞過 <code>LocalInputConfirmed</code> 既有的「Taken」保護；錯誤的 <code>local_input</code> 會讓「切回本機」時 DDC 切到錯誤輸入。修復：拒收遠端寫入 <code>local_host_id</code>，或僅接受 <code>host_id == 發送者</code> 的更新；長期改為每主機獨立金鑰。</td><td>src-tauri/src/lib.rs:4253-4304</td><td>API1</td></tr>
+    <tr><td>D-M2</td><td>未驗證來源的 <code>LocalInputConfirmed</code> 被升級為權威 LWW 條目（以接收端時間寫入並重新廣播），並同時移動 <code>active_route</code>，全群組可被誤導「誰在螢幕上」。修復：綁定 host_id 與連線來源；修好前不讓此衍生條目進入 <code>host_inputs</code>。</td><td>src-tauri/src/lib.rs:4197-4204、4388-4415</td><td>API1</td></tr>
+    <tr><td>D-M3</td><td>outbox 重試無最大次數／TTL；版本不符、超過 8KB、peer 報廢等永久失敗會每 5 分鐘重送到永遠並重寫 settings.json；<code>in_flight</code> 略過時未更新下次時間，每 5 秒 spawn 並 clone 整份設定；註解宣稱保序但實際同時 spawn。修復：TTL／最大次數、永久錯誤不重試、被略過也要排程、同 peer 逐一送出。</td><td>src-tauri/src/lib.rs:3107-3175、6025-6033</td><td>API4</td></tr>
+    <tr><td>D-M4</td><td>「重設螢幕」把<b>所有主機</b>的條目都變成 tombstone 並廣播，對端會清掉自己的 <code>local_input</code>——任何一台按一次重設，全群組 port 設定被清空（無需攻擊者）。修復：只 tombstone 並廣播 <code>host_id == local_host_id</code> 的條目。</td><td>src-tauri/src/lib.rs:1305-1313、1351-1358</td><td>API6</td></tr>
+  </table>
+
+  <h3 style="color:var(--low)">Low / Info</h3>
+  <table>
+    <tr><th style="width:70px">編號</th><th>問題</th><th style="width:230px">位置</th></tr>
+    <tr><td>D-L1</td><td><code>store_settings</code>／<code>update_delivery_settings</code> 持有 std <code>RwLock</code> 寫鎖期間做磁碟 I/O，會阻塞 tokio worker。建議鎖內只 clone、放鎖後寫檔。</td><td>src-tauri/src/lib.rs:4579-4600、3087-3105</td></tr>
+    <tr><td>D-I1</td><td>outbox 持久化於 settings.json，沿用 0600／AppData ACL，不含新機密；僅記錄。</td><td>src-tauri/src/lib.rs:4882-4909</td></tr>
+  </table>
+  <p class="muted">已檢查、無發現：回應中的 <code>host_inputs</code> 皆於 HMAC＋nonce＋版本驗證後才使用（簽章 domain 升為 <code>muxsu-response-v4</code>）；<code>src/main.ts</code> 未新增 innerHTML sink；未新增對不受信任輸入的 unwrap/expect；未新增 Tauri command。</p>
+</section>
+
+<section id="core">
+  <h2>LAN 協定核心（Rust · OWASP API Top 10 2023）</h2>
+  <div class="note">
+    <b>認證架構（重點檢查）：</b>
+    <ul style="margin:6px 0 0">
+      <li>配對密碼（≥15 字元）經 PBKDF2-HMAC-SHA256 600,000 次拉伸；請求以 HMAC 簽 <code>(timestamp, nonce, action)</code> 全訊息，<code>verify_slice</code> 常數時間比較；±30 秒時鐘偏移＋nonce 表防重放（有回歸測試）。</li>
+      <li>回應同樣簽章並綁定請求 nonce；mDNS 探索到的位址變更需先以密碼證明（<code>confirmed_move</code>）才採信。</li>
+      <li>核心限制：<b>群組共享對稱密鑰</b>只能證明「發送者是群組成員」，無法證明訊息內聲稱的 <code>host_id</code>（見 A-F2，以及未 commit 改動的 D-M1／D-M2 使其影響放大）。</li>
+    </ul>
+  </div>
+
+  <h3 style="color:var(--med)">Medium</h3>
+  <table>
+    <tr><th style="width:70px">編號</th><th>問題</th><th style="width:230px">位置</th><th style="width:90px">OWASP</th></tr>
+    <tr><td>A-F5</td><td>Agent TCP 監聽每個 accept 直接 <code>tokio::spawn</code>，無併發連線上限／per-IP 節流。雖有 8KB 封包上限與 5 秒絕對逾時（已防 Slowloris），同網段仍可大量開連線耗盡 fd／記憶體，使合法主機無法連線。修復：<code>Semaphore</code>（64–256）＋ per-IP 滑動窗口，未驗證連線逾時可縮至 2 秒。</td><td>crates/muxsu-core/src/network.rs:857-885</td><td>API4</td></tr>
+    <tr><td>A-F6</td><td>綁定 <code>0.0.0.0:47653</code>，同時暴露於公用 Wi-Fi、VPN、熱點等所有介面，擴大 A-F5 與指紋辨識面；未見主動設定防火牆規則。修復：限縮至私有網段介面或提供網卡白名單。<b>須確認</b>：Windows 首次啟動的防火牆授權範圍是否限「私人網路」。</td><td>network.rs:833-848；src-tauri/src/lib.rs:2609-2614</td><td>API8</td></tr>
+  </table>
+
+  <h3 style="color:var(--low)">Low</h3>
+  <table>
+    <tr><th style="width:70px">編號</th><th>問題</th><th style="width:230px">位置</th><th style="width:90px">OWASP</th></tr>
+    <tr><td>A-F1</td><td>已配對主機的 <code>name</code>／<code>platform</code>／<code>mac_address</code> 直接採信未驗證的 mDNS 廣播覆寫；偽造 MAC 會讓 Wake-on-LAN 送往錯誤目標。修復：MAC 更新比照 <code>confirmed_move</code> 需密碼證明。</td><td>src-tauri/src/lib.rs:2578-2588</td><td>API1</td></tr>
+    <tr><td>A-F2</td><td>群組共享密鑰下，<code>LocalInputConfirmed.host_id</code> 可被任一持密者偽造，<code>apply_verified_peer_route</code> 未比對連線來源（HEAD 中僅影響 UI 顯示；未 commit 改動使其升級，見 D-M2）。修復：以群組密鑰＋雙方 id 做 HKDF 衍生逐對金鑰，或比對來源 IP。</td><td>network.rs:557-564；lib.rs:3765-3790</td><td>API1</td></tr>
+    <tr><td>A-F3</td><td>mDNS TXT 明碼廣播 <code>id</code>、電腦名稱、平台、MAC，可被動蒐集做裝置指紋與跨網路追蹤。修復：僅在啟用 WoL 時廣播 MAC，並於文件告知。</td><td>network.rs:194-202、316-348</td><td>API3</td></tr>
+    <tr><td>A-F4</td><td>診斷快照中的螢幕序號採未加鹽雜湊，短序號理論上可離線枚舉。修復（選配）：以配對密碼衍生的固定鹽做 HMAC。</td><td>src-tauri/src/diagnostics.rs:11-13</td><td>API3</td></tr>
+    <tr><td>A-F8</td><td><code>group_body_after_token</code> 以 <code>u32</code> 計括號深度，多餘的 <code>)</code> 會下溢（debug panic、release wrap）。輸入來自本機實體螢幕 DDC/CI，非網路。修復：<code>checked_sub</code>，下溢即回傳 <code>None</code>。</td><td>crates/muxsu-core/src/capabilities.rs:30-64</td><td>API10</td></tr>
+  </table>
+  <p class="muted">已檢查、無發現：BFLA（無角色分級）、SSRF（連線目標僅限配對／探索位址）、資產盤點（版本明確）、指令注入（無 <code>Command::new</code>）、不受信任輸入上的 unwrap/panic、CLI 參數（<code>DisplayInput::parse_code</code> 限 1..=255）、unsafe FFI（皆附 SAFETY 註解，Drop 正確）。</p>
+</section>
+
+<section id="app">
+  <h2>桌面 App / 前端（Tauri 2 · TypeScript）</h2>
+
+  <h3 style="color:var(--med)">Medium</h3>
+  <div class="finding med">
+    <h4><span class="fid">T-M1</span>自訂 Tauri command 未依視窗做權限隔離 <span class="owasp">API5 / A01</span></h4>
+    <div class="loc">src-tauri/src/lib.rs:5324（invoke_handler!）· src-tauri/capabilities/host-switcher.json</div>
+    <div class="lbl">證據</div>
+<pre><code>// capabilities/host-switcher.json
+"windows": ["host-switcher"],
+"permissions": ["core:default"]
+// 僅限制外掛／核心權限；自訂 #[tauri::command] 沒有 permission manifest，
+// host-switcher 視窗仍可 invoke save_settings / reset_settings / install_update /
+// send_diagnostic_report / set_diagnostics_consent …</code></pre>
+    <div class="lbl">攻擊情境</div>
+    <p>目前兩個視窗皆未發現可利用的 XSS，屬縱深防禦缺口。一旦 <code>alwaysOnTop</code> 的 host-switcher 小視窗未來出現任何未跳脫的遠端資料插入點，攻擊者即可呼叫全部指令（重設設定、安裝更新、上傳診斷），影響半徑從「切換螢幕」放大到整個 App。</p>
+    <div class="fix"><div class="lbl">修復</div>以 <code>src-tauri/permissions/*.toml</code> 為自訂指令定義 permission，host-switcher capability 只授權 <code>switch_host</code>、<code>hide_host_switcher</code>、<code>get_host_switcher_state</code>、<code>set_locale</code> 等必要指令；或在敏感指令內檢查 <code>webview_window.label()</code>。</div>
+  </div>
+
+  <h3 style="color:var(--low)">Low / Info</h3>
+  <table>
+    <tr><th style="width:70px">編號</th><th>問題</th><th style="width:230px">位置</th></tr>
+    <tr><td>T-L1</td><td>NSIS <code>PREINSTALL</code> 讀取 HKCU（使用者可寫）的 <code>UninstallString</code> 後直接 <code>ExecWait</code>。主控端已確認 NSIS 未設定 <code>installMode</code>（<code>tauri.conf.json</code> 中的 <code>installMode: "passive"</code> 屬 updater），採 Tauri 預設 <code>currentUser</code>，<b>目前不構成跨權限提權</b>；若改為 perMachine／both 即成本機提權。修復：執行前驗證路徑前綴與簽章，或改為提示手動解除安裝。</td><td>src-tauri/installer-hooks.nsi:18-60</td></tr>
+    <tr><td>T-L2</td><td><code>persist_settings</code> 直接 <code>fs::write</code>，非「暫存檔＋rename」原子寫入；中斷時含明文配對密碼的 settings.json 可能損毀並整份回到預設，遺失所有信任關係。</td><td>src-tauri/src/lib.rs:4204-4213</td></tr>
+    <tr><td>T-L3</td><td><code>parse_dsn</code> 同時接受 <code>http</code>／<code>https</code>，若建置時 <code>MUXSU_SENTRY_DSN</code> 誤設為 http，診斷資料將明文傳送。修復：僅接受 https。</td><td>src-tauri/src/diagnostics_upload.rs:37</td></tr>
+    <tr><td>T-L4</td><td>mDNS 探索位址僅排除 loopback，未限私有網段；偽造服務可誘使本機對任意 IP:Port 發起連線（可作內網埠探測），但後續請求需簽章，無法觸發動作。</td><td>crates/muxsu-core/src/network.rs:316-358</td></tr>
+    <tr><td>T-I1</td><td>診斷快照中的螢幕型號名稱（EDID 字串）未經 <code>Redactor</code> 清洗；少數韌體可能內嵌自訂字串。</td><td>src-tauri/src/diagnostics.rs:167-357</td></tr>
+    <tr><td>T-I2</td><td>PBKDF2 使用固定鹽值 — 雙端需在未通訊前推導相同金鑰的刻意取捨（類似 Wi-Fi PSK），已有註解說明，非漏洞。</td><td>crates/muxsu-core/src/network.rs:35-62</td></tr>
+  </table>
+  <p class="muted">已檢查、無發現：前端 XSS（主機名稱、別名、螢幕名稱、EDID、輸入備註落入 innerHTML 前一律 <code>escapeHtml()</code>）、CSP、capabilities 與 opener 白名單、Updater 簽章、硬編碼機密、SQL（無資料庫）、指令注入、對端別名／備註寫檔前驗證。</p>
+</section>
+
+<section id="deps">
+  <h2>依賴 CVE、版控機密與 CI</h2>
+  <h3>版控機密</h3>
+  <p><span class="badge b-ok">無發現</span> 工作樹＋187 個 commit 完整歷史未見私鑰、<code>TAURI_SIGNING_PRIVATE_KEY</code> 實值、Apple 憑證或 token；<code>tauri.conf.json</code> 的 updater <code>pubkey</code> 經 base64 解碼確認為 minisign <b>公鑰</b>；<code>.gitignore</code> 完整排除 <code>.env*</code>、<code>*.key</code>、<code>*.pem</code>、<code>*.p12</code> 等。</p>
+
+  <h3>Rust（Cargo，570 crates）</h3>
+  <p><span class="badge b-ok">0 CVE</span> 以 <code>cargo audit</code> 與 <code>osv-scanner</code> 交叉驗證。</p>
+  <table><tr><th>套件</th><th>問題 / Advisory</th><th>嚴重</th><th>建議</th></tr>
+    <tr><td><code>glib</code> 0.18.5</td><td>RUSTSEC-2024-0429 unsound</td><td><span class="badge b-info">Info</span></td><td rowspan="3">皆來自 tauri/wry 的 Linux GTK 分支或 <code>urlpattern</code>；Windows／macOS 產物不編譯，不可達。新增 Linux target 前重新稽核。</td></tr>
+    <tr><td><code>proc-macro-error</code> 1.0.4</td><td>RUSTSEC-2024-0370 unmaintained</td><td><span class="badge b-info">Info</span></td></tr>
+    <tr><td><code>unic-*</code>（5 個）0.9.0</td><td>RUSTSEC-2025-0075/0080/0081/0098/0100 unmaintained</td><td><span class="badge b-info">Info</span></td></tr>
+  </table>
+  <p class="muted">授權：以 MIT／Apache-2.0 為主，5 個 MPL-2.0（檔案層級，不波及本專案），無強制 GPL／AGPL。Lockfile 與 manifest 一致（<code>cargo metadata --locked</code> 通過）。</p>
+
+  <h3>npm（pnpm）</h3>
+  <p><span class="badge b-ok">0 CVE</span> <code>pnpm audit</code>（全部與 <code>--prod</code>）與 <code>osv-scanner</code> 皆為 0。主版本落後（非漏洞）：<code>vite</code> 7→8、<code>typescript</code> 5→7、<code>lucide</code> 0.x→1.x。</p>
+
+  <h3>CI／供應鏈（.github/workflows/release.yml）</h3>
+  <table>
+    <tr><th style="width:70px">編號</th><th>問題</th><th style="width:170px">位置</th><th style="width:80px">嚴重</th></tr>
+    <tr><td>C-L1</td><td><code>pnpm/action-setup@f40ffcd…</code> 與 <code>tauri-apps/tauri-action@2d793bf…</code> 的釘選 SHA 以 GitHub commits API 查詢為 404，無法追溯到上游分支／標籤。<b>主控端複核：</b>v0.5.0 發布 run（2026-09-18）確實成功下載這兩個 SHA；其 tarball 與官方 <code>v4.4.0</code>（<code>b906aff…</code>）、<code>v1.0.0</code>（<code>1deb371…</code>）內容<b>逐位元一致</b>。依賴 agent 原判「建置必失敗、High」不成立，降為 Low：內容無害，但 pin 不可經 API 驗證，建議換成可追溯的 commit SHA。</td><td>release.yml:43、77</td><td><span class="badge b-low">Low</span></td></tr>
+    <tr><td>C-L2</td><td><code>${{ steps.*.outputs.* }}</code> 直接內插進 <code>run:</code> shell；來源為版控內版本字串、無 PR 觸發，現況不可利用。建議改由 <code>env:</code> 傳入。</td><td>release.yml:88、130、143、156</td><td><span class="badge b-low">Low</span></td></tr>
+  </table>
+
+  <h3>修復指令</h3>
+<pre><code># C-L1：改為可追溯的官方 commit SHA（內容已驗證一致；貼入前請再以 gh api 核對）
+#   pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1        # v4.4.0
+#   tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # v1.0.0
+gh api repos/pnpm/action-setup/commits/b906affcce14559ad1aafd4ab0e942779e9f58b1 --jq .sha
+gh api repos/tauri-apps/tauri-action/commits/1deb371b0cd8bd54025b384f1cd735e725c4060f --jq .sha
+
+# C-L2：防禦性寫法
+env:
+  APP_VERSION: ${{ steps.app_version.outputs.version }}
+run: tag="v${APP_VERSION}"
+
+# 例行維護（非 CVE 驅動，需個別測相容性）
+pnpm add -D vite@^8
+pnpm add lucide@^1</code></pre>
+</section>
+
+<section id="pos">
+  <h2>已就位的正面控制</h2>
+  <ul class="pos">
+    <li><span class="badge b-ok">OK</span> HMAC-SHA256 涵蓋完整訊息、常數時間比較；PBKDF2 600k 拉伸配對密碼</li>
+    <li><span class="badge b-ok">OK</span> timestamp（±30s）＋ nonce 雙重防重放，並有「過期清表不得遺忘可重放 nonce」回歸測試</li>
+    <li><span class="badge b-ok">OK</span> 回應簽章並綁定請求 nonce（v4 domain 分離），先驗簽才採信任何回應資料</li>
+    <li><span class="badge b-ok">OK</span> mDNS 位址劫持防禦：<code>confirmed_move</code> 需密碼證明才跟隨新位址</li>
+    <li><span class="badge b-ok">OK</span> 8KB 封包上限＋5 秒絕對逾時；認證失敗回傳模糊化錯誤訊息</li>
+    <li><span class="badge b-ok">OK</span> 全專案無外部程序呼叫；unsafe FFI 均附 SAFETY 註解</li>
+    <li><span class="badge b-ok">OK</span> 前端遠端資料一律 <code>escapeHtml()</code>；CSP 無 unsafe-inline／unsafe-eval；opener URL 白名單＋前端二次驗證</li>
+    <li><span class="badge b-ok">OK</span> 對端別名／輸入備註有長度、控制字元、host id 格式、筆數上限與測試</li>
+    <li><span class="badge b-ok">OK</span> 診斷分享雙方各自同意；<code>Redactor</code> 移除密碼、IP、MAC、主機名、家目錄，並有測試保證</li>
+    <li><span class="badge b-ok">OK</span> 設定檔 Unix 0600；Updater 走官方 minisign 簽章驗證</li>
+    <li><span class="badge b-ok">OK</span> CI 最小權限（頂層 <code>contents: read</code>）、<code>persist-credentials: false</code>、<code>--frozen-lockfile</code>、無 <code>pull_request_target</code>、簽章私鑰僅經 secrets 注入</li>
+    <li><span class="badge b-ok">OK</span> 0 CVE、0 版控機密、授權無虞</li>
+  </ul>
+</section>
+
+<section id="road">
+  <h2>修復路線圖</h2>
+  <h3>P0 — 本週（commit 協定 v4 前）</h3>
+  <ol class="road">
+    <li>D-H1：<code>apply_host_input_update</code> 開頭驗證 host_id（已知主機＋<code>is_valid_host_id</code>），移除 <code>displaced_conflict ||</code> 短路（同時修正新 port 未套用的功能 bug），加 <code>MAX_SHARED_HOST_INPUTS</code></li>
+    <li>D-H2：拒收 <code>updated_at_ms &gt; now + 30s</code>；alias／label／host_order 合併同步套用</li>
+    <li>D-M4：重設螢幕只 tombstone 本機條目</li>
+    <li>D-M1：拒收遠端寫入 <code>local_host_id</code></li>
+  </ol>
+  <h3>P1 — 本月</h3>
+  <ol class="road">
+    <li>D-M3：outbox TTL／最大次數、永久錯誤不重試、同 peer 保序</li>
+    <li>D-H1 延伸：<code>host_inputs</code> 修剪（remove_peer、取消共用）與 Ping 回應大小預算</li>
+    <li>A-F5：AgentServer 連線上限＋per-IP 節流</li>
+    <li>T-M1：自訂 Tauri command 依視窗授權</li>
+    <li>D-M2／A-F2：host_id 與連線來源綁定</li>
+    <li>T-L2：settings.json 原子寫入</li>
+  </ol>
+  <h3>P2 — 本季（技術債）</h3>
+  <ol class="road">
+    <li>A-F6／T-L4：監聽與探索限縮私有網段或網卡白名單</li>
+    <li>A-F1、A-F3：MAC 更新需密碼證明；僅啟用 WoL 時廣播 MAC</li>
+    <li>A-F8：capabilities 解析改 <code>checked_sub</code></li>
+    <li>T-L1、T-L3、C-L1、C-L2、D-L1：NSIS 路徑驗證、DSN https-only、action SHA 改可追溯值、CI env 傳值、鎖外寫檔</li>
+    <li>長期：評估逐對衍生金鑰（HKDF）以根治群組密鑰無法證明身分的問題</li>
+  </ol>
+  <div class="note" style="margin-top:22px"><b>交付前提醒：</b>本報告為靜態審查。A-F6 防火牆範圍、T-L1 正式發布的安裝模式為「須確認」項目，應實機驗證。D 系列發現針對 2026-09-19 工作樹的未 commit 內容，修正後建議以複驗模式重驗。本次未發現需輪換的機密。</div>
+</section>
+
+<footer>
+  MuxSU 安全掃描報告 · 產出於 2026-09-19 · OWASP API Top 10 (2023) + Web Top 10 (2021) · 4 路平行程式碼審查（LAN 協定核心 · 桌面 App／前端 · 未 commit 改動 · 依賴與版控機密／CI，code-security-skills）
+</footer>
+
+</main>
+</body>
+</html>
