@@ -1010,7 +1010,7 @@ fn unshare_monitor(settings: &mut AppSettings, target: &MonitorFingerprint) {
         .shared_monitors
         .iter()
         .filter(|selected| {
-            monitor_identity::is_same_display(&links, &selected.fingerprint, &target)
+            monitor_identity::is_same_display(&links, &selected.fingerprint, target)
         })
         .map(|selected| selected.fingerprint.clone())
         .collect::<Vec<_>>();
@@ -2175,8 +2175,7 @@ async fn wake_route(settings: &AppSettings, peer: &HostRoute) -> Result<(), Stri
         });
     }
     let mac_address = MacAddress::from_str(&peer.mac_address).map_err(core_user_error)?;
-    let broadcast_address = Ipv4Addr::from_str(&settings.broadcast_ip)
-        .map_err(|_| ui_text("廣播位址格式無效", "Invalid broadcast address").to_owned())?;
+    let broadcast_address = wake_broadcast_address(settings).map_err(core_user_error)?;
     WakeTarget {
         mac_address,
         broadcast_address,
@@ -2185,6 +2184,27 @@ async fn wake_route(settings: &AppSettings, peer: &HostRoute) -> Result<(), Stri
     .wake()
     .await
     .map_err(core_user_error)
+}
+
+/// Where wake packets are sent: the all-hosts broadcast or an address on a
+/// local network, like everything else MuxSU sends. A wake packet carries the
+/// target's MAC address, so it is never sent anywhere beyond.
+fn wake_broadcast_address(settings: &AppSettings) -> Result<Ipv4Addr, DisplayMuxError> {
+    let address = Ipv4Addr::from_str(&settings.broadcast_ip).map_err(|_| {
+        DisplayMuxError::WakeFailed(
+            ui_text("廣播位址格式無效", "Invalid broadcast address").to_owned(),
+        )
+    })?;
+    if !address.is_broadcast() && !muxsu_core::is_local_network_address(IpAddr::V4(address)) {
+        return Err(DisplayMuxError::WakeFailed(
+            ui_text(
+                "廣播位址必須是區域網路位址或 255.255.255.255",
+                "The broadcast address must be on a local network or 255.255.255.255",
+            )
+            .to_owned(),
+        ));
+    }
+    Ok(address)
 }
 
 fn route_endpoint(peer: &HostRoute) -> Result<PeerEndpoint, DisplayMuxError> {
@@ -2311,11 +2331,7 @@ fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
             MacAddress::from_str(&peer.mac_address)?;
         }
     }
-    Ipv4Addr::from_str(&settings.broadcast_ip).map_err(|_| {
-        DisplayMuxError::WakeFailed(
-            ui_text("廣播位址格式無效", "Invalid broadcast address").to_owned(),
-        )
-    })?;
+    wake_broadcast_address(settings)?;
     if !settings.shared_key.is_empty() && !has_valid_shared_key(&settings.shared_key) {
         return Err(DisplayMuxError::Rejected {
             zh: format!("配對密碼至少需要 {MIN_SHARED_KEY_LENGTH} 個字元"),
@@ -9072,6 +9088,19 @@ mod tests {
             settings.host_inputs,
             vec![host_input("peer", &other, 0x07, 10)]
         );
+    }
+
+    #[test]
+    fn wake_packets_are_broadcast_only_on_a_local_network() {
+        let with_broadcast = |address: &str| AppSettings {
+            broadcast_ip: address.to_owned(),
+            ..AppSettings::default()
+        };
+
+        assert!(wake_broadcast_address(&with_broadcast("255.255.255.255")).is_ok());
+        assert!(wake_broadcast_address(&with_broadcast("192.168.1.255")).is_ok());
+        assert!(wake_broadcast_address(&with_broadcast("8.8.8.8")).is_err());
+        assert!(validate_settings(&with_broadcast("8.8.8.8")).is_err());
     }
 
     #[test]
