@@ -49,7 +49,7 @@ const MAX_CHAIN_DEPTH: usize = 8;
 ///
 /// The webview receives this module's resolved identity for every fingerprint
 /// it renders, so this remains the single implementation of the rule.
-fn same_identity(left: &MonitorFingerprint, right: &MonitorFingerprint) -> bool {
+pub fn same_identity(left: &MonitorFingerprint, right: &MonitorFingerprint) -> bool {
     left.is_same_model(right)
         && match (&left.serial_number, &right.serial_number) {
             (Some(left), Some(right)) => left == right,

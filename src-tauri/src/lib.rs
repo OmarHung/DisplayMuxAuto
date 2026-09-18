@@ -616,13 +616,29 @@ fn resolved_monitor_identities(
         }
     }
 
+    // Resolved identities that name one display must share one key. The same
+    // display resolves with or without a serial number depending on which
+    // host made the claim, and the screen compares keys as plain strings, so
+    // each resolved identity takes the key of the first one it is the same
+    // display as. Shared displays come first and so give the key.
+    let links = &settings.monitor_identity_links;
+    let mut anchors = Vec::<&MonitorFingerprint>::new();
     fingerprints
         .into_iter()
         .filter_map(|fingerprint| {
             let serialized = serde_json::to_string(fingerprint).ok()?;
-            let resolved =
-                monitor_identity::primary_for(&settings.monitor_identity_links, fingerprint);
-            Some((serialized, monitor_key(resolved)))
+            let resolved = monitor_identity::primary_for(links, fingerprint);
+            let anchor = match anchors
+                .iter()
+                .find(|anchor| monitor_identity::same_identity(anchor, resolved))
+            {
+                Some(anchor) => *anchor,
+                None => {
+                    anchors.push(resolved);
+                    resolved
+                }
+            };
+            Some((serialized, monitor_key(anchor)))
         })
         .collect()
 }
@@ -5170,6 +5186,88 @@ mod tests {
         assert_eq!(
             resolved.get(&alias_json),
             Some(&monitor_key(&primary.fingerprint))
+        );
+    }
+
+    /// Windows reads the MSI MPG 274U's serial number and macOS reads none, so
+    /// a merge made on one host arrives on the other naming the display with a
+    /// serial it cannot read. The backend already counts that as one display;
+    /// the key the screen compares has to as well, or the merged display is
+    /// offered for merging again after every switch between hosts.
+    #[test]
+    fn a_merge_from_a_host_that_reads_the_serial_resolves_on_one_that_does_not() {
+        let serialled = |product: &str| {
+            MonitorFingerprint::new("MSI", product, Some("CF0H246200009".to_owned()))
+        };
+        let bare = |product: &str| MonitorFingerprint::new("MSI", product, None::<String>);
+        let present = |fingerprint: MonitorFingerprint| MonitorDescriptor {
+            fingerprint,
+            ..monitor("mpg")
+        };
+
+        for (shared, claim_alias, claim_primary, seen) in [
+            // On the Mac, holding the claim the PC sent.
+            (
+                bare("3CF0"),
+                serialled("7CF0"),
+                serialled("3CF0"),
+                bare("7CF0"),
+            ),
+            // On the PC, holding the claim the Mac sent.
+            (
+                serialled("3CF0"),
+                bare("7CF0"),
+                bare("3CF0"),
+                serialled("7CF0"),
+            ),
+        ] {
+            let settings = AppSettings {
+                shared_monitors: vec![SelectedMonitor::from(&present(shared.clone()))],
+                monitor_identity_links: monitor_identity::with_link(
+                    &[],
+                    &claim_alias,
+                    Some(&claim_primary),
+                    1,
+                ),
+                ..AppSettings::default()
+            };
+
+            let resolved = resolved_monitor_identities(&settings, &[present(seen.clone())], &[]);
+            let key = |fingerprint: &MonitorFingerprint| {
+                resolved
+                    .get(&serde_json::to_string(fingerprint).unwrap())
+                    .cloned()
+            };
+
+            assert!(key(&shared).is_some());
+            assert_eq!(key(&seen), key(&shared));
+        }
+    }
+
+    #[test]
+    fn two_displays_of_one_model_with_different_serials_keep_different_keys() {
+        let first = MonitorFingerprint::new("DEL", "A1B2", Some("first".to_owned()));
+        let second = MonitorFingerprint::new("DEL", "A1B2", Some("second".to_owned()));
+        let settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor::from(&MonitorDescriptor {
+                fingerprint: first.clone(),
+                ..monitor("first")
+            })],
+            ..AppSettings::default()
+        };
+
+        let resolved = resolved_monitor_identities(
+            &settings,
+            &[MonitorDescriptor {
+                fingerprint: second.clone(),
+                ..monitor("second")
+            }],
+            &[],
+        );
+
+        assert_ne!(
+            resolved.get(&serde_json::to_string(&first).unwrap()),
+            resolved.get(&serde_json::to_string(&second).unwrap())
         );
     }
 
