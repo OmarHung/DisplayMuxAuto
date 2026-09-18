@@ -2515,6 +2515,38 @@ fn upsert_discovered_peer(settings: &mut AppSettings, peer: &DiscoveredPeer) {
     });
 }
 
+/// Largest reply this host sends, before its signature. A paired host reads at
+/// most 8 KB of a reply and cannot parse one cut short, so this leaves room for
+/// the signature and whatever else a reply grows.
+const AGENT_REPLY_BUDGET_BYTES: usize = 7 * 1024;
+
+/// `reply` within `AGENT_REPLY_BUDGET_BYTES`. A host whose Ping cannot be read
+/// can no longer be switched to, so the state a paired host only catches up on
+/// is dropped first, least needed first, and routing data is always kept. What
+/// is dropped still reaches paired hosts in their own notices.
+fn fit_agent_reply(mut reply: AgentResponse) -> AgentResponse {
+    let fits = |reply: &AgentResponse| {
+        serde_json::to_vec(reply).is_ok_and(|bytes| bytes.len() <= AGENT_REPLY_BUDGET_BYTES)
+    };
+    let shed: [fn(&mut AgentResponse); 5] = [
+        |reply| reply.monitor_identity_links.clear(),
+        |reply| reply.input_labels.clear(),
+        |reply| reply.host_aliases.clear(),
+        |reply| reply.host_order.clear(),
+        |reply| reply.host_inputs.clear(),
+    ];
+    for drop_section in shed {
+        if fits(&reply) {
+            break;
+        }
+        drop_section(&mut reply);
+    }
+    if !fits(&reply) {
+        tracing::warn!("agent reply is over budget even without catch-up data");
+    }
+    reply
+}
+
 /// Takes a paired host's wake-on-LAN address from its signed reply, the only
 /// place it is sent. Returns whether the saved address changed.
 fn adopt_peer_mac_address(
@@ -2890,7 +2922,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                     )
                                 })
                                 .unwrap_or_default();
-                            AgentResponse {
+                            fit_agent_reply(AgentResponse {
                                 ready: true,
                                 message: ui_text(
                                     "MuxSU Agent 已就緒",
@@ -2911,7 +2943,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                 // Filled in by the listener, which holds the
                                 // nonce this reply has to be bound to.
                                 signature: None,
-                            }
+                            })
                         }
                         AgentAction::SwitchInput { monitor, input } => {
                             let resolved = live_settings.read().ok().map(|settings| {
@@ -3457,7 +3489,7 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
                 let labels_changed =
                     adopt_input_labels(&mut latest, &theirs.input_labels, now_ms);
                 let identities_changed =
-                    adopt_monitor_identities(&mut latest, &theirs.monitor_identity_links);
+                    adopt_monitor_identities(&mut latest, &theirs.monitor_identity_links, now_ms);
                 let host_inputs_update =
                     apply_host_input_updates(&mut latest, &theirs.host_inputs, now_ms);
                 let host_inputs_accepted = host_inputs_update.is_some();
@@ -3778,8 +3810,17 @@ const MONITOR_IDENTITIES_CHANGED_EVENT: &str = "monitor-identities-changed";
 
 /// Merges a paired host's display-identity claims into ours, keeping the newer
 /// entry for each alias. Returns whether anything changed.
-fn adopt_monitor_identities(settings: &mut AppSettings, incoming: &[MonitorIdentityLink]) -> bool {
-    match monitor_identity::merged_links(&settings.monitor_identity_links, incoming) {
+fn adopt_monitor_identities(
+    settings: &mut AppSettings,
+    incoming: &[MonitorIdentityLink],
+    now_ms: u64,
+) -> bool {
+    let incoming: Vec<MonitorIdentityLink> = incoming
+        .iter()
+        .filter(|link| is_plausible_revision(link.updated_at_ms, now_ms))
+        .cloned()
+        .collect();
+    match monitor_identity::merged_links(&settings.monitor_identity_links, &incoming) {
         Some(merged) => {
             settings.monitor_identity_links = merged;
             true
@@ -3804,8 +3845,14 @@ fn labels_on_local_monitors(settings: &AppSettings, labels: &[InputLabel]) -> Ve
 /// Merges a paired host's custom host names into `settings`. Returns whether
 /// any changed.
 fn adopt_host_aliases(settings: &mut AppSettings, incoming: &[HostAlias], now_ms: u64) -> bool {
+    // Names only hosts this one knows: each is stored and shared on, so a name
+    // for any other id would only grow the settings.
+    let is_known = |host_id: &str| {
+        host_id == settings.local_host_id || settings.peers.iter().any(|peer| peer.id == host_id)
+    };
     let incoming: Vec<HostAlias> = incoming
         .iter()
+        .filter(|alias| is_known(&alias.host_id))
         .filter(|alias| is_plausible_revision(alias.updated_at_ms, now_ms))
         .cloned()
         .collect();
@@ -4133,7 +4180,7 @@ async fn receive_monitor_identities_notice(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = app.state::<AppRuntime>();
         let mut settings = read_settings(&state)?;
-        if adopt_monitor_identities(&mut settings, &links) {
+        if adopt_monitor_identities(&mut settings, &links, unix_time_ms()) {
             store_settings(&state, settings)?;
             if let Err(error) = app.emit(MONITOR_IDENTITIES_CHANGED_EVENT, ()) {
                 tracing::warn!(error = %error, "unable to notify windows of a display identity change");
@@ -7794,9 +7841,45 @@ mod tests {
             }],
             now
         ));
+        assert!(!adopt_monitor_identities(
+            &mut settings,
+            &[MonitorIdentityLink {
+                alias: monitor("alias").fingerprint,
+                primary: Some(shared.fingerprint.clone()),
+                updated_at_ms: poisoned,
+            }],
+            now
+        ));
         assert_eq!(settings.host_order_updated_at_ms, 100);
         assert!(settings.host_aliases.is_empty());
         assert!(settings.input_labels.is_empty());
+        assert!(settings.monitor_identity_links.is_empty());
+    }
+
+    /// Names are stored and shared on; one for a host nobody here knows would
+    /// only grow the settings file.
+    #[test]
+    fn a_name_for_a_host_this_one_does_not_know_is_ignored() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, None);
+        settings.local_host_id = "this-host".to_owned();
+        let named = |host_id: &str| HostAlias {
+            host_id: host_id.to_owned(),
+            name: "Desk".to_owned(),
+            updated_at_ms: 10,
+        };
+
+        assert!(!adopt_host_aliases(
+            &mut settings,
+            &[named("stranger")],
+            LEDGER_NOW_MS
+        ));
+        assert!(adopt_host_aliases(
+            &mut settings,
+            &[named("peer"), named("this-host")],
+            LEDGER_NOW_MS
+        ));
+        assert_eq!(settings.host_aliases.len(), 2);
     }
 
     /// A time well past any settle period, for tests about other behaviour.
@@ -8918,6 +9001,40 @@ mod tests {
         };
         assert!(adopt_peer_mac_address(&mut settings, "peer", &signed));
         assert_eq!(settings.peers[0].mac_address, "AA:BB:CC:DD:EE:FF");
+    }
+
+    /// A reply over the agent's 8 KB read limit is cut short and fails to
+    /// parse, and a host whose Ping fails can no longer be switched to. The
+    /// catch-up data goes first; what switching needs stays.
+    #[test]
+    fn an_oversized_agent_reply_sheds_catch_up_data_and_keeps_its_routes() {
+        let shared = monitor("shared");
+        let route = AgentDisplayRoute {
+            monitor: shared.fingerprint.clone(),
+            input: DisplayInput::new(0x0f).unwrap(),
+            confirmed: true,
+        };
+        let links = (0..200)
+            .map(|index| MonitorIdentityLink {
+                alias: monitor(&format!("alias-{index}")).fingerprint,
+                primary: Some(shared.fingerprint.clone()),
+                updated_at_ms: 10,
+            })
+            .collect();
+        let reply = AgentResponse {
+            ready: true,
+            display_routes: vec![route.clone()],
+            host_order: vec!["peer".to_owned()],
+            monitor_identity_links: links,
+            ..AgentResponse::default()
+        };
+
+        let fitted = fit_agent_reply(reply);
+
+        assert!(serde_json::to_vec(&fitted).unwrap().len() <= AGENT_REPLY_BUDGET_BYTES);
+        assert_eq!(fitted.display_routes, vec![route]);
+        assert!(fitted.monitor_identity_links.is_empty());
+        assert_eq!(fitted.host_order, vec!["peer"], "shed more than needed");
     }
 
     #[test]

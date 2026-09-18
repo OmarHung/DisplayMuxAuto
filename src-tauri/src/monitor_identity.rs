@@ -25,6 +25,10 @@ use muxsu_core::{MonitorFingerprint, MonitorIdentityLink};
 /// the agent's packet limit.
 pub const MAX_SHARED_LINKS: usize = 32;
 
+/// Longest EDID field a claim may carry. Real ones are a three-letter vendor,
+/// a four-digit product code and a serial of at most 13 characters.
+const MAX_FINGERPRINT_FIELD_LEN: usize = 32;
+
 /// Longest alias chain followed before giving up, so a malformed or hostile
 /// notice cannot spin `primary_for` on a cycle.
 const MAX_CHAIN_DEPTH: usize = 8;
@@ -145,10 +149,25 @@ pub fn with_link(
         .collect()
 }
 
+/// Whether every field of `fingerprint` is one an EDID could hold, so a
+/// claim cannot carry an arbitrarily large identity.
+fn is_well_formed(fingerprint: &MonitorFingerprint) -> bool {
+    [
+        Some(fingerprint.manufacturer_id.as_str()),
+        Some(fingerprint.product_code.as_str()),
+        fingerprint.serial_number.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .all(|field| field.len() <= MAX_FINGERPRINT_FIELD_LEN && !field.chars().any(char::is_control))
+}
+
 /// `current` merged with claims from a paired host, keeping the newer entry
-/// for each alias. A claim an identity makes about itself is skipped, and a
-/// notice with more entries than `MAX_SHARED_LINKS` is rejected. Returns
-/// `None` when nothing changes.
+/// for each alias. A claim an identity makes about itself, or one naming a
+/// malformed identity, is skipped, and a notice with more entries than
+/// `MAX_SHARED_LINKS` is rejected. Claims are returned in every Ping, so once
+/// `MAX_SHARED_LINKS` are held only existing ones are updated. Returns `None`
+/// when nothing changes.
 pub fn merged_links(
     current: &[MonitorIdentityLink],
     incoming: &[MonitorIdentityLink],
@@ -159,13 +178,14 @@ pub fn merged_links(
     let mut merged = current.to_vec();
     let mut changed = false;
     for entry in incoming {
-        if entry
-            .primary
-            .as_ref()
-            .is_some_and(|primary| same_identity(primary, &entry.alias))
+        if !is_well_formed(&entry.alias)
+            || entry.primary.as_ref().is_some_and(|primary| {
+                !is_well_formed(primary) || same_identity(primary, &entry.alias)
+            })
         {
             continue;
         }
+        let is_full = merged.len() >= MAX_SHARED_LINKS;
         match merged
             .iter_mut()
             .find(|existing| is_entry_for(existing, &entry.alias))
@@ -175,6 +195,7 @@ pub fn merged_links(
                 *existing = entry.clone();
                 changed = true;
             }
+            None if is_full => {}
             None => {
                 merged.push(entry.clone());
                 changed = true;
@@ -460,6 +481,27 @@ mod tests {
             merged_links(&ours, &[link("7CF0", None, 30)]),
             Some(vec![link("7CF0", None, 30)])
         );
+    }
+
+    /// Claims are stored and sent back in every Ping, so what a paired host can
+    /// add is bounded: no oversized identities, and no more than one notice's
+    /// worth of claims in total.
+    #[test]
+    fn a_malformed_claim_is_skipped_and_the_stored_claims_stay_bounded() {
+        let oversized = MonitorIdentityLink {
+            alias: MonitorFingerprint::new("MSI", "X".repeat(200), None::<String>),
+            primary: None,
+            updated_at_ms: 10,
+        };
+        assert_eq!(merged_links(&[], &[oversized]), None);
+
+        let full: Vec<MonitorIdentityLink> = (0..MAX_SHARED_LINKS)
+            .map(|index| link(&format!("{index:04X}"), None, 10))
+            .collect();
+        assert_eq!(merged_links(&full, &[link("FFFF", None, 10)]), None);
+
+        let updated = merged_links(&full, &[link("0000", Some("3CF0"), 20)]).unwrap();
+        assert_eq!(updated.len(), MAX_SHARED_LINKS);
     }
 
     #[test]
