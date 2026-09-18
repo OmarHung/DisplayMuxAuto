@@ -562,6 +562,11 @@ pub enum AgentAction {
         monitor: MonitorFingerprint,
         input: DisplayInput,
     },
+    /// Asks for the receiver's diagnostic snapshot, for a report the sender's
+    /// user is putting together. Receivers answer only when their own user
+    /// has allowed diagnostics, and redact the snapshot before it leaves.
+    /// Agents older than this variant reject the request; senders note that.
+    DiagnosticsRequested,
 }
 
 /// A user-chosen display name for a host, keyed by `LocalHostIdentity::id`.
@@ -680,6 +685,10 @@ pub struct AgentResponse {
     /// The responder's display-identity claims, for the same catch-up.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub monitor_identity_links: Vec<MonitorIdentityLink>,
+    /// The responder's redacted diagnostic snapshot as JSON, only in reply to
+    /// `DiagnosticsRequested`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<String>,
     /// Proof that whatever answered holds the pairing password, bound to the
     /// nonce of the request it answers so it cannot be lifted from an earlier
     /// exchange. Current clients reject responses where this is absent or
@@ -1017,6 +1026,34 @@ fn unix_time() -> Result<u64, DisplayMuxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An older host recomputes a reply's signature from the fields it knows.
+    /// A reply that carries no diagnostics must therefore serialize exactly as
+    /// it did before the field existed, or every older host would reject it.
+    #[test]
+    fn a_reply_without_diagnostics_serializes_as_before_the_field_existed() {
+        let reply = AgentResponse {
+            ready: true,
+            message: "ready".to_owned(),
+            protocol_version: AGENT_PROTOCOL_VERSION,
+            ..AgentResponse::default()
+        };
+
+        let json = serde_json::to_string(&reply).unwrap();
+
+        assert!(!json.contains("diagnostics"));
+    }
+
+    #[test]
+    fn a_diagnostics_request_round_trips() {
+        let json = serde_json::to_string(&AgentAction::DiagnosticsRequested).unwrap();
+
+        assert_eq!(json, r#"{"type":"diagnostics_requested"}"#);
+        assert_eq!(
+            serde_json::from_str::<AgentAction>(&json).unwrap(),
+            AgentAction::DiagnosticsRequested
+        );
+    }
 
     #[test]
     fn parses_both_common_mac_address_formats() {

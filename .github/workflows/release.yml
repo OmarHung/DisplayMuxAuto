@@ -78,6 +78,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # Where diagnostic reports go. A DSN only allows submitting events, so
+          # it is a repository variable rather than a secret; without it the
+          # build still works and offers saving reports to a file instead.
+          MUXSU_SENTRY_DSN: ${{ vars.MUXSU_SENTRY_DSN }}
           APPLE_SIGNING_IDENTITY: "-"
         with:
           tagName: v__VERSION__

@@ -10,6 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import packageMetadata from "../package.json";
 import { locale, localePreference, setLocalePreference, t, type MessageKey } from "./i18n";
+import { diagnosticsDialogsHtml, diagnosticsSectionHtml, initDiagnostics } from "./diagnostics";
 import { initializeTheme, setThemePreference } from "./theme";
 import "./styles.css";
 
@@ -89,6 +90,8 @@ interface AppSettings {
   onboardingCompleted: boolean;
   hostSwitcherEnabled: boolean;
   hostSwitcherShortcut: string;
+  diagnosticsEnabled?: boolean;
+  diagnosticsAsked?: boolean;
 }
 
 interface SharedMonitorStatus {
@@ -408,6 +411,8 @@ app.innerHTML = `
               </div>
             </form>
 
+            ${diagnosticsSectionHtml()}
+
             <div class="form-section reset-section">
               <div class="pairing-heading"><strong>${t("settings.resetTitle")}</strong></div>
               <p class="reset-note"><i data-lucide="triangle-alert"></i>${t("settings.resetIntro")}</p>
@@ -500,6 +505,7 @@ app.innerHTML = `
       <div class="update-actions"><button class="scan-button" id="update-cancel" type="button">${t("action.later")}</button><button class="save-button" id="update-install" type="button"><i data-lucide="download"></i>${t("action.downloadInstall")}</button></div>
     </div>
   </div>
+  ${diagnosticsDialogsHtml()}
   <div class="onboarding-overlay" id="onboarding-overlay" aria-hidden="true"></div>
   <section class="onboarding-tooltip" id="onboarding-tooltip" role="dialog" aria-modal="false" aria-labelledby="onboarding-title" aria-describedby="onboarding-body" aria-hidden="true">
     <div class="onboarding-tooltip-header">
@@ -576,6 +582,13 @@ const SAVE_ON_SUBMIT_FIELDS = [
   "#host-switcher-enabled",
 ] as const;
 
+const diagnostics = initDiagnostics({
+  settings: () => settings,
+  adoptSettings: (next: AppSettings) => { settings = next; },
+  isPreview: () => isPreview,
+  notify: showToast,
+  withBusyButton,
+});
 document.querySelector<HTMLFormElement>("#settings-form")?.addEventListener("submit", (event) => void saveSettings(event));
 // Most of this page saves as it is changed; these few do not, and nothing said
 // so. Named one by one rather than watching the whole form, so a control that
@@ -1210,6 +1223,7 @@ function renderState(): void {
   renderShortcutSetting();
   keepActiveMonitorSelected();
   renderMonitorStrip(); renderSwitchPanel();
+  diagnostics.render();
   renderMonitors(); renderMonitorMerge(); renderPeerList(); renderPairedRoutes(); renderLocalInputSummary(); renderInputLabels(); renderInputHints(); refreshIcons();
 }
 
@@ -2379,6 +2393,7 @@ async function completeOnboarding(openSettings: boolean): Promise<void> {
     overlay?.setAttribute("aria-hidden", "true");
     tooltip?.classList.remove("is-visible");
     tooltip?.setAttribute("aria-hidden", "true");
+    diagnostics.askIfUnasked();
     if (openSettings) {
       showPage("settings");
       document.querySelector(".workspace")?.scrollTo({ top: 0, behavior: "smooth" });
@@ -2585,6 +2600,7 @@ async function bootstrap(): Promise<void> {
   }
   void refreshReleaseHistory();
   if (!settings.onboardingCompleted) showOnboarding(0);
+  else diagnostics.askIfUnasked();
   if (settings.checkUpdates && !isPreview) window.setTimeout(() => void checkForUpdates(false), 1800);
 }
 

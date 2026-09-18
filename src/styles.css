@@ -1025,6 +1025,20 @@ button.switch-all-host:disabled {
   margin-top: 22px;
 }
 
+.diagnostics-section { margin-top: 22px; }
+.diagnostics-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 12px;
+}
+.diagnostics-actions p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.diagnostics-actions button { flex: 0 0 auto; }
+@media (max-width: 720px) {
+  .diagnostics-actions { flex-direction: column; align-items: stretch; }
+}
+
 /* This was borrowing the neutral dashed box the merge section uses to explain
    itself, which reads as a disabled field rather than as the one warning
    before something that cannot be undone. */
@@ -2087,8 +2101,33 @@ button.switch-all-host:disabled {
 
 .update-progress-label { min-height: 18px; margin-top: 8px !important; font-size: 12px; }
 .update-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+
+.diagnostics-dialog { width: min(640px, 100%); }
+.diagnostics-dialog > p + p { margin-top: 12px; }
+.diagnostics-scope {
+  display: grid;
+  gap: 12px;
+  margin: 18px 0 6px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--workspace-bg);
+}
+.diagnostics-scope strong { color: var(--ink); font-size: 13.5px; }
+.diagnostics-scope p { margin: 4px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+#diagnostics-preview-overlay .diagnostics-dialog { width: min(820px, 100%); }
+.diagnostics-preview {
+  white-space: pre;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
 .update-actions button { height: 42px; font-size: 13px; }
 .update-actions button:disabled { opacity: .55; cursor: wait; }
+.update-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-width: 96px; padding: 0 18px; border-radius: 11px; font-weight: 700; }
+.update-actions button[hidden] { display: none; }
+.update-actions .save-button { border: 0; background: var(--accent); color: #ffffff; cursor: pointer; transition: background .18s ease; }
+.update-actions .save-button:hover { background: var(--accent-hover); }
 
 .onboarding-overlay {
   position: fixed;

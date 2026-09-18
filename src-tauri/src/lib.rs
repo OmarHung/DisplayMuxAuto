@@ -1,3 +1,5 @@
+mod diagnostics;
+mod diagnostics_upload;
 mod host_alias;
 mod host_order;
 mod input_label;
@@ -280,6 +282,14 @@ struct AppSettings {
     /// order and custom names, so it must never be re-derived: see
     /// `identifies_the_machine`. Backend-owned like `host_order`.
     local_host_id: String,
+    /// Whether the user allowed diagnostic reports to be sent without asking
+    /// each time — after a failed switch — and paired hosts to be answered
+    /// with this computer's snapshot. Changed only through
+    /// `set_diagnostics_consent`.
+    diagnostics_enabled: bool,
+    /// Whether the user has been asked about diagnostics, so the question is
+    /// put once. Backend-owned like `diagnostics_enabled`.
+    diagnostics_asked: bool,
 }
 
 impl Default for AppSettings {
@@ -304,6 +314,8 @@ impl Default for AppSettings {
             monitor_identity_links: Vec::new(),
             shared_monitors_chosen: false,
             local_host_id: String::new(),
+            diagnostics_enabled: false,
+            diagnostics_asked: false,
         }
     }
 }
@@ -1124,6 +1136,8 @@ async fn save_settings(
     settings.monitor_identity_links = protected.monitor_identity_links.clone();
     settings.shared_monitors_chosen = protected.shared_monitors_chosen;
     settings.local_host_id = protected.local_host_id.clone();
+    settings.diagnostics_enabled = protected.diagnostics_enabled;
+    settings.diagnostics_asked = protected.diagnostics_asked;
     validate_settings(&settings).map_err(core_user_error)?;
     let enable_autostart = settings.autostart;
     update_host_switcher_shortcut(&app, &protected, &settings)?;
@@ -1342,6 +1356,7 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
     let (monitors, uncontrollable_monitors, shared, selection_notices) =
         match enumerate_monitor_inventory() {
             Ok(inventory) => {
+                diagnostics::remember_inventory(&inventory.detected, &inventory.current_inputs);
                 let changes = reconcile_monitor_selection(&mut settings, &inventory.controllable);
                 // A display may be shared before it answers DDC/CI, and its
                 // inputs cannot be read then. Nothing read them afterwards, so
@@ -1670,8 +1685,22 @@ async fn switch_host(
     target_id: String,
     on_event: Channel<SwitchProgress>,
     state: State<'_, AppRuntime>,
+    app: AppHandle,
 ) -> Result<OperationResult, String> {
-    let settings = read_settings(&state)?;
+    let result = run_host_switch(monitor_id, target_id, on_event, &state).await;
+    if let Err(message) = &result {
+        report_failure_if_allowed(&app, message);
+    }
+    result
+}
+
+async fn run_host_switch(
+    monitor_id: String,
+    target_id: String,
+    on_event: Channel<SwitchProgress>,
+    state: &AppRuntime,
+) -> Result<OperationResult, String> {
+    let settings = read_settings(state)?;
     let selected = find_shared_monitor(&settings, &monitor_id)?.clone();
     let target = if target_id == "local" {
         None
@@ -1704,8 +1733,8 @@ async fn switch_host(
         monitor_identity::identities_for(&settings.monitor_identity_links, &selected.fingerprint);
     match run_switch(identities, input) {
         Ok(outcome) => {
-            record_active_route(&state, &selected.fingerprint, &target_id)?;
-            announce_active_input(&state, &selected.fingerprint, input);
+            record_active_route(state, &selected.fingerprint, &target_id)?;
+            announce_active_input(state, &selected.fingerprint, input);
             Ok(outcome_result(outcome, &preparation, |input| {
                 noted_input_label(&settings, &selected, input)
             }))
@@ -1753,8 +1782,8 @@ async fn switch_host(
                     executor.name, local_error, remote_error
                 ),
             })?;
-            record_active_route(&state, &selected.fingerprint, &target_id)?;
-            announce_active_input(&state, &selected.fingerprint, input);
+            record_active_route(state, &selected.fingerprint, &target_id)?;
+            announce_active_input(state, &selected.fingerprint, input);
             Ok(OperationResult {
                 title: match UiLocale::current() {
                     UiLocale::TraditionalChinese => format!("已由 {} 執行切換", executor.name),
@@ -2610,6 +2639,10 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                             monitor,
                             input,
                         } => receive_local_input_confirmed(app, host_id, monitor, input).await,
+                        AgentAction::DiagnosticsRequested => {
+                            let settings = live_settings.read().ok().map(|settings| settings.clone());
+                            answer_diagnostics_request(&app, settings)
+                        }
                         AgentAction::Ping => {
                             let snapshot = live_settings.read().ok().map(|settings| settings.clone());
                             let display_routes = snapshot
@@ -2660,6 +2693,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                 host_aliases,
                                 input_labels,
                                 monitor_identity_links,
+                                diagnostics: None,
                                 // Filled in by the listener, which holds the
                                 // nonce this reply has to be bound to.
                                 signature: None,
@@ -4109,6 +4143,8 @@ fn migrate_single_monitor_settings(value: serde_json::Value) -> AppSettings {
         monitor_identity_links: Vec::new(),
         shared_monitors_chosen: false,
         local_host_id: String::new(),
+        diagnostics_enabled: false,
+        diagnostics_asked: false,
     }
 }
 
@@ -4151,6 +4187,8 @@ fn migrate_legacy_settings(legacy: LegacySettings) -> AppSettings {
         monitor_identity_links: Vec::new(),
         shared_monitors_chosen: false,
         local_host_id: String::new(),
+        diagnostics_enabled: false,
+        diagnostics_asked: false,
     }
 }
 
@@ -4809,12 +4847,241 @@ fn setup_windows_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Answers a paired host's request for this computer's diagnostic snapshot,
+/// redacted here, and only when this computer's user has allowed diagnostics:
+/// the other computer's consent does not speak for this one.
+fn answer_diagnostics_request(app: &AppHandle, settings: Option<AppSettings>) -> AgentResponse {
+    let refused = |message: &str| AgentResponse {
+        ready: false,
+        message: message.to_owned(),
+        protocol_version: AGENT_PROTOCOL_VERSION,
+        ..AgentResponse::default()
+    };
+    let Some(settings) = settings else {
+        return refused(ui_text(
+            "無法讀取這台主機的設定",
+            "Unable to read this host's settings",
+        ));
+    };
+    if !settings.diagnostics_enabled {
+        return refused(ui_text(
+            "這台主機未允許分享診斷資訊",
+            "This host has not allowed diagnostics to be shared",
+        ));
+    }
+    let local_host_name = app.state::<AppRuntime>().local_host_name.clone();
+    let redactor = diagnostics::Redactor::new(&settings, &local_host_name);
+    match diagnostics::snapshot_for_agent_reply(diagnostics::host_snapshot(&settings)) {
+        Some(snapshot) => AgentResponse {
+            ready: true,
+            message: ui_text("已附上診斷資訊", "Diagnostics attached").to_owned(),
+            protocol_version: AGENT_PROTOCOL_VERSION,
+            diagnostics: Some(redactor.redact(&snapshot)),
+            ..AgentResponse::default()
+        },
+        None => refused(ui_text(
+            "診斷資訊太大，無法傳送",
+            "The diagnostics are too large to send",
+        )),
+    }
+}
+
+/// Each paired host's snapshot, or why there is none. Asked one at a time:
+/// there is rarely more than one, and a report is not in a hurry.
+async fn collect_peer_diagnostics(settings: &AppSettings) -> Vec<diagnostics::PairedHostReport> {
+    let mut reports = Vec::with_capacity(settings.peers.len());
+    for (index, peer) in settings.peers.iter().enumerate() {
+        let reference = format!("peer-{}", index + 1);
+        let answer = request_peer(settings, peer, AgentAction::DiagnosticsRequested)
+            .await
+            .and_then(|response| {
+                response
+                    .diagnostics
+                    .ok_or_else(|| "no snapshot in the reply".to_owned())
+            })
+            .and_then(|snapshot| {
+                serde_json::from_str::<diagnostics::HostSnapshot>(&snapshot)
+                    .map_err(|error| format!("unreadable snapshot: {error}"))
+            });
+        reports.push(match answer {
+            Ok(snapshot) => diagnostics::PairedHostReport {
+                reference,
+                snapshot: Some(snapshot),
+                unavailable: None,
+            },
+            Err(reason) => diagnostics::PairedHostReport {
+                reference,
+                snapshot: None,
+                unavailable: Some(reason),
+            },
+        });
+    }
+    reports
+}
+
+async fn build_diagnostic_report(
+    app: &AppHandle,
+    trigger: diagnostics::ReportTrigger,
+) -> Result<diagnostics::PreparedReport, String> {
+    let settings = read_settings(&app.state::<AppRuntime>())?;
+    let paired_hosts = collect_peer_diagnostics(&settings).await;
+    let local_host_name = app.state::<AppRuntime>().local_host_name.clone();
+    let redactor = diagnostics::Redactor::new(&settings, &local_host_name);
+    let report = diagnostics::DiagnosticReport::new(
+        &settings,
+        &redactor,
+        trigger,
+        paired_hosts,
+        unix_time_ms(),
+    );
+    diagnostics::PreparedReport::from_report(&report)
+}
+
+/// Sends a report of a failed switch in the background, when the user allowed
+/// it, this build has somewhere to send it, and none went recently.
+fn report_failure_if_allowed(app: &AppHandle, message: &str) {
+    let Some(target) = diagnostics_upload::configured_target() else {
+        return;
+    };
+    let allowed = read_settings(&app.state::<AppRuntime>())
+        .is_ok_and(|settings| settings.diagnostics_enabled);
+    if !allowed || !diagnostics::claim_automatic_report_slot() {
+        return;
+    }
+    let app = app.clone();
+    let trigger = diagnostics::ReportTrigger::SwitchFailed {
+        message: message.to_owned(),
+    };
+    tauri::async_runtime::spawn(async move {
+        let sent = match build_diagnostic_report(&app, trigger).await {
+            Ok(report) => diagnostics_upload::upload(&target, &report, unix_time_ms())
+                .await
+                .map(|()| report.report_id),
+            Err(error) => Err(error),
+        };
+        match sent {
+            Ok(report_id) => {
+                tracing::info!(report_id, "sent a diagnostic report of a failed switch")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "unable to send a diagnostic report of a failed switch")
+            }
+        }
+    });
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticsStatus {
+    /// Whether this build knows where to send a report.
+    upload_available: bool,
+}
+
+#[tauri::command]
+fn diagnostics_status() -> DiagnosticsStatus {
+    DiagnosticsStatus {
+        upload_available: diagnostics_upload::configured_target().is_some(),
+    }
+}
+
+/// Records the user's answer to "may MuxSU send diagnostics", which also marks
+/// the question as asked.
+#[tauri::command]
+fn set_diagnostics_consent(
+    enabled: bool,
+    state: State<'_, AppRuntime>,
+) -> Result<AppSettings, String> {
+    let settings = AppSettings {
+        diagnostics_enabled: enabled,
+        diagnostics_asked: true,
+        ..read_settings(&state)?
+    };
+    store_settings(&state, settings)
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticPreview {
+    report_id: String,
+    preview: String,
+}
+
+/// Builds a report for the user to read before anything leaves the computer.
+/// It is held by id, so sending or saving it uses exactly the text shown.
+#[tauri::command]
+async fn prepare_diagnostic_report(app: AppHandle) -> Result<DiagnosticPreview, String> {
+    // A fresh scan, so the report shows the displays as they are now.
+    if let Err(error) = run_display_task(app.clone(), build_dashboard_state).await {
+        tracing::warn!(error = %error, "unable to scan displays for a diagnostic report");
+    }
+    let report = build_diagnostic_report(&app, diagnostics::ReportTrigger::Manual).await?;
+    let preview = DiagnosticPreview {
+        report_id: report.report_id.clone(),
+        preview: report.json.clone(),
+    };
+    diagnostics::keep_pending(report);
+    Ok(preview)
+}
+
+fn pending_report(report_id: &str) -> Result<diagnostics::PreparedReport, String> {
+    diagnostics::pending(report_id).ok_or_else(|| {
+        ui_text(
+            "這份診斷報告已不是最新的，請重新產生",
+            "This diagnostic report is out of date; prepare it again",
+        )
+        .to_owned()
+    })
+}
+
+#[tauri::command]
+async fn send_diagnostic_report(report_id: String) -> Result<OperationResult, String> {
+    let target = diagnostics_upload::configured_target().ok_or_else(|| {
+        ui_text(
+            "這個版本沒有設定診斷報告的傳送位置，請改用「存成檔案」",
+            "This build has nowhere to send diagnostic reports; save it to a file instead",
+        )
+        .to_owned()
+    })?;
+    let report = pending_report(&report_id)?;
+    diagnostics_upload::upload(&target, &report, unix_time_ms())
+        .await
+        .map_err(|error| {
+            format!(
+                "{}: {error}",
+                ui_text("無法傳送診斷報告", "Unable to send the diagnostic report")
+            )
+        })?;
+    tracing::info!(report_id, "sent a diagnostic report");
+    Ok(OperationResult {
+        title: ui_text("診斷報告已傳送", "Diagnostic report sent").to_owned(),
+        detail: match UiLocale::current() {
+            UiLocale::TraditionalChinese => format!("回報問題時請附上報告編號 {report_id}"),
+            UiLocale::English => format!("Quote report id {report_id} when describing the problem"),
+        },
+        peer_woken: false,
+        warning: false,
+    })
+}
+
+/// Saves a prepared report next to the log files and shows it in the file
+/// manager. Returns where it went.
+#[tauri::command]
+fn save_diagnostic_report(report_id: String, app: AppHandle) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let path = diagnostics::save(&pending_report(&report_id)?).map_err(|error| {
+        format!(
+            "{}: {error}",
+            ui_text("無法儲存診斷報告", "Unable to save the diagnostic report")
+        )
+    })?;
+    if let Err(error) = app.opener().reveal_item_in_dir(&path) {
+        tracing::warn!(error = %error, "unable to show the saved diagnostic report");
+    }
+    Ok(path.display().to_string())
+}
+
 pub fn run() -> anyhow::Result<()> {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_target(false)
-        .compact()
-        .try_init();
     let builder = tauri::Builder::default()
         // This must remain the first plugin so a second launch exits before any
         // other plugin or application setup can create duplicate resources.
@@ -4856,6 +5123,11 @@ pub fn run() -> anyhow::Result<()> {
     });
     builder
         .setup(|app| {
+            // Started here rather than first thing in `run`, because where the
+            // log file goes is only known once the app is. Nothing before this
+            // point logs.
+            let log_dir = app.path().app_log_dir().ok();
+            diagnostics::init_logging(log_dir.as_deref());
             let config_dir = app
                 .path()
                 .app_config_dir()
@@ -5024,7 +5296,12 @@ pub fn run() -> anyhow::Result<()> {
             get_dashboard_state,
             probe_peer,
             wake_peer,
-            switch_host
+            switch_host,
+            diagnostics_status,
+            set_diagnostics_consent,
+            prepare_diagnostic_report,
+            send_diagnostic_report,
+            save_diagnostic_report
         ])
         .run(tauri::generate_context!())
         .map_err(anyhow::Error::from)
