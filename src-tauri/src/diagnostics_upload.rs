@@ -34,7 +34,9 @@ pub fn configured_target() -> Option<SentryTarget> {
 pub fn parse_dsn(dsn: &str) -> Option<SentryTarget> {
     let dsn = dsn.trim();
     let (scheme, rest) = dsn.split_once("://")?;
-    if scheme != "https" && scheme != "http" {
+    // The report describes this computer and its displays, so it never leaves
+    // unencrypted, even if a build is given a plain-HTTP DSN.
+    if scheme != "https" {
         return None;
     }
     let (public_key, location) = rest.split_once('@')?;
@@ -165,6 +167,8 @@ mod tests {
             "https://key@host/",
             "https://key@host/project",
             "ftp://key@host/1",
+            // A report is sent only encrypted, however the build was configured.
+            "http://key@sentry.example.com/1",
         ] {
             assert_eq!(parse_dsn(dsn), None, "{dsn}");
         }
