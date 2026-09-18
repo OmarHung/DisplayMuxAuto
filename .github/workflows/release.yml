@@ -40,7 +40,7 @@ jobs:
           persist-credentials: false
 
       - name: Install pnpm
-        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.4.0
         with:
           version: 10.33.2
           run_install: false
@@ -52,7 +52,10 @@ jobs:
           cache: pnpm
 
       - name: Install Rust target
-        run: rustup target add ${{ matrix.rust_targets }}
+        shell: bash
+        env:
+          RUST_TARGETS: ${{ matrix.rust_targets }}
+        run: rustup target add $RUST_TARGETS
 
       - name: Install locked frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -65,6 +68,9 @@ jobs:
       - name: Test frontend
         run: pnpm build
 
+      - name: Test release scripts and window permissions
+        run: node --test "scripts/*.test.mjs"
+
       - name: Test Rust workspace
         run: cargo test --locked --all-targets
 
@@ -74,7 +80,7 @@ jobs:
         run: node -p '"prerelease=" + require("./src-tauri/tauri.conf.json").version.includes("-")' >> "$GITHUB_OUTPUT"
 
       - name: Build signed draft release
-        uses: tauri-apps/tauri-action@2d793bf2c8c505b9b76211601b09aab48922225d # v1.0.0
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -120,12 +126,14 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_VERSION: ${{ steps.app_version.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          tag="v${{ steps.app_version.outputs.version }}"
+          tag="v${APP_VERSION}"
           gh release view "$tag" --json assets --jq .assets > release-assets.json
           node scripts/compose-release-notes.mjs \
             --tag "$tag" \
-            --repository "${{ github.repository }}" \
+            --repository "$REPOSITORY" \
             --assets release-assets.json \
             --output release-notes.md
 
@@ -133,8 +141,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_VERSION: ${{ steps.app_version.outputs.version }}
         run: |
-          tag="v${{ steps.app_version.outputs.version }}"
+          tag="v${APP_VERSION}"
           mkdir -p updater-manifest
           gh release download "$tag" --pattern latest.json --dir updater-manifest
           node scripts/set-updater-notes.mjs \
@@ -146,9 +155,11 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_VERSION: ${{ steps.app_version.outputs.version }}
+          PRERELEASE: ${{ steps.channel.outputs.prerelease }}
         run: |
-          tag="v${{ steps.app_version.outputs.version }}"
-          if [ "${{ steps.channel.outputs.prerelease }}" = "true" ]; then
+          tag="v${APP_VERSION}"
+          if [ "$PRERELEASE" = "true" ]; then
             # A pre-release must never become the updater's latest.json source, so
             # existing installations keep resolving to the newest stable release.
             gh release edit "$tag" --notes-file release-notes.md --draft=false --prerelease --latest=false
