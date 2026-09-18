@@ -115,7 +115,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .brand-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   padding: 4px 6px 10px;
 }
 
@@ -123,9 +123,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
    Finder, the Windows taskbar, and the installer. */
 .brand-icon {
   flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
+  width: 48px;
+  height: 48px;
+  border-radius: 13px;
   background: var(--sidebar-brand-bg) url("../assets/app-icon-ui.png") center / cover no-repeat;
   box-shadow: 0 7px 18px rgba(47, 54, 65, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
@@ -133,8 +133,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .brand-title {
   min-width: 0;
   overflow: hidden;
-  font-size: 18px;
+  font-size: 32px;
   font-weight: 800;
+  line-height: 1;
   color: var(--sidebar-title);
   letter-spacing: -0.02em;
   text-overflow: ellipsis;
