@@ -1,6 +1,6 @@
 [package]
 name = "muxsu-app"
-version = "0.4.1"
+version = "0.5.0"
 description = "Switch one shared monitor safely between Windows and macOS"
 authors = ["MuxSU contributors"]
 edition.workspace = true
