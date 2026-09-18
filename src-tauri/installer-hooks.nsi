@@ -81,9 +81,16 @@
   Push $R7
   Push $R8
   Push $R9
-  !insertmacro RemoveLegacyInstall HKCU "DisplayMux" "$LOCALAPPDATA" "$LOCALAPPDATA"
+  ; Elevated for the same account, this installer still sees that account's
+  ; own registry and LocalAppData, which anything running as the user can write
+  ; to. Running an uninstaller found there would run it as administrator, so a
+  ; per-user copy is removed only by an installer that is not elevated either.
+  System::Call 'shell32::IsUserAnAdmin() i .R9'
+  ${If} $R9 == 0
+    !insertmacro RemoveLegacyInstall HKCU "DisplayMux" "$LOCALAPPDATA" "$LOCALAPPDATA"
+    !insertmacro RemoveLegacyInstall HKCU "DisplayMuxAuto" "$LOCALAPPDATA" "$LOCALAPPDATA"
+  ${EndIf}
   !insertmacro RemoveLegacyInstall HKLM "DisplayMux" "$PROGRAMFILES64" "$PROGRAMFILES"
-  !insertmacro RemoveLegacyInstall HKCU "DisplayMuxAuto" "$LOCALAPPDATA" "$LOCALAPPDATA"
   !insertmacro RemoveLegacyInstall HKLM "DisplayMuxAuto" "$PROGRAMFILES64" "$PROGRAMFILES"
   ; Written by the app at runtime rather than by the installer, so the
   ; uninstaller above leaves it. On its own it is enough to start the old copy
