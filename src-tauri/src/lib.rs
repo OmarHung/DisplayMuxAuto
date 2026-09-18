@@ -4989,9 +4989,30 @@ fn persist_settings(path: &Path, settings: &AppSettings) -> Result<(), DisplayMu
     }
     let serialized = serde_json::to_vec_pretty(settings)
         .map_err(|error| DisplayMuxError::Backend(error.to_string()))?;
-    fs::write(path, serialized).map_err(|error| DisplayMuxError::Backend(error.to_string()))?;
+    // Written beside the file and renamed over it: a write cut short then
+    // leaves the previous settings whole, where rewriting in place left a
+    // truncated file that loads as defaults and loses every pairing.
+    let temporary = path.with_extension("json.tmp");
+    write_owner_only(&temporary, &serialized)
+        .and_then(|()| fs::rename(&temporary, path))
+        .map_err(|error| {
+            fs::remove_file(&temporary).ok();
+            DisplayMuxError::Backend(error.to_string())
+        })
+}
+
+/// Writes `bytes` to `path` durably, restricted to this account before any of
+/// the pairing password reaches it.
+fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(path)?;
+    // A leftover from an earlier attempt keeps the mode it was created with.
     restrict_to_owner(path);
-    Ok(())
+    std::io::Write::write_all(&mut file, bytes)?;
+    file.sync_all()
 }
 
 /// Keeps the settings file readable only by the account that owns it.
@@ -6519,6 +6540,35 @@ mod tests {
 
         fs::remove_dir_all(&directory).ok();
         assert_eq!(mode, 0o600, "settings were written as {mode:o}");
+    }
+
+    /// Rewriting the file in place left it truncated when the write was cut
+    /// short, and a file that does not parse loads as defaults: the pairing
+    /// password and every paired host gone. A replacement is written beside
+    /// it and renamed over it, so the old file stays whole until then.
+    #[cfg(unix)]
+    #[test]
+    fn saved_settings_replace_the_file_whole_rather_than_rewrite_it() {
+        use std::os::unix::fs::MetadataExt;
+
+        let directory = std::env::temp_dir().join(format!("muxsu-atomic-{}", std::process::id()));
+        let path = directory.join("settings.json");
+        persist_settings(&path, &AppSettings::default()).unwrap();
+        let first = fs::metadata(&path).unwrap().ino();
+        let changed = AppSettings {
+            wait_seconds: 99,
+            ..AppSettings::default()
+        };
+        persist_settings(&path, &changed).unwrap();
+
+        let second = fs::metadata(&path).unwrap().ino();
+        let saved: AppSettings = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let leftovers = fs::read_dir(&directory).unwrap().count();
+        fs::remove_dir_all(&directory).ok();
+
+        assert_ne!(first, second, "the settings file was rewritten in place");
+        assert_eq!(saved.wait_seconds, 99);
+        assert_eq!(leftovers, 1, "a temporary file was left behind");
     }
 
     #[test]
