@@ -8,10 +8,11 @@
 //! carries the paired hosts' snapshots too, each built and redacted on the host
 //! it describes and only when that host's user has allowed diagnostics.
 //!
-//! Serial numbers are replaced by a short unsalted hash rather than removed:
-//! "both hosts read the same serial", "one host reads none" and "the serials
-//! differ" are exactly what a report has to show, and a salted hash would make
-//! the two hosts' values incomparable.
+//! Serial numbers are replaced by a short hash rather than removed: "both hosts
+//! read the same serial", "one host reads none" and "the serials differ" are
+//! exactly what a report has to show. The hash is keyed by the stretched
+//! pairing key, which every host in a group shares, so their values compare
+//! while anyone reading a report cannot match them against guessed serials.
 
 use std::collections::HashMap;
 use std::fs;
@@ -19,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use hmac::{Hmac, Mac};
 use muxsu_core::{DisplayInput, MonitorConnection, MonitorDescriptor, MonitorFingerprint};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -164,21 +166,38 @@ pub struct IdentitySnapshot {
     pub serial: Option<String>,
 }
 
-impl From<&MonitorFingerprint> for IdentitySnapshot {
-    fn from(fingerprint: &MonitorFingerprint) -> Self {
+impl IdentitySnapshot {
+    fn new(fingerprint: &MonitorFingerprint, serial_key: &[u8]) -> Self {
         Self {
             manufacturer: fingerprint.manufacturer_id.clone(),
             product: fingerprint.product_code.clone(),
-            serial: fingerprint.serial_number.as_deref().map(serial_hash),
+            serial: fingerprint
+                .serial_number
+                .as_deref()
+                .map(|serial| serial_hash(serial, serial_key)),
         }
     }
 }
 
-/// `serial:` and the first 8 hex digits of the serial's SHA-256: enough to
-/// tell whether two hosts read the same serial, too little to read it back
-/// from anything but a guess at the serial itself.
-fn serial_hash(serial: &str) -> String {
-    let digest = Sha256::digest(format!("muxsu-serial:{serial}").as_bytes());
+/// The key serial hashes are made with: the stretched pairing key when this
+/// host is paired, so it is as costly to guess as the password itself.
+fn serial_key(settings: &AppSettings) -> Vec<u8> {
+    if crate::has_valid_shared_key(&settings.shared_key) {
+        crate::stretched_pairing_key(&settings.shared_key).to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
+/// `serial:` and the first 8 hex digits of the serial's HMAC-SHA256 under
+/// `key`: enough to tell whether two hosts read the same serial, too little to
+/// read it back, and not reproducible without the pairing key.
+fn serial_hash(serial: &str, key: &[u8]) -> String {
+    let mut mac =
+        <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC takes a key of any length");
+    mac.update(b"muxsu-serial:");
+    mac.update(serial.as_bytes());
+    let digest = mac.finalize().into_bytes();
     let hex = digest
         .iter()
         .take(4)
@@ -274,6 +293,8 @@ fn peer_reference(settings: &AppSettings, route: &str) -> String {
 /// This host's snapshot from `settings` and the last display scan.
 pub fn host_snapshot(settings: &AppSettings) -> HostSnapshot {
     let links = &settings.monitor_identity_links;
+    let key = serial_key(settings);
+    let identity = |fingerprint: &MonitorFingerprint| IdentitySnapshot::new(fingerprint, &key);
     let inventory = LAST_INVENTORY
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
@@ -285,8 +306,8 @@ pub fn host_snapshot(settings: &AppSettings) -> HostSnapshot {
                 .iter()
                 .map(|(monitor, input)| MonitorSnapshot {
                     name: monitor.name.clone(),
-                    identity: IdentitySnapshot::from(&monitor.fingerprint),
-                    resolves_to: IdentitySnapshot::from(monitor_identity::primary_for(
+                    identity: identity(&monitor.fingerprint),
+                    resolves_to: identity(monitor_identity::primary_for(
                         links,
                         &monitor.fingerprint,
                     )),
@@ -313,7 +334,7 @@ pub fn host_snapshot(settings: &AppSettings) -> HostSnapshot {
             .iter()
             .map(|selected| SharedMonitorSnapshot {
                 name: selected.name.clone(),
-                identity: IdentitySnapshot::from(&selected.fingerprint),
+                identity: identity(&selected.fingerprint),
                 local_input: selected.local_input.map(DisplayInput::value),
                 supported_inputs: selected
                     .supported_inputs
@@ -329,8 +350,8 @@ pub fn host_snapshot(settings: &AppSettings) -> HostSnapshot {
         identity_links: links
             .iter()
             .map(|link| IdentityLinkSnapshot {
-                alias: IdentitySnapshot::from(&link.alias),
-                primary: link.primary.as_ref().map(IdentitySnapshot::from),
+                alias: identity(&link.alias),
+                primary: link.primary.as_ref().map(identity),
                 updated_at_ms: link.updated_at_ms,
             })
             .collect(),
@@ -346,7 +367,7 @@ pub fn host_snapshot(settings: &AppSettings) -> HostSnapshot {
                     .inputs
                     .iter()
                     .map(|assignment| PeerInputSnapshot {
-                        identity: IdentitySnapshot::from(&assignment.monitor),
+                        identity: identity(&assignment.monitor),
                         input: assignment.input.value(),
                     })
                     .collect(),
@@ -445,8 +466,9 @@ impl Redactor {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let key = serial_key(settings);
         for serial in serials.iter().chain(&observed) {
-            add(serial, serial_hash(serial));
+            add(serial, serial_hash(serial, &key));
         }
         if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
             add(&home.to_string_lossy(), "~".to_owned());
@@ -681,7 +703,7 @@ mod tests {
             assert!(!redacted.contains(secret), "{secret} survived: {redacted}");
         }
         assert!(redacted.contains("[peer-1]"));
-        assert!(redacted.contains(&serial_hash("CF0H246200009")));
+        assert!(redacted.contains(&serial_hash("CF0H246200009", &serial_key(&settings()))));
     }
 
     #[test]
@@ -734,10 +756,21 @@ mod tests {
         assert!(json.contains("[peer-1] could switch"));
     }
 
+    /// Hosts sharing a pairing password hash a serial alike, so a report can
+    /// still compare them; without the password the hash cannot be matched
+    /// against guessed serials.
     #[test]
-    fn two_hosts_hash_one_serial_alike_and_two_serials_apart() {
-        assert_eq!(serial_hash("CF0H246200009"), serial_hash("CF0H246200009"));
-        assert_ne!(serial_hash("first"), serial_hash("second"));
+    fn two_hosts_hash_one_serial_alike_and_only_with_their_pairing_key() {
+        let group = b"one pairing group's key";
+        assert_eq!(
+            serial_hash("CF0H246200009", group),
+            serial_hash("CF0H246200009", group)
+        );
+        assert_ne!(serial_hash("first", group), serial_hash("second", group));
+        assert_ne!(
+            serial_hash("CF0H246200009", group),
+            serial_hash("CF0H246200009", b"another group's key")
+        );
     }
 
     #[test]
@@ -745,16 +778,14 @@ mod tests {
         let mut snapshot = host_snapshot(&settings());
         let monitor = MonitorSnapshot {
             name: "x".repeat(200),
-            identity: IdentitySnapshot::from(&MonitorFingerprint::new(
-                "MSI",
-                "3CF0",
-                None::<String>,
-            )),
-            resolves_to: IdentitySnapshot::from(&MonitorFingerprint::new(
-                "MSI",
-                "3CF0",
-                None::<String>,
-            )),
+            identity: IdentitySnapshot::new(
+                &MonitorFingerprint::new("MSI", "3CF0", None::<String>),
+                b"",
+            ),
+            resolves_to: IdentitySnapshot::new(
+                &MonitorFingerprint::new("MSI", "3CF0", None::<String>),
+                b"",
+            ),
             built_in: false,
             controllable: true,
             current_input: Some(8),
