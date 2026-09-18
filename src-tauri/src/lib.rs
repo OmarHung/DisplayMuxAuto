@@ -4246,19 +4246,46 @@ fn run_switch(
     input: DisplayInput,
 ) -> Result<SwitchOutcome, DisplayMuxError> {
     let controller = platform_controller()?;
-    let present = controller.enumerate()?;
-    let shared_monitor = identities
-        .iter()
-        .find(|identity| {
-            present
-                .iter()
-                .any(|monitor| identity.matches_exactly(&monitor.fingerprint))
-        })
-        .or_else(|| identities.first())
-        .ok_or(DisplayMuxError::TargetNotFound)?
-        .clone();
+    let shared_monitor = switch_target(&identities, &controller.enumerate()?)?;
     let service = DisplayMuxService::new(controller, DisplayMuxProfile { shared_monitor });
     service.switch_to_input(input, SwitchMode::Apply)
+}
+
+/// The fingerprint of the one display present right now that a switch of the
+/// shared display `identities` names should write to.
+///
+/// An exact match wins. Failing that, a display counts when it differs from
+/// one of `identities` only by a serial number one side could not read — the
+/// rule `monitor_identity::same_identity` uses for merges — because a merge
+/// made on the host that reads the serial carries it, and the host that
+/// cannot read it would otherwise find nothing to switch while the display
+/// sits right there. Tolerating that never picks between displays: when more
+/// than one present display could be the target, nothing is written.
+fn switch_target(
+    identities: &[MonitorFingerprint],
+    present: &[MonitorDescriptor],
+) -> Result<MonitorFingerprint, DisplayMuxError> {
+    if let Some(exact) = identities.iter().find(|identity| {
+        present
+            .iter()
+            .any(|monitor| identity.matches_exactly(&monitor.fingerprint))
+    }) {
+        return Ok(exact.clone());
+    }
+    let mut candidates = Vec::<&MonitorFingerprint>::new();
+    for monitor in present {
+        let named = identities
+            .iter()
+            .any(|identity| monitor_identity::same_identity(identity, &monitor.fingerprint));
+        if named && !candidates.contains(&&monitor.fingerprint) {
+            candidates.push(&monitor.fingerprint);
+        }
+    }
+    match candidates.as_slice() {
+        [] => Err(DisplayMuxError::TargetNotFound),
+        [only] => Ok((*only).clone()),
+        many => Err(DisplayMuxError::AmbiguousTarget { count: many.len() }),
+    }
 }
 
 fn enumerate_monitor_inventory() -> Result<MonitorInventory, DisplayMuxError> {
@@ -5546,6 +5573,75 @@ mod tests {
             resolved.get(&serde_json::to_string(&first).unwrap()),
             resolved.get(&serde_json::to_string(&second).unwrap())
         );
+    }
+
+    fn present(product: &str, serial: Option<&str>) -> MonitorDescriptor {
+        MonitorDescriptor {
+            fingerprint: MonitorFingerprint::new("MSI", product, serial.map(str::to_owned)),
+            ..monitor(product)
+        }
+    }
+
+    /// The merge was made on the PC, which reads the MSI's serial number, so
+    /// the claim names the 1080p identity with it. The Mac reads no serial and
+    /// used to find nothing to switch, though the display was right there.
+    #[test]
+    fn a_merge_carrying_another_hosts_serial_still_finds_the_display_here() {
+        let identities = vec![
+            MonitorFingerprint::new("MSI", "3CF0", None::<String>),
+            MonitorFingerprint::new("MSI", "7CF0", Some("CF0H246200009".to_owned())),
+        ];
+
+        let target = switch_target(&identities, &[present("7CF0", None)]);
+
+        assert_eq!(
+            target,
+            Ok(MonitorFingerprint::new("MSI", "7CF0", None::<String>))
+        );
+    }
+
+    #[test]
+    fn an_exact_match_is_preferred_over_a_tolerant_one() {
+        let exact = MonitorFingerprint::new("MSI", "7CF0", Some("CF0H246200009".to_owned()));
+
+        let target = switch_target(
+            std::slice::from_ref(&exact),
+            &[
+                present("7CF0", None),
+                present("7CF0", Some("CF0H246200009")),
+            ],
+        );
+
+        assert_eq!(target, Ok(exact));
+    }
+
+    /// Tolerating a missing serial must never pick between two displays: with
+    /// two that could each be the one, nothing is written.
+    #[test]
+    fn two_displays_that_could_each_be_the_target_are_refused() {
+        // Two of this model, one in each mode, and this host reads a serial
+        // from neither: either could be the merged display.
+        let identities = vec![
+            MonitorFingerprint::new("MSI", "3CF0", Some("CF0H246200009".to_owned())),
+            MonitorFingerprint::new("MSI", "7CF0", Some("CF0H246200009".to_owned())),
+        ];
+
+        let target = switch_target(&identities, &[present("3CF0", None), present("7CF0", None)]);
+
+        assert_eq!(target, Err(DisplayMuxError::AmbiguousTarget { count: 2 }));
+    }
+
+    #[test]
+    fn a_display_with_a_different_serial_is_not_a_target() {
+        let identities = vec![MonitorFingerprint::new(
+            "MSI",
+            "7CF0",
+            Some("CF0H246200009".to_owned()),
+        )];
+
+        let target = switch_target(&identities, &[present("7CF0", Some("other-panel"))]);
+
+        assert_eq!(target, Err(DisplayMuxError::TargetNotFound));
     }
 
     #[test]
