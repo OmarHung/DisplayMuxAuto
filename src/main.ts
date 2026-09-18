@@ -186,6 +186,7 @@ let isRecordingShortcut = false;
 let shortcutStatus: { kind: "checking" | "available" | "conflict"; text: string } | null = null;
 
 const releaseHistoryFallback = [
+  { date: "2026-09-19", version: "v0.6.0", url: "https://github.com/OmarHung/MuxSU/releases/tag/v0.6.0" },
   { date: "2026-09-19", version: "v0.5.0", url: "https://github.com/OmarHung/MuxSU/releases/tag/v0.5.0" },
   { date: "2026-09-18", version: "v0.4.1", url: "https://github.com/OmarHung/MuxSU/releases/tag/v0.4.1" },
   { date: "2026-09-18", version: "v0.4.0", url: "https://github.com/OmarHung/MuxSU/releases/tag/v0.4.0" },
