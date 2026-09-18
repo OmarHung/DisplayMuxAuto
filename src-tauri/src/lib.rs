@@ -993,11 +993,19 @@ async fn remove_shared_monitor(monitor_id: String, app: AppHandle) -> Result<App
 
 fn remove_shared_monitor_now(state: &AppRuntime, monitor_id: &str) -> Result<AppSettings, String> {
     let mut settings = read_settings(state)?;
-    let links = settings.monitor_identity_links.clone();
     let target = find_shared_monitor(&settings, monitor_id)?
         .fingerprint
         .clone();
     settings.shared_monitors_chosen = true;
+    unshare_monitor(&mut settings, &target);
+    store_settings(state, settings)
+}
+
+/// Stops sharing `target` and every identity merged with it, forgetting the
+/// ports every host had on it. Those would otherwise ride along in every Ping
+/// until the next full reset.
+fn unshare_monitor(settings: &mut AppSettings, target: &MonitorFingerprint) {
+    let links = settings.monitor_identity_links.clone();
     let removed = settings
         .shared_monitors
         .iter()
@@ -1007,15 +1015,20 @@ fn remove_shared_monitor_now(state: &AppRuntime, monitor_id: &str) -> Result<App
         .map(|selected| selected.fingerprint.clone())
         .collect::<Vec<_>>();
     settings.shared_monitors.retain(|selected| {
-        !monitor_identity::is_same_display(&links, &selected.fingerprint, &target)
+        !monitor_identity::is_same_display(&links, &selected.fingerprint, target)
     });
     for peer in &mut settings.peers {
-        peer.set_input_for(&target, None);
+        peer.set_input_for(target, None);
         for fingerprint in &removed {
             peer.set_input_for(fingerprint, None);
         }
     }
-    store_settings(state, settings)
+    settings.host_inputs.retain(|assignment| {
+        !assignment.monitor.matches_exactly(target)
+            && !removed
+                .iter()
+                .any(|fingerprint| assignment.monitor.matches_exactly(fingerprint))
+    });
 }
 
 #[tauri::command]
@@ -9035,6 +9048,28 @@ mod tests {
         assert_eq!(fitted.display_routes, vec![route]);
         assert!(fitted.monitor_identity_links.is_empty());
         assert_eq!(fitted.host_order, vec!["peer"], "shed more than needed");
+    }
+
+    #[test]
+    fn unsharing_a_display_forgets_every_port_on_it() {
+        let shared = monitor("shared");
+        let other = monitor("other");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, None);
+        settings.local_host_id = "this-host".to_owned();
+        settings.host_inputs = vec![
+            host_input("this-host", &shared, 0x08, 10),
+            host_input("peer", &shared, 0x07, 10),
+            host_input("peer", &other, 0x07, 10),
+        ];
+
+        unshare_monitor(&mut settings, &shared.fingerprint);
+
+        assert!(settings.shared_monitors.is_empty());
+        assert_eq!(settings.peers[0].input_for(&shared.fingerprint), None);
+        assert_eq!(
+            settings.host_inputs,
+            vec![host_input("peer", &other, 0x07, 10)]
+        );
     }
 
     #[test]
