@@ -1207,6 +1207,31 @@ fn find_shared_monitor<'a>(
         })
 }
 
+/// `submitted` with everything the settings form does not own kept as saved.
+/// Displays, discovered inputs and paired hosts are backend-owned: each host
+/// reports its own port, so the form cannot assign one to a paired host.
+fn settings_from_form(submitted: AppSettings, protected: &AppSettings) -> AppSettings {
+    AppSettings {
+        local_host: protected.local_host,
+        peers: protected.peers.clone(),
+        shared_monitors: protected.shared_monitors.clone(),
+        onboarding_completed: protected.onboarding_completed,
+        // A form opened before a paired host reordered must not revert it.
+        host_order: protected.host_order.clone(),
+        host_order_updated_at_ms: protected.host_order_updated_at_ms,
+        host_aliases: protected.host_aliases.clone(),
+        input_labels: protected.input_labels.clone(),
+        monitor_identity_links: protected.monitor_identity_links.clone(),
+        host_inputs: protected.host_inputs.clone(),
+        pending_peer_notices: protected.pending_peer_notices.clone(),
+        shared_monitors_chosen: protected.shared_monitors_chosen,
+        local_host_id: protected.local_host_id.clone(),
+        diagnostics_enabled: protected.diagnostics_enabled,
+        diagnostics_asked: protected.diagnostics_asked,
+        ..settings_for_current_build(submitted)
+    }
+}
+
 #[tauri::command]
 async fn save_settings(
     settings: AppSettings,
@@ -1214,24 +1239,7 @@ async fn save_settings(
     app: AppHandle,
 ) -> Result<OperationResult, String> {
     let protected = read_settings(&state)?;
-    let mut settings = settings_for_current_build(settings);
-    // Monitor identity and discovered input data are backend-owned. The webview may only
-    // assign a filtered input to remote hosts; it cannot forge DDC discovery results.
-    settings.local_host = protected.local_host;
-    settings.shared_monitors = protected.shared_monitors.clone();
-    settings.onboarding_completed = protected.onboarding_completed;
-    // A settings form opened before a paired host reordered must not revert it.
-    settings.host_order = protected.host_order.clone();
-    settings.host_order_updated_at_ms = protected.host_order_updated_at_ms;
-    settings.host_aliases = protected.host_aliases.clone();
-    settings.input_labels = protected.input_labels.clone();
-    settings.monitor_identity_links = protected.monitor_identity_links.clone();
-    settings.host_inputs = protected.host_inputs.clone();
-    settings.pending_peer_notices = protected.pending_peer_notices.clone();
-    settings.shared_monitors_chosen = protected.shared_monitors_chosen;
-    settings.local_host_id = protected.local_host_id.clone();
-    settings.diagnostics_enabled = protected.diagnostics_enabled;
-    settings.diagnostics_asked = protected.diagnostics_asked;
+    let settings = settings_from_form(settings, &protected);
     validate_settings(&settings).map_err(core_user_error)?;
     let enable_autostart = settings.autostart;
     update_host_switcher_shortcut(&app, &protected, &settings)?;
@@ -1254,8 +1262,8 @@ async fn save_settings(
     Ok(OperationResult {
         title: ui_text("設定已儲存", "Settings saved").to_owned(),
         detail: ui_text(
-            "共用螢幕、各主機輸入與配對設定已更新。",
-            "The shared display, host inputs, and pairing settings were updated.",
+            "配對與一般設定已更新。",
+            "The pairing and general settings were updated.",
         )
         .to_owned(),
         peer_woken: false,
@@ -1312,6 +1320,24 @@ fn settings_after_reset(settings: &AppSettings, scope: ResetScope) -> AppSetting
     }
 }
 
+/// The port ledger after a display reset. The reset is this host's alone: its
+/// own ports become tombstones for paired hosts to adopt, and what it knew of
+/// theirs is forgotten here only, to be learned again once a display is shared.
+fn host_inputs_after_display_reset(settings: &AppSettings, now_ms: u64) -> Vec<AgentHostInput> {
+    let mut source = settings.clone();
+    ensure_host_input_history(&mut source);
+    source
+        .host_inputs
+        .into_iter()
+        .filter(|assignment| assignment.host_id == settings.local_host_id)
+        .map(|assignment| AgentHostInput {
+            input: None,
+            updated_at_ms: now_ms.max(assignment.updated_at_ms.saturating_add(1)),
+            ..assignment
+        })
+        .collect()
+}
+
 /// Clears the saved setup. Destructive and not undoable, so the webview asks
 /// before calling it.
 #[tauri::command]
@@ -1323,14 +1349,7 @@ async fn reset_settings(
     let previous = read_settings(&state)?;
     let mut reset_source = previous.clone();
     if scope == ResetScope::Displays {
-        ensure_host_input_history(&mut reset_source);
-        let now = unix_time_ms();
-        for (index, assignment) in reset_source.host_inputs.iter_mut().enumerate() {
-            assignment.input = None;
-            assignment.updated_at_ms = now
-                .saturating_add(u64::try_from(index).unwrap_or(u64::MAX))
-                .max(assignment.updated_at_ms.saturating_add(1));
-        }
+        reset_source.host_inputs = host_inputs_after_display_reset(&reset_source, unix_time_ms());
     }
     let settings = settings_for_current_build(settings_after_reset(&reset_source, scope));
     update_host_switcher_shortcut(&app, &previous, &settings)?;
@@ -3978,53 +3997,6 @@ async fn set_local_input(
     Ok(settings)
 }
 
-/// Sets which input a paired host occupies on a shared display, or clears it.
-///
-/// Saved as it is chosen, like the port for this computer. The two controls sit
-/// beside each other and say the same kind of thing; one of them quietly
-/// needing a separate save was a difference the user had no way to see.
-#[tauri::command]
-async fn set_peer_input(
-    peer_id: String,
-    monitor_id: String,
-    input: Option<u32>,
-    app: AppHandle,
-) -> Result<AppSettings, String> {
-    let settings = run_display_task(app.clone(), move |state| {
-        let mut settings = read_settings(state)?;
-        let fingerprint = find_shared_monitor(&settings, &monitor_id)?
-            .fingerprint
-            .clone();
-        let input = match input {
-            Some(value) => Some(DisplayInput::new(value).map_err(core_user_error)?),
-            None => None,
-        };
-        let Some(peer) = settings.peers.iter_mut().find(|peer| peer.id == peer_id) else {
-            return Err(ui_text(
-                "找不到這台已配對主機，請重新搜尋並加入",
-                "This paired host was not found. Search for it and add it again.",
-            )
-            .to_owned());
-        };
-        peer.set_input_for(&fingerprint, input);
-        record_host_input_update(&mut settings, &peer_id, &fingerprint, input, unix_time_ms());
-        store_settings(state, settings)
-    })
-    .await?;
-    if let Err(error) = app.emit(PEER_INPUTS_CHANGED_EVENT, ()) {
-        tracing::warn!(error = %error, "unable to notify windows of a paired host's input");
-    }
-    if let Some(state) = app.try_state::<AppRuntime>() {
-        broadcast_to_peers(
-            &state,
-            &AgentAction::HostInputsChanged {
-                assignments: settings.host_inputs.clone(),
-            },
-        );
-    }
-    Ok(settings)
-}
-
 /// Sets the note for one input of a shared display (empty clears it) and
 /// shares every note with paired hosts. Returns that display's input options.
 #[tauri::command]
@@ -4327,10 +4299,10 @@ fn apply_host_input_update(
     update: &AgentHostInput,
     now_ms: u64,
 ) -> Option<bool> {
-    // Only hosts this one knows may enter the ledger: it is persisted and
-    // returned in every Ping, so an unknown id could grow it without bound.
-    let is_local = update.host_id == settings.local_host_id;
-    let is_known = is_local || settings.peers.iter().any(|peer| peer.id == update.host_id);
+    // Only paired hosts may enter the ledger: it is persisted and returned in
+    // every Ping, so an unknown id could grow it without bound. This host's
+    // own port is set only here, from its display or its user.
+    let is_known = settings.peers.iter().any(|peer| peer.id == update.host_id);
     if !is_known
         || !host_order::is_valid_host_id(&update.host_id)
         || !is_plausible_revision(update.updated_at_ms, now_ms)
@@ -4357,21 +4329,16 @@ fn apply_host_input_update(
 
     let mut displaced_conflict = false;
     if let Some(input) = update.input {
-        let mut conflicts = Vec::new();
-        if update.host_id != settings.local_host_id
-            && settings.shared_monitors[monitor_index].local_input == Some(input)
-        {
-            conflicts.push(settings.local_host_id.clone());
+        // A paired host may not take the port this host says it is on.
+        if settings.shared_monitors[monitor_index].local_input == Some(input) {
+            return None;
         }
-        conflicts.extend(
-            settings
-                .peers
-                .iter()
-                .filter(|peer| {
-                    peer.id != update.host_id && peer.input_for(&fingerprint) == Some(input)
-                })
-                .map(|peer| peer.id.clone()),
-        );
+        let conflicts: Vec<String> = settings
+            .peers
+            .iter()
+            .filter(|peer| peer.id != update.host_id && peer.input_for(&fingerprint) == Some(input))
+            .map(|peer| peer.id.clone())
+            .collect();
         let newer_conflict = conflicts.iter().any(|host_id| {
             settings.host_inputs.iter().any(|entry| {
                 entry.host_id == *host_id
@@ -4384,9 +4351,7 @@ fn apply_host_input_update(
         }
         for host_id in conflicts {
             displaced_conflict = true;
-            if host_id == settings.local_host_id {
-                settings.shared_monitors[monitor_index].local_input = None;
-            } else if let Some(peer) = settings.peers.iter_mut().find(|peer| peer.id == host_id) {
+            if let Some(peer) = settings.peers.iter_mut().find(|peer| peer.id == host_id) {
                 peer.set_input_for(&fingerprint, None);
             }
             settings.host_inputs.retain(|entry| {
@@ -4401,20 +4366,12 @@ fn apply_host_input_update(
         }
     }
 
-    let target_changed = if is_local {
-        let selected = &mut settings.shared_monitors[monitor_index];
-        let changed = selected.local_input != update.input;
-        selected.local_input = update.input;
-        changed
-    } else {
-        let peer = settings
-            .peers
-            .iter_mut()
-            .find(|peer| peer.id == update.host_id)?;
-        let changed = peer.input_for(&fingerprint) != update.input;
-        peer.set_input_for(&fingerprint, update.input);
-        changed
-    };
+    let peer = settings
+        .peers
+        .iter_mut()
+        .find(|peer| peer.id == update.host_id)?;
+    let target_changed = peer.input_for(&fingerprint) != update.input;
+    peer.set_input_for(&fingerprint, update.input);
     let changed = displaced_conflict || target_changed;
 
     settings.host_inputs.retain(|entry| {
@@ -6145,7 +6102,6 @@ pub fn run() -> anyhow::Result<()> {
             set_input_label,
             set_monitor_identity_link,
             set_local_input,
-            set_peer_input,
             reset_settings,
             exchange_host_layout,
             hide_host_switcher,
@@ -8696,43 +8652,28 @@ mod tests {
     fn a_newer_host_input_tombstone_clears_and_blocks_stale_resurrection() {
         let shared = monitor("shared");
         let old_input = DisplayInput::new(0x11).unwrap();
-        let mut selected = SelectedMonitor::from(&shared);
-        selected.local_input = Some(old_input);
-        let mut settings = AppSettings {
-            local_host_id: "this-host".to_owned(),
-            shared_monitors: vec![selected],
-            host_inputs: vec![AgentHostInput {
-                host_id: "this-host".to_owned(),
-                monitor: shared.fingerprint.clone(),
-                input: Some(old_input),
-                updated_at_ms: 10,
-            }],
-            ..AppSettings::default()
-        };
+        let mut settings = routed_settings(&shared, 0x08, 0x11, None);
+        settings.local_host_id = "this-host".to_owned();
+        settings.host_inputs = vec![host_input("peer", &shared, 0x11, 10)];
 
         let cleared = AgentHostInput {
-            host_id: "this-host".to_owned(),
-            monitor: shared.fingerprint.clone(),
             input: None,
-            updated_at_ms: 20,
+            ..host_input("peer", &shared, 0x11, 20)
         };
         assert_eq!(
             apply_host_input_update(&mut settings, &cleared, LEDGER_NOW_MS),
             Some(true)
         );
-        assert_eq!(settings.shared_monitors[0].local_input, None);
+        assert_eq!(settings.peers[0].input_for(&shared.fingerprint), None);
 
-        let stale = AgentHostInput {
-            input: Some(old_input),
-            updated_at_ms: 15,
-            ..cleared
-        };
+        let stale = host_input("peer", &shared, 0x11, 15);
         assert_eq!(
             apply_host_input_update(&mut settings, &stale, LEDGER_NOW_MS),
             None
         );
-        assert_eq!(settings.shared_monitors[0].local_input, None);
+        assert_eq!(settings.peers[0].input_for(&shared.fingerprint), None);
         assert_eq!(settings.host_inputs[0].input, None);
+        assert_ne!(settings.host_inputs[0].input, Some(old_input));
     }
 
     /// Later than every revision the host input tests write.
@@ -8773,22 +8714,89 @@ mod tests {
     }
 
     #[test]
-    fn a_host_input_that_displaces_another_host_still_assigns_the_port() {
+    fn a_host_input_that_displaces_another_peer_still_assigns_the_port() {
         let shared = monitor("shared");
         let mut settings = routed_settings(&shared, 0x08, 0x07, None);
         settings.local_host_id = "this-host".to_owned();
+        settings
+            .peers
+            .push(peer_using_input("other-peer", &shared, 0x0f));
 
-        let moved = host_input("peer", &shared, 0x08, 500);
+        let moved = host_input("other-peer", &shared, 0x07, 500);
 
         assert_eq!(
             apply_host_input_update(&mut settings, &moved, LEDGER_NOW_MS),
             Some(true)
         );
-        assert_eq!(settings.shared_monitors[0].local_input, None);
+        assert_eq!(settings.peers[0].input_for(&shared.fingerprint), None);
         assert_eq!(
-            settings.peers[0].input_for(&shared.fingerprint),
+            settings.peers[1].input_for(&shared.fingerprint),
+            DisplayInput::new(0x07).ok()
+        );
+    }
+
+    /// Only this host says which port it is on, from its own display reading
+    /// or its own user's choice. A paired host may neither set it nor take it.
+    #[test]
+    fn a_paired_host_cannot_set_or_take_this_hosts_port() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, None);
+        settings.local_host_id = "this-host".to_owned();
+
+        let set_ours = host_input("this-host", &shared, 0x0f, 500);
+        let take_ours = host_input("peer", &shared, 0x08, 500);
+
+        assert_eq!(
+            apply_host_input_update(&mut settings, &set_ours, LEDGER_NOW_MS),
+            None
+        );
+        assert_eq!(
+            apply_host_input_update(&mut settings, &take_ours, LEDGER_NOW_MS),
+            None
+        );
+        assert_eq!(
+            settings.shared_monitors[0].local_input,
             DisplayInput::new(0x08).ok()
         );
+        assert_eq!(
+            settings.peers[0].input_for(&shared.fingerprint),
+            DisplayInput::new(0x07).ok()
+        );
+        assert!(settings.host_inputs.is_empty());
+    }
+
+    #[test]
+    fn a_display_reset_clears_only_this_hosts_port() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, None);
+        settings.local_host_id = "this-host".to_owned();
+        settings.host_inputs = vec![host_input("peer", &shared, 0x07, 10)];
+
+        // This host's port predates the ledger, so it has no entry yet.
+        let ledger = host_inputs_after_display_reset(&settings, LEDGER_NOW_MS);
+
+        assert_eq!(
+            ledger,
+            vec![AgentHostInput {
+                input: None,
+                ..host_input("this-host", &shared, 0x08, LEDGER_NOW_MS)
+            }]
+        );
+    }
+
+    #[test]
+    fn the_settings_form_cannot_change_paired_hosts() {
+        let shared = monitor("shared");
+        let saved = routed_settings(&shared, 0x08, 0x07, None);
+        let mut submitted = saved.clone();
+        submitted.peers[0].set_input_for(&shared.fingerprint, DisplayInput::new(0x0f).ok());
+        submitted.peers[0].address = "10.0.0.99".to_owned();
+        submitted.wait_seconds = saved.wait_seconds + 5;
+
+        let accepted = settings_from_form(submitted, &saved);
+
+        assert_eq!(accepted.peers, saved.peers);
+        assert_eq!(accepted.wait_seconds, saved.wait_seconds + 5);
     }
 
     #[test]

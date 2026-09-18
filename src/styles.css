@@ -2450,3 +2450,10 @@ button.switch-all-host:disabled {
 :root[data-theme="dark"] .compat-note { background: var(--accent-light); border-color: var(--accent-border); color: #a8d8ff; }
 :root[data-theme="dark"] .onboarding-status { border-color: rgba(224, 162, 101, 0.34); background: rgba(163, 91, 24, 0.13); color: #e9b67d; }
 :root[data-theme="dark"] .toast.is-warning { background: rgba(61, 43, 28, 0.7); border-color: rgba(224, 162, 101, 0.34); }
+
+/* A paired host's port is reported by that host and shown here read-only. */
+.paired-input-value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}

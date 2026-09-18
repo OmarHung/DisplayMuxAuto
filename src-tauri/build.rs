@@ -17,7 +17,6 @@ const COMMANDS: &[&str] = &[
     "set_input_label",
     "set_monitor_identity_link",
     "set_local_input",
-    "set_peer_input",
     "reset_settings",
     "exchange_host_layout",
     "hide_host_switcher",

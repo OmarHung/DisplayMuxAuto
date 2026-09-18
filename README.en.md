@@ -127,13 +127,13 @@ If that computer has already selected its shared monitor, MuxSU fills in the por
 - The other computer's port is an input this monitor can use
 - That port is not already assigned to this computer or another host
 
-When this cannot be established safely, the choice is left to you. MuxSU does not guess which port another computer is plugged into.
+When this cannot be established safely, set that computer’s port on that computer. Each computer sets only its own port and cannot assign one for another host, and MuxSU does not guess which port another computer is plugged into.
 
 Both hosts must use the same MuxSU Agent protocol version. When they differ, MuxSU rejects the connection before accepting remote data or performing a switch.
 
 ### 5. Save and Repeat on the Other Computers
 
-Most settings are saved as you change them: which monitors are shared, each host's input port, input notes, host names and order, and display identity merges.
+Most settings are saved as you change them: which monitors are shared, this computer's input port, input notes, host names and order, and display identity merges.
 
 These five wait for the Save button, and a note with a cancel appears at the bottom of the form while one of them is waiting:
 

@@ -616,12 +616,6 @@ document.querySelector("#monitor-picker")?.addEventListener("click", (event) => 
   const selected = button.dataset.monitorSelected === "true";
   void withBusyDisplay(busyKey, () => (selected ? removeSharedMonitor(monitorId) : addSharedMonitor(monitorId)));
 });
-document.querySelector("#paired-routes")?.addEventListener("change", (event) => {
-  const field = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-route-input]");
-  const peerId = field?.dataset.routeInput;
-  const monitorKey = field?.dataset.routeMonitor;
-  if (field && peerId && monitorKey) void commitPeerInput(peerId, monitorKey, field.value);
-});
 document.querySelector("#local-input-summary")?.addEventListener("change", (event) => {
   const field = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-local-input]");
   if (field?.dataset.localInput) void commitLocalInput(field.dataset.localInput, field.value);
@@ -657,15 +651,6 @@ document.querySelector("#paired-routes")?.addEventListener("click", (event) => {
   if (button?.dataset.removePeer) void removePeer(button.dataset.removePeer);
   if (button?.dataset.probeId) void peerCommand("probe_peer", button.dataset.probeId);
   if (button?.dataset.wakeId) void peerCommand("wake_peer", button.dataset.wakeId);
-});
-document.querySelector("#paired-routes")?.addEventListener("input", renderInputHints);
-document.querySelector("#paired-routes")?.addEventListener("focusout", () => {
-  // A remote update received while a select was open is deferred so the menu
-  // is not closed under the user. Apply it as soon as editing ends instead of
-  // waiting for the next 15-second full refresh.
-  window.setTimeout(() => {
-    if (peerInputsReloadPending) void reloadPeerInputs();
-  }, 0);
 });
 const inputLabels = document.querySelector<HTMLElement>("#input-labels");
 inputLabels?.addEventListener("change", (event) => {
@@ -892,7 +877,6 @@ let hostNames: Record<string, string> = {};
 let renaming: { routeId: string; draft: string } | null = null;
 let isRefreshing = false;
 let lastRefreshAt = 0;
-let peerInputsReloadPending = false;
 let inputNamesReloadPending = false;
 
 async function refresh(): Promise<void> {
@@ -993,18 +977,9 @@ async function reloadActiveRoutes(): Promise<void> {
   scheduleSettledRescans();
 }
 
-/**
- * Re-reads the saved peer inputs after a paired host reported the port it
- * occupies, leaving a select the user has open alone so the new value never
- * closes a list mid-pick.
- */
+/** Re-reads the saved peer inputs after a paired host reported the port it
+ *  occupies. */
 async function reloadPeerInputs(): Promise<void> {
-  const routes = document.querySelector("#paired-routes");
-  if (routes?.contains(document.activeElement)) {
-    peerInputsReloadPending = true;
-    return;
-  }
-  peerInputsReloadPending = false;
   try {
     const latest = await invoke<AppSettings>("get_settings");
     settings = { ...settings, peers: latest.peers };
@@ -1247,7 +1222,7 @@ function renderState(): void {
   keepActiveMonitorSelected();
   renderMonitorStrip(); renderSwitchPanel();
   diagnostics.render();
-  renderMonitors(); renderMonitorMerge(); renderPeerList(); renderPairedRoutes(); renderLocalInputSummary(); renderInputLabels(); renderInputHints(); refreshIcons();
+  renderMonitors(); renderMonitorMerge(); renderPeerList(); renderPairedRoutes(); renderLocalInputSummary(); renderInputLabels(); refreshIcons();
 }
 
 function shortcutDisplay(value: string): string {
@@ -1573,7 +1548,7 @@ function renderInputLabels(): void {
 /** Redraws every place that shows input names. */
 function renderInputNames(): void {
   renderLocalInputSummary();
-  renderInputHints();
+  renderPairedRoutes();
   renderInputLabels();
   renderSwitchPanel();
   refreshIcons();
@@ -1627,7 +1602,10 @@ function renderPeerList(): void {
 }
 
 function peerInputValue(peerId: string, monitorKey: string): number | null {
-  return inputValueFromElement(`[data-route-input="${cssEscape(peerId)}"][data-route-monitor="${cssEscape(monitorKey)}"]`, null);
+  const shared = dashboard.shared.find((item) => item.monitorKey === monitorKey);
+  const peer = settings.peers.find((item) => item.id === peerId);
+  if (!shared || !peer) return null;
+  return peer.inputs.find((assignment) => sameDisplay(assignment.monitor, shared.fingerprint))?.input ?? null;
 }
 
 function renderPairedRoutes(): void {
@@ -1653,10 +1631,14 @@ function renderPairedRoutes(): void {
       </div>
     </div>
     <div class="paired-route-right">
-      ${dashboard.shared.map((shared) => `<label class="paired-input-wrap">
+      ${dashboard.shared.map((shared) => {
+        // Each host reports its own port; it is set on that computer, not here.
+        const current = peerInputValue(peer.id, shared.monitorKey);
+        return `<div class="paired-input-wrap">
         <span>${escapeHtml(shared.name)} ${t("settings.inputValue")}</span>
-        <select class="paired-input-field" data-route-input="${escapeHtml(peer.id)}" data-route-monitor="${escapeHtml(shared.monitorKey)}"${displayInputsKnown(shared.monitorKey) ? "" : " disabled"}>${renderInputOptions(peer.id, shared.monitorKey, peer.inputs.find((assignment) => sameDisplay(assignment.monitor, shared.fingerprint))?.input ?? null)}</select>
-      </label>`).join("")}
+        <output class="paired-input-field paired-input-value" title="${escapeHtml(t("settings.peerInputOwnHost"))}">${current == null ? t("settings.peerInputUnreported") : escapeHtml(inputName(current, shared.monitorKey))}</output>
+      </div>`;
+      }).join("")}
       <button class="delete-button" type="button" data-remove-peer="${escapeHtml(peer.id)}" title="${t("action.remove")}"><i data-lucide="trash-2"></i></button>
     </div>
   </article>`).join("") : `<p class="peer-empty">${t("settings.noAddedHosts")}</p>`);
@@ -1695,12 +1677,6 @@ function renderInputOptions(routeId: string, monitorKey: string, current: number
     .map((item) => `<option value="${item.value}" ${item.value === current ? "selected" : ""}>${escapeHtml(item.name)}</option>`)
     .join("");
   return `<option value="" ${current == null ? "selected" : ""}>${t("settings.selectInput")}</option>${options}`;
-}
-
-function inputValueFromElement(selector: string, fallback: number | null): number | null {
-  const value = document.querySelector<HTMLInputElement>(selector)?.value;
-  if (value == null) return fallback;
-  try { return parseInput(value); } catch { return null; }
 }
 
 /** Position of a route in the saved order; routes not yet ordered sort last. */
@@ -1927,16 +1903,6 @@ function renderHostRoutes(shared: SharedMonitorStatus): void {
   }).join("");
 }
 
-function renderInputHints(): void {
-  document.querySelectorAll<HTMLSelectElement>("[data-route-input]").forEach((input) => {
-    const routeId = input.dataset.routeInput ?? "";
-    const monitorKey = input.dataset.routeMonitor ?? "";
-    const current = peerInputValue(routeId, monitorKey);
-    input.innerHTML = renderInputOptions(routeId, monitorKey, current);
-    input.value = current == null ? "" : String(current);
-  });
-}
-
 async function scanPeers(): Promise<void> {
   const button = document.querySelector<HTMLButtonElement>("#scan-button");
   if (button) { button.disabled = true; button.textContent = t("action.searching"); }
@@ -2028,22 +1994,6 @@ async function commitLocalInput(monitorKey: string, value: string): Promise<void
   } catch (error) {
     showToast(t("toast.inputLabelFailed"), String(error), true);
     renderLocalInputSummary();
-  }
-}
-
-/** Saves which input a paired host occupies, as it is chosen. The control for
- *  this computer's own port sits beside it and saves the same way. */
-async function commitPeerInput(peerId: string, monitorKey: string, value: string): Promise<void> {
-  const input = value === "" ? null : Number(value);
-  try {
-    settings = await invoke<AppSettings>("set_peer_input", { peerId, monitorId: monitorKey, input });
-    renderPairedRoutes();
-    renderInputNames();
-    renderInputHints();
-    refreshIcons();
-  } catch (error) {
-    showToast(t("toast.peerInputSyncFailed"), String(error), true);
-    renderPairedRoutes();
   }
 }
 
@@ -2145,14 +2095,6 @@ async function saveSettings(event: SubmitEvent): Promise<void> {
   try {
     settings = {
       ...settings,
-      peers: settings.peers.map((peer) => ({
-        ...peer,
-        inputs: dashboard.shared.flatMap((shared) => {
-          const value = document.querySelector<HTMLSelectElement>(`[data-route-input="${cssEscape(peer.id)}"][data-route-monitor="${cssEscape(shared.monitorKey)}"]`)?.value ?? "";
-          const input = parseInput(value);
-          return input == null ? [] : [{ monitor: shared.fingerprint, input }];
-        }),
-      })),
       sharedKey: document.querySelector<HTMLInputElement>("#shared-key")?.value ?? "",
       waitSeconds: Number(document.querySelector<HTMLInputElement>("#wait-seconds")?.value ?? 45),
       autostart: document.querySelector<HTMLInputElement>("#autostart")?.checked ?? true,
@@ -2550,14 +2492,6 @@ async function installUpdate(): Promise<void> {
     if (installButton) { installButton.disabled = false; installButton.textContent = t("update.retry"); }
     if (cancelButton) cancelButton.disabled = false;
   }
-}
-
-function parseInput(value: string): number | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const parsed = /^0x/i.test(trimmed) ? Number.parseInt(trimmed.slice(2), 16) : Number.parseInt(trimmed, 10);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 255) throw new Error(t("input.parseError", { value: trimmed }));
-  return parsed;
 }
 
 function inputName(value: number, monitorKey: string): string {

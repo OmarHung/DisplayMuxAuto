@@ -531,12 +531,6 @@
           "markdownDescription": "Enables the set_monitor_identity_link command without any pre-configured scope."
         },
         {
-          "description": "Enables the set_peer_input command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-set-peer-input",
-          "markdownDescription": "Enables the set_peer_input command without any pre-configured scope."
-        },
-        {
           "description": "Enables the switch_host command without any pre-configured scope.",
           "type": "string",
           "const": "allow-switch-host",
@@ -733,12 +727,6 @@
           "type": "string",
           "const": "deny-set-monitor-identity-link",
           "markdownDescription": "Denies the set_monitor_identity_link command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the set_peer_input command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-set-peer-input",
-          "markdownDescription": "Denies the set_peer_input command without any pre-configured scope."
         },
         {
           "description": "Denies the switch_host command without any pre-configured scope.",

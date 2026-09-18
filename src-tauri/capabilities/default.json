@@ -35,7 +35,6 @@
     "allow-set-local-input",
     "allow-set-locale",
     "allow-set-monitor-identity-link",
-    "allow-set-peer-input",
     "allow-switch-host",
     "allow-wake-peer",
     {
