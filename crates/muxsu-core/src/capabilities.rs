@@ -88,6 +88,19 @@ mod tests {
         assert!(parse_input_sources(b"(type(LCD))").is_empty());
     }
 
+    /// A display's capabilities string is not trusted to be well formed. The
+    /// depth count starts at the opening parenthesis and returns as soon as it
+    /// closes, so a stray one can end a group early but never underflow.
+    #[test]
+    fn stray_closing_parentheses_do_not_underflow_the_depth() {
+        let parsed = parse_input_sources(b")) (vcp(60(0f 11)) ))) 60(1b))");
+        assert_eq!(
+            parsed.iter().map(|input| input.value()).collect::<Vec<_>>(),
+            vec![0x0f, 0x11]
+        );
+        assert!(parse_input_sources(b"(vcp(60(0f 11").is_empty());
+    }
+
     #[test]
     fn accepts_uppercase_and_irregular_spacing() {
         let parsed = parse_input_sources(b"(VCP( 60 ( 0F\n10\tE0 ) ))");
