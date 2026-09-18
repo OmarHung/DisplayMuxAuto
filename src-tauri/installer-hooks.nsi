@@ -15,11 +15,15 @@
 
 ; The old install may be per-user or per-machine, and this installer's own
 ; context says nothing about which one it was, so both are checked.
-!macro RemoveLegacyInstall ROOT LEGACY_NAME
-  ReadRegStr $R6 ${ROOT} "Software\Microsoft\Windows\CurrentVersion\Uninstall\${LEGACY_NAME}" "UninstallString"
+;
+; The registry says where the old copy is, but the per-user half of it is
+; writable by anything running as the user, and this installer may run
+; elevated. So its command line is never run: only an uninstall.exe found in
+; an install location under FOLDER_A or FOLDER_B, where the matching kind of
+; install puts it.
+!macro RemoveLegacyInstall ROOT LEGACY_NAME FOLDER_A FOLDER_B
   ReadRegStr $R7 ${ROOT} "Software\Microsoft\Windows\CurrentVersion\Uninstall\${LEGACY_NAME}" "InstallLocation"
-  ${If} $R6 != ""
-  ${AndIf} $R7 != ""
+  ${If} $R7 != ""
     ; The installer writes InstallLocation with its quotation marks included:
     ;   "C:\Users\...\DisplayMux"
     ; and _?= will not take a quoted path. Passed through as it is stored, the
@@ -32,18 +36,31 @@
       IntOp $R9 $R9 - 2
       StrCpy $R7 $R7 $R9 1
     ${EndIf}
+    ; Resolved first, so a location written as FOLDER\..\elsewhere cannot pass
+    ; the check below. Empty when the folder does not exist.
+    GetFullPathName $R7 $R7
+    StrCpy $R6 "${FOLDER_A}\"
+    StrLen $R9 $R6
+    StrCpy $R9 $R7 $R9
+    ${If} $R9 != $R6
+      StrCpy $R6 "${FOLDER_B}\"
+      StrLen $R9 $R6
+      StrCpy $R9 $R7 $R9
+    ${EndIf}
+    ${If} $R9 != $R6
+      StrCpy $R7 ""
+    ${EndIf}
     ; _?= is satisfied by exactly one directory: the one the uninstaller runs
     ; from. Checking for it is the same question, asked where a wrong answer
     ; costs nothing — rather than handing the path over and being told about it
     ; in a message box the user has to dismiss.
-    ${If} ${FileExists} "$R7\uninstall.exe"
+    ${If} $R7 != ""
+    ${AndIf} ${FileExists} "$R7\uninstall.exe"
       ; The same call the installer makes when upgrading itself: /P for no
       ; prompts, and _?= to run the uninstaller where it stands. Without _?= it
       ; copies itself to a temp folder and returns at once, and the install
       ; below would race a deletion that is still running.
-      StrCpy $R6 "$R6 /P"
-      StrCpy $R6 "$R6 _?=$R7"
-      ExecWait '$R6' $R8
+      ExecWait '"$R7\uninstall.exe" /P _?=$R7' $R8
       ; Only tidy up after an uninstall that actually ran. Deleting the
       ; uninstaller or the Programs and Features entry after a failure would
       ; leave the old files installed with nothing left to remove them by — and
@@ -64,10 +81,10 @@
   Push $R7
   Push $R8
   Push $R9
-  !insertmacro RemoveLegacyInstall HKCU "DisplayMux"
-  !insertmacro RemoveLegacyInstall HKLM "DisplayMux"
-  !insertmacro RemoveLegacyInstall HKCU "DisplayMuxAuto"
-  !insertmacro RemoveLegacyInstall HKLM "DisplayMuxAuto"
+  !insertmacro RemoveLegacyInstall HKCU "DisplayMux" "$LOCALAPPDATA" "$LOCALAPPDATA"
+  !insertmacro RemoveLegacyInstall HKLM "DisplayMux" "$PROGRAMFILES64" "$PROGRAMFILES"
+  !insertmacro RemoveLegacyInstall HKCU "DisplayMuxAuto" "$LOCALAPPDATA" "$LOCALAPPDATA"
+  !insertmacro RemoveLegacyInstall HKLM "DisplayMuxAuto" "$PROGRAMFILES64" "$PROGRAMFILES"
   ; Written by the app at runtime rather than by the installer, so the
   ; uninstaller above leaves it. On its own it is enough to start the old copy
   ; at every login, whether or not the old files are still there.
