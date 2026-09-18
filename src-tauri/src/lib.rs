@@ -19,8 +19,8 @@ use std::{
 };
 
 use muxsu_core::{
-    derive_pairing_key, AgentAction, AgentClient, AgentDisplayRoute, AgentResponse, AgentServer,
-    DestinationHost, DiscoveredPeer, DisplayInput, DisplayMuxError, DisplayMuxProfile,
+    derive_pairing_key, AgentAction, AgentClient, AgentDisplayRoute, AgentHostInput, AgentResponse,
+    AgentServer, DestinationHost, DiscoveredPeer, DisplayInput, DisplayMuxError, DisplayMuxProfile,
     DisplayMuxService, HostAlias, InputLabel, LocalHostIdentity, MacAddress, MdnsPeerDiscovery,
     MonitorControl, MonitorDescriptor, MonitorFingerprint, MonitorIdentityLink, PeerDiscovery,
     PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome, WakeTarget, AGENT_PROTOCOL_VERSION,
@@ -171,10 +171,10 @@ struct SelectedMonitor {
     // labelled "Input N" instead of by MCCS name.
     #[serde(default)]
     vendor_indexed_inputs: bool,
-    // "local" or a peer id: whichever route was last confirmed as the
-    // monitor's active input by a successful switch. Not re-derived from a
-    // live DDC read, since some displays cannot be read back reliably once
-    // switched away from (see macOS DDC/CI limitations in product-facts.md).
+    // "local" or a peer id: whichever route was last confirmed by a switch,
+    // a paired-host notice, or an unambiguous live DDC read. An unreadable or
+    // ambiguous read keeps this value, since some displays cannot be read back
+    // once switched away (see the macOS limits in product-facts.md).
     #[serde(default)]
     active_route: Option<String>,
     /// When a switch or a paired host's notice last confirmed `active_route`
@@ -218,6 +218,19 @@ struct HostRoute {
     mac_address: String,
     #[serde(default)]
     inputs: Vec<MonitorInputAssignment>,
+}
+
+/// One notice waiting for a particular peer to return a valid signed ACK.
+/// Kept in `settings.json`, so quitting or restarting cannot lose a change
+/// made while that peer was offline.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingPeerNotice {
+    id: String,
+    peer_id: String,
+    action: AgentAction,
+    attempts: u32,
+    next_attempt_at_ms: u64,
 }
 
 impl HostRoute {
@@ -272,6 +285,12 @@ struct AppSettings {
     /// shared with paired hosts (see `monitor_identity`). Backend-owned like
     /// `host_order`.
     monitor_identity_links: Vec<MonitorIdentityLink>,
+    /// Last-write-wins display-port assignments, including clear tombstones.
+    /// Backend-owned and exchanged in Ping responses for offline catch-up.
+    host_inputs: Vec<AgentHostInput>,
+    /// Durable per-peer delivery queue. A notice remains here until the peer
+    /// returns a valid signed, ready response for that exact request.
+    pending_peer_notices: Vec<PendingPeerNotice>,
     /// Whether the shared display list has ever been decided — by the user or
     /// by the one-time auto-select. An empty list means "none chosen" only
     /// until then; afterwards it means the user emptied it on purpose, and
@@ -312,6 +331,8 @@ impl Default for AppSettings {
             host_aliases: Vec::new(),
             input_labels: Vec::new(),
             monitor_identity_links: Vec::new(),
+            host_inputs: Vec::new(),
+            pending_peer_notices: Vec::new(),
             shared_monitors_chosen: false,
             local_host_id: String::new(),
             diagnostics_enabled: false,
@@ -426,6 +447,9 @@ struct AppRuntime {
     /// Which displays this host has already told paired hosts the inputs of,
     /// on the same terms.
     announced_input_lists: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Prevents the immediate sender and periodic retry loop from delivering
+    /// the same durable queue entry concurrently.
+    notices_in_flight: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -439,6 +463,15 @@ struct SharedMonitorStatus {
     status_text: String,
     connection: Option<muxsu_core::MonitorConnection>,
     connection_input_conflict: bool,
+}
+
+/// A live DDC read that moved a display to another configured route. The
+/// fingerprint and input are enough for every paired host to resolve the same
+/// route using its own settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActiveInputUpdate {
+    monitor: MonitorFingerprint,
+    input: DisplayInput,
 }
 
 /// Whether this computer can use a shared display right now, and if not, why.
@@ -820,15 +853,31 @@ async fn select_peer(
             for display_route in agent_display_routes(&response) {
                 let _ = apply_verified_peer_route(&mut settings, &route.id, display_route);
             }
+            for assignment in &response.host_inputs {
+                let _ = apply_host_input_update(&mut settings, assignment);
+            }
         }
     }
-    store_settings(&state, settings)
+    ensure_host_input_history(&mut settings);
+    let settings = store_settings(&state, settings)?;
+    if !settings.host_inputs.is_empty() {
+        broadcast_to_peers(
+            &state,
+            &AgentAction::HostInputsChanged {
+                assignments: settings.host_inputs.clone(),
+            },
+        );
+    }
+    Ok(settings)
 }
 
 #[tauri::command]
 fn remove_peer(peer_id: String, state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
     let mut settings = read_settings(&state)?;
     settings.peers.retain(|peer| peer.id != peer_id);
+    settings
+        .pending_peer_notices
+        .retain(|notice| notice.peer_id != peer_id);
     store_settings(&state, settings)
 }
 
@@ -951,9 +1000,30 @@ fn get_settings(state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherState, String> {
-    let settings = read_settings(&state)?;
-    let route_order = ordered_routes(&state, &settings);
+async fn get_host_switcher_state(app: AppHandle) -> Result<HostSwitcherState, String> {
+    let event_app = app.clone();
+    run_display_task(app, move |state| {
+        let mut settings = read_settings(state)?;
+        if let Ok(inventory) = enumerate_monitor_inventory() {
+            let ports_filled = fill_unset_local_inputs(&mut settings, &inventory);
+            if ports_filled {
+                ensure_host_input_history(&mut settings);
+            }
+            let updates =
+                active_input_updates_from_live_inputs(&mut settings, &inventory, unix_time_ms());
+            if ports_filled || !updates.is_empty() {
+                store_settings(state, settings.clone())?;
+            }
+            publish_active_input_updates(state, &event_app, &updates);
+            announce_confirmed_local_inputs(state, &settings);
+        }
+        Ok(build_host_switcher_state(state, &settings))
+    })
+    .await
+}
+
+fn build_host_switcher_state(state: &AppRuntime, settings: &AppSettings) -> HostSwitcherState {
+    let route_order = ordered_routes(state, settings);
     let monitors = settings
         .shared_monitors
         .iter()
@@ -973,10 +1043,12 @@ fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherS
                 platform: settings.local_host,
                 input_name: selected
                     .local_input
-                    .map(|input| noted_input_label(&settings, selected, input)),
+                    .map(|input| noted_input_label(settings, selected, input)),
                 is_local: true,
                 available: selected.local_input.is_some(),
-                is_active: selected.active_route.as_deref() == Some("local"),
+                // Everywhere else an unset route means this computer: it is
+                // the state before the display has ever been switched away.
+                is_active: shows_this_host(selected),
             });
             hosts.extend(settings.peers.iter().map(|peer| {
                 let input = peer.input_for(&selected.fingerprint);
@@ -986,7 +1058,7 @@ fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherS
                         .unwrap_or(&peer.name)
                         .to_owned(),
                     platform: peer.platform,
-                    input_name: input.map(|input| noted_input_label(&settings, selected, input)),
+                    input_name: input.map(|input| noted_input_label(settings, selected, input)),
                     is_local: false,
                     available: input.is_some(),
                     is_active: selected.active_route.as_deref() == Some(peer.id.as_str()),
@@ -1000,7 +1072,7 @@ fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherS
             }
         })
         .collect();
-    Ok(HostSwitcherState { monitors })
+    HostSwitcherState { monitors }
 }
 
 #[tauri::command]
@@ -1134,6 +1206,8 @@ async fn save_settings(
     settings.host_aliases = protected.host_aliases.clone();
     settings.input_labels = protected.input_labels.clone();
     settings.monitor_identity_links = protected.monitor_identity_links.clone();
+    settings.host_inputs = protected.host_inputs.clone();
+    settings.pending_peer_notices = protected.pending_peer_notices.clone();
     settings.shared_monitors_chosen = protected.shared_monitors_chosen;
     settings.local_host_id = protected.local_host_id.clone();
     settings.diagnostics_enabled = protected.diagnostics_enabled;
@@ -1227,7 +1301,18 @@ async fn reset_settings(
     app: AppHandle,
 ) -> Result<AppSettings, String> {
     let previous = read_settings(&state)?;
-    let settings = settings_for_current_build(settings_after_reset(&previous, scope));
+    let mut reset_source = previous.clone();
+    if scope == ResetScope::Displays {
+        ensure_host_input_history(&mut reset_source);
+        let now = unix_time_ms();
+        for (index, assignment) in reset_source.host_inputs.iter_mut().enumerate() {
+            assignment.input = None;
+            assignment.updated_at_ms = now
+                .saturating_add(u64::try_from(index).unwrap_or(u64::MAX))
+                .max(assignment.updated_at_ms.saturating_add(1));
+        }
+    }
+    let settings = settings_for_current_build(settings_after_reset(&reset_source, scope));
     update_host_switcher_shortcut(&app, &previous, &settings)?;
     let settings = match store_settings(&state, settings.clone()) {
         Ok(settings) => settings,
@@ -1262,6 +1347,14 @@ async fn reset_settings(
         if let Err(error) = app.emit(event, ()) {
             tracing::warn!(error = %error, event, "unable to notify windows of a reset");
         }
+    }
+    if scope == ResetScope::Displays {
+        broadcast_to_peers(
+            &state,
+            &AgentAction::HostInputsChanged {
+                assignments: settings.host_inputs.clone(),
+            },
+        );
     }
     Ok(settings)
 }
@@ -1348,10 +1441,11 @@ async fn get_dashboard_state(app: AppHandle) -> Result<DashboardState, String> {
     // Monitor enumeration and DDC/CI reads block for hundreds of milliseconds up
     // to seconds (capabilities strings, retries). Keep them off the main thread so
     // the window stays responsive while displays are scanned.
-    run_display_task(app, build_dashboard_state).await
+    let event_app = app.clone();
+    run_display_task(app, move |state| build_dashboard_state(state, &event_app)).await
 }
 
-fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
+fn build_dashboard_state(state: &AppRuntime, app: &AppHandle) -> Result<DashboardState, String> {
     let mut settings = read_settings(state)?;
     let (monitors, uncontrollable_monitors, shared, selection_notices) =
         match enumerate_monitor_inventory() {
@@ -1392,11 +1486,19 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
                     }
                 }
                 let ports_filled = fill_unset_local_inputs(&mut settings, &inventory);
-                let routes_changed =
-                    sync_active_routes_with_live_inputs(&mut settings, &inventory, unix_time_ms());
+                if ports_filled {
+                    ensure_host_input_history(&mut settings);
+                }
+                let active_input_updates = active_input_updates_from_live_inputs(
+                    &mut settings,
+                    &inventory,
+                    unix_time_ms(),
+                );
+                let routes_changed = !active_input_updates.is_empty();
                 if !changes.is_empty() || inputs_unread || ports_filled || routes_changed {
                     store_settings(state, settings.clone())?;
                 }
+                publish_active_input_updates(state, app, &active_input_updates);
                 announce_confirmed_local_inputs(state, &settings);
                 announce_discovered_inputs(state, &settings);
                 let selection_notices = changes
@@ -1577,19 +1679,34 @@ fn adopt_peer_routes(
     response: &AgentResponse,
 ) -> Result<RouteAdoption, String> {
     let routes = agent_display_routes(response);
+    let mut settings = read_settings(state)?;
+    let mut host_inputs_accepted = false;
+    let mut host_inputs_changed = false;
+    for assignment in &response.host_inputs {
+        if let Some(changed) = apply_host_input_update(&mut settings, assignment) {
+            host_inputs_accepted = true;
+            host_inputs_changed |= changed;
+        }
+    }
     if routes.is_empty() {
+        if host_inputs_accepted {
+            store_settings(state, settings)?;
+        }
         return Ok(RouteAdoption {
-            detail: ui_text(
-                "Agent 已就緒，但這台主機沒有回報任何輸入值；請確認它也把同一台螢幕設為共用。",
-                "The agent is ready, but this host reported no input. Check that it shares the same display.",
-            )
+            detail: if host_inputs_changed {
+                ui_text("已補齊遠端主機的輸入設定。", "The peer's input settings were synchronized.")
+            } else {
+                ui_text(
+                    "Agent 已就緒，但這台主機沒有回報任何輸入值；請確認它也把同一台螢幕設為共用。",
+                    "The agent is ready, but this host reported no input. Check that it shares the same display.",
+                )
+            }
             .to_owned(),
-            warning: true,
+            warning: !host_inputs_changed,
         });
     }
-    let mut settings = read_settings(state)?;
     let mut notes: Vec<String> = Vec::new();
-    let mut applied = false;
+    let mut applied = host_inputs_changed;
     let mut warning = false;
     let chinese = matches!(UiLocale::current(), UiLocale::TraditionalChinese);
     for route in routes {
@@ -1647,7 +1764,7 @@ fn adopt_peer_routes(
             }
         });
     }
-    if applied {
+    if applied || host_inputs_accepted {
         store_settings(state, settings)?;
     }
     Ok(RouteAdoption {
@@ -2648,6 +2765,9 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                             monitor,
                             input,
                         } => receive_local_input_confirmed(app, host_id, monitor, input).await,
+                        AgentAction::HostInputsChanged { assignments } => {
+                            receive_host_inputs_notice(app, assignments).await
+                        }
                         AgentAction::DiagnosticsRequested => {
                             let settings = live_settings.read().ok().map(|settings| settings.clone());
                             answer_diagnostics_request(&app, settings)
@@ -2676,6 +2796,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                 host_aliases,
                                 input_labels,
                                 monitor_identity_links,
+                                host_inputs,
                             ) = snapshot
                                 .map(|settings| {
                                     (
@@ -2684,6 +2805,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                         host_alias::shareable_aliases(&settings.host_aliases),
                                         input_label::shareable_labels(&settings.input_labels),
                                         settings.monitor_identity_links,
+                                        settings.host_inputs,
                                     )
                                 })
                                 .unwrap_or_default();
@@ -2702,6 +2824,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                 host_aliases,
                                 input_labels,
                                 monitor_identity_links,
+                                host_inputs,
                                 diagnostics: None,
                                 // Filled in by the listener, which holds the
                                 // nonce this reply has to be bound to.
@@ -2879,8 +3002,8 @@ const ACTIVE_ROUTE_CHANGED_EVENT: &str = "active-route-changed";
 const ACTIVE_ROUTE_SETTLE_MS: u64 = 15_000;
 
 /// Tells every paired host that `fingerprint` now shows `input`, so their
-/// dashboards update without a manual refresh. Fire-and-forget: hosts that are
-/// offline or run an agent predating the notice are only logged.
+/// dashboards update without a manual refresh. The durable outbox retains a
+/// copy for each offline host until its signed ACK arrives.
 fn announce_active_input(
     state: &AppRuntime,
     fingerprint: &MonitorFingerprint,
@@ -2895,13 +3018,192 @@ fn announce_active_input(
     );
 }
 
-/// Sends `action` to every paired host without waiting. Hosts that are
-/// offline or run an agent predating the action are only logged.
-/// Sends a notice to every paired host. Returns whether there was anyone to
-/// send it to, so a caller that remembers what it has announced does not
-/// remember announcing something to nobody — displays are usually chosen
-/// before the first host is paired, and that reading would otherwise be
-/// recorded as told and never repeated.
+/// Mirrors route changes learned from a live display read to every UI window
+/// and paired host. App-initiated switches already take this path directly;
+/// this closes the gap for the monitor's own buttons, another DDC utility, or
+/// a cable change discovered by a refresh.
+fn publish_active_input_updates(
+    state: &AppRuntime,
+    app: &AppHandle,
+    updates: &[ActiveInputUpdate],
+) {
+    if updates.is_empty() {
+        return;
+    }
+    if let Err(error) = app.emit(ACTIVE_ROUTE_CHANGED_EVENT, ()) {
+        tracing::warn!(error = %error, "unable to notify windows of a detected active host change");
+    }
+    for update in updates {
+        announce_active_input(state, &update.monitor, update.input);
+    }
+}
+
+#[derive(Clone)]
+struct NoticeDeliveryRuntime {
+    settings: Arc<RwLock<AppSettings>>,
+    settings_path: PathBuf,
+    in_flight: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+}
+
+fn notice_delivery_runtime(state: &AppRuntime) -> NoticeDeliveryRuntime {
+    NoticeDeliveryRuntime {
+        settings: Arc::clone(&state.settings),
+        settings_path: state.settings_path.clone(),
+        in_flight: Arc::clone(&state.notices_in_flight),
+    }
+}
+
+/// Whether a newly queued action completely replaces an older pending one.
+/// This is intentionally directional: a full host-input snapshot supersedes
+/// an older one-off confirmation, while a later one-off confirmation cannot
+/// discard unrelated assignments in the full snapshot.
+fn notice_supersedes(new: &AgentAction, pending: &AgentAction) -> bool {
+    match (new, pending) {
+        (AgentAction::HostOrderChanged { .. }, AgentAction::HostOrderChanged { .. })
+        | (AgentAction::HostAliasesChanged { .. }, AgentAction::HostAliasesChanged { .. })
+        | (AgentAction::InputLabelsChanged { .. }, AgentAction::InputLabelsChanged { .. })
+        | (
+            AgentAction::MonitorIdentitiesChanged { .. },
+            AgentAction::MonitorIdentitiesChanged { .. },
+        )
+        | (AgentAction::HostInputsChanged { .. }, AgentAction::HostInputsChanged { .. })
+        | (AgentAction::HostInputsChanged { .. }, AgentAction::LocalInputConfirmed { .. }) => true,
+        (
+            AgentAction::ActiveInputChanged { monitor: left, .. },
+            AgentAction::ActiveInputChanged { monitor: right, .. },
+        )
+        | (
+            AgentAction::DisplayInputsDiscovered { monitor: left, .. },
+            AgentAction::DisplayInputsDiscovered { monitor: right, .. },
+        )
+        | (
+            AgentAction::LocalInputConfirmed { monitor: left, .. },
+            AgentAction::LocalInputConfirmed { monitor: right, .. },
+        ) => left.matches_exactly(right),
+        _ => false,
+    }
+}
+
+fn update_delivery_settings(
+    runtime: &NoticeDeliveryRuntime,
+    update: impl FnOnce(&mut AppSettings),
+) -> Result<(), String> {
+    let mut settings = runtime.settings.write().map_err(|_| {
+        ui_text(
+            "無法更新同步佇列，請重新啟動 MuxSU",
+            "Unable to update the sync queue. Restart MuxSU.",
+        )
+        .to_owned()
+    })?;
+    let previous = settings.clone();
+    update(&mut settings);
+    if let Err(error) = persist_settings(&runtime.settings_path, &settings) {
+        *settings = previous;
+        return Err(core_user_error(error));
+    }
+    Ok(())
+}
+
+fn retry_delay_ms(attempts: u32) -> u64 {
+    let exponent = attempts.min(9);
+    1_000_u64.saturating_mul(1_u64 << exponent).min(300_000)
+}
+
+async fn deliver_pending_notice(runtime: NoticeDeliveryRuntime, notice_id: String) {
+    let pending = runtime.settings.read().ok().and_then(|settings| {
+        let notice = settings
+            .pending_peer_notices
+            .iter()
+            .find(|notice| notice.id == notice_id)?
+            .clone();
+        let peer = settings
+            .peers
+            .iter()
+            .find(|peer| peer.id == notice.peer_id)?
+            .clone();
+        Some((settings.clone(), peer, notice))
+    });
+
+    let Some((settings, peer, notice)) = pending else {
+        let _ = update_delivery_settings(&runtime, |settings| {
+            settings
+                .pending_peer_notices
+                .retain(|queued| queued.id != notice_id);
+        });
+        return;
+    };
+    {
+        let Ok(mut in_flight) = runtime.in_flight.lock() else {
+            return;
+        };
+        // One request at a time per peer preserves mutation order. In
+        // particular, an older active-screen notice cannot arrive after its
+        // replacement merely because its first attempt was slow.
+        if !in_flight.insert(peer.id.clone()) {
+            return;
+        }
+    }
+
+    {
+        match request_peer(&settings, &peer, notice.action.clone()).await {
+            Ok(_) => {
+                // `request_peer` accepts only a ready response whose complete
+                // payload is signed for this request's nonce. That is the ACK.
+                if let Err(error) = update_delivery_settings(&runtime, |settings| {
+                    settings
+                        .pending_peer_notices
+                        .retain(|queued| queued.id != notice.id);
+                }) {
+                    tracing::warn!(peer = peer.name.as_str(), error = %error, "unable to persist a notice ACK");
+                }
+            }
+            Err(error) => {
+                let now = unix_time_ms();
+                if let Err(persist_error) = update_delivery_settings(&runtime, |settings| {
+                    if let Some(queued) = settings
+                        .pending_peer_notices
+                        .iter_mut()
+                        .find(|queued| queued.id == notice.id)
+                    {
+                        queued.attempts = queued.attempts.saturating_add(1);
+                        queued.next_attempt_at_ms =
+                            now.saturating_add(retry_delay_ms(queued.attempts));
+                    }
+                }) {
+                    tracing::warn!(peer = peer.name.as_str(), error = %persist_error, "unable to save a notice retry");
+                }
+                tracing::info!(peer = peer.name.as_str(), error = %error, "paired host did not ACK the notice; retry scheduled");
+            }
+        }
+    }
+
+    if let Ok(mut in_flight) = runtime.in_flight.lock() {
+        in_flight.remove(&peer.id);
+    }
+}
+
+fn retry_pending_notices(state: &AppRuntime) {
+    let now = unix_time_ms();
+    let ids = read_settings(state)
+        .map(|settings| {
+            settings
+                .pending_peer_notices
+                .iter()
+                .filter(|notice| notice.next_attempt_at_ms <= now)
+                .map(|notice| notice.id.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let runtime = notice_delivery_runtime(state);
+    for id in ids {
+        tauri::async_runtime::spawn(deliver_pending_notice(runtime.clone(), id));
+    }
+}
+
+/// Durably queues `action` for every paired host, sends immediately, and only
+/// removes each copy after that peer returns a valid signed ACK. Newer full
+/// state replaces an older unsent notice in the same stream; this bounds the
+/// queue and prevents an old retry from undoing a later edit.
 fn broadcast_to_peers(state: &AppRuntime, action: &AgentAction) -> bool {
     let Ok(settings) = read_settings(state) else {
         return false;
@@ -2909,32 +3211,36 @@ fn broadcast_to_peers(state: &AppRuntime, action: &AgentAction) -> bool {
     if !has_valid_shared_key(&settings.shared_key) || settings.peers.is_empty() {
         return false;
     }
-    let settings = Arc::new(settings);
-    for index in 0..settings.peers.len() {
-        let settings = Arc::clone(&settings);
-        let action = action.clone();
-        let announced_inputs = Arc::clone(&state.announced_inputs);
-        let announced_input_lists = Arc::clone(&state.announced_input_lists);
-        tauri::async_runtime::spawn(async move {
-            let peer = &settings.peers[index];
-            if let Err(error) = request_peer(&settings, peer, action).await {
-                tracing::info!(
-                    peer = peer.name.as_str(),
-                    error = %error,
-                    "paired host did not accept the notice"
-                );
-                // A notice is announced once and then remembered as announced,
-                // so one that did not arrive would never be sent again — a host
-                // that happened to be restarting stayed out of date for good.
-                // Forgetting makes the next scan say it all over again.
-                if let Ok(mut announced) = announced_inputs.lock() {
-                    announced.clear();
-                }
-                if let Ok(mut announced) = announced_input_lists.lock() {
-                    announced.clear();
-                }
-            }
-        });
+    let peer_ids = settings
+        .peers
+        .iter()
+        .map(|peer| peer.id.clone())
+        .collect::<Vec<_>>();
+    let runtime = notice_delivery_runtime(state);
+    let mut ids = Vec::with_capacity(peer_ids.len());
+    let action = action.clone();
+    let queued = update_delivery_settings(&runtime, |settings| {
+        for peer_id in &peer_ids {
+            settings.pending_peer_notices.retain(|pending| {
+                pending.peer_id != *peer_id || !notice_supersedes(&action, &pending.action)
+            });
+            let id = next_nonce();
+            settings.pending_peer_notices.push(PendingPeerNotice {
+                id: id.clone(),
+                peer_id: peer_id.clone(),
+                action: action.clone(),
+                attempts: 0,
+                next_attempt_at_ms: 0,
+            });
+            ids.push(id);
+        }
+    });
+    if let Err(error) = queued {
+        tracing::warn!(error = %error, "unable to queue a paired-host notice");
+        return false;
+    }
+    for id in ids {
+        tauri::async_runtime::spawn(deliver_pending_notice(runtime.clone(), id));
     }
     true
 }
@@ -2973,6 +3279,7 @@ static LAST_HOST_LAYOUT_EXCHANGE_MS: AtomicU64 = AtomicU64::new(0);
 /// app starts and when the dashboard refreshes, at most every 30 seconds.
 #[tauri::command]
 fn exchange_host_layout(state: State<'_, AppRuntime>, app: AppHandle) {
+    retry_pending_notices(&state);
     exchange_host_layout_with_peers(&state, &app);
 }
 
@@ -3011,6 +3318,7 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
             let their_aliases = theirs.host_aliases.clone();
             let their_labels = theirs.input_labels.clone();
             let their_identity_links = theirs.monitor_identity_links.clone();
+            let their_host_inputs = theirs.host_inputs.clone();
             let app_for_adopt = app.clone();
             let adopted = run_display_task(app_for_adopt.clone(), move |state| {
                 let mut latest = read_settings(state)?;
@@ -3027,7 +3335,19 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
                 let labels_changed = adopt_input_labels(&mut latest, &theirs.input_labels);
                 let identities_changed =
                     adopt_monitor_identities(&mut latest, &theirs.monitor_identity_links);
-                let latest = if order_changed || names_changed || labels_changed || identities_changed
+                let mut host_inputs_changed = false;
+                let mut host_inputs_accepted = false;
+                for assignment in &theirs.host_inputs {
+                    if let Some(changed) = apply_host_input_update(&mut latest, assignment) {
+                        host_inputs_accepted = true;
+                        host_inputs_changed |= changed;
+                    }
+                }
+                let latest = if order_changed
+                    || names_changed
+                    || labels_changed
+                    || identities_changed
+                    || host_inputs_accepted
                 {
                     store_settings(state, latest)?
                 } else {
@@ -3038,6 +3358,7 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
                     (names_changed, HOST_NAMES_CHANGED_EVENT),
                     (labels_changed, INPUT_LABELS_CHANGED_EVENT),
                     (identities_changed, MONITOR_IDENTITIES_CHANGED_EVENT),
+                    (host_inputs_changed, PEER_INPUTS_CHANGED_EVENT),
                 ] {
                     if changed {
                         if let Err(error) = app_for_adopt.emit(event, ()) {
@@ -3089,8 +3410,39 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
                     tracing::info!(peer = peer.name.as_str(), error = %error, "paired host did not accept the input notes");
                 }
             }
+            if host_inputs_have_newer_entries(&latest, &their_host_inputs) {
+                let action = AgentAction::HostInputsChanged {
+                    assignments: latest.host_inputs.clone(),
+                };
+                if let Err(error) = request_peer(&latest, peer, action).await {
+                    tracing::info!(peer = peer.name.as_str(), error = %error, "paired host did not accept the host input snapshot");
+                }
+            }
         });
     }
+}
+
+fn host_inputs_have_newer_entries(settings: &AppSettings, theirs: &[AgentHostInput]) -> bool {
+    settings.host_inputs.iter().any(|ours| {
+        theirs
+            .iter()
+            .find(|theirs| {
+                theirs.host_id == ours.host_id
+                    && (theirs.monitor.matches_exactly(&ours.monitor)
+                        || shared_monitor_index_for_peer(
+                            &settings.shared_monitors,
+                            &settings.monitor_identity_links,
+                            &theirs.monitor,
+                        )
+                        .is_some_and(|index| {
+                            settings.shared_monitors[index]
+                                .fingerprint
+                                .matches_exactly(&ours.monitor)
+                        }))
+            })
+            .map(|theirs| theirs.updated_at_ms < ours.updated_at_ms)
+            .unwrap_or(true)
+    })
 }
 
 fn peer_ids(settings: &AppSettings) -> Vec<&str> {
@@ -3358,6 +3710,29 @@ fn adopt_alias_settings(
             peer.set_input_for(alias, None);
         }
     }
+    let moved_inputs = settings
+        .host_inputs
+        .iter()
+        .filter(|entry| entry.monitor.matches_exactly(alias))
+        .cloned()
+        .collect::<Vec<_>>();
+    settings
+        .host_inputs
+        .retain(|entry| !entry.monitor.matches_exactly(alias));
+    for mut moved in moved_inputs {
+        let primary_is_newer = settings.host_inputs.iter().any(|entry| {
+            entry.host_id == moved.host_id
+                && entry.monitor.matches_exactly(primary)
+                && entry.updated_at_ms >= moved.updated_at_ms
+        });
+        if !primary_is_newer {
+            settings.host_inputs.retain(|entry| {
+                entry.host_id != moved.host_id || !entry.monitor.matches_exactly(primary)
+            });
+            moved.monitor = primary.clone();
+            settings.host_inputs.push(moved);
+        }
+    }
     let now = unix_time_ms();
     let moved = settings
         .input_labels
@@ -3513,6 +3888,8 @@ async fn set_local_input(
             return Err(display_not_found());
         };
         selected.local_input = input;
+        let host_id = state.local_host_id.clone();
+        record_host_input_update(&mut settings, &host_id, &fingerprint, input, unix_time_ms());
         store_settings(state, settings)
     })
     .await?;
@@ -3520,6 +3897,12 @@ async fn set_local_input(
         tracing::warn!(error = %error, "unable to notify windows of an input change");
     }
     if let Some(state) = app.try_state::<AppRuntime>() {
+        broadcast_to_peers(
+            &state,
+            &AgentAction::HostInputsChanged {
+                assignments: settings.host_inputs.clone(),
+            },
+        );
         announce_confirmed_local_inputs(&state, &settings);
     }
     Ok(settings)
@@ -3554,11 +3937,20 @@ async fn set_peer_input(
             .to_owned());
         };
         peer.set_input_for(&fingerprint, input);
+        record_host_input_update(&mut settings, &peer_id, &fingerprint, input, unix_time_ms());
         store_settings(state, settings)
     })
     .await?;
     if let Err(error) = app.emit(PEER_INPUTS_CHANGED_EVENT, ()) {
         tracing::warn!(error = %error, "unable to notify windows of a paired host's input");
+    }
+    if let Some(state) = app.try_state::<AppRuntime>() {
+        broadcast_to_peers(
+            &state,
+            &AgentAction::HostInputsChanged {
+                assignments: settings.host_inputs.clone(),
+            },
+        );
     }
     Ok(settings)
 }
@@ -3739,14 +4131,21 @@ async fn receive_active_input_notice(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = app.state::<AppRuntime>();
         let mut settings = read_settings(&state)?;
-        if apply_active_input_notice(&mut settings, &monitor, input, unix_time_ms()) {
-            tracing::info!(
-                input = input.value(),
-                "paired host notice moved the active host"
-            );
+        if let Some(changed) =
+            apply_active_input_notice(&mut settings, &monitor, input, unix_time_ms())
+        {
+            // Store even when the route already agrees: the in-memory settle
+            // timestamp is what stops an immediate scan from restoring the
+            // display's stale pre-switch input.
             store_settings(&state, settings)?;
-            if let Err(error) = app.emit(ACTIVE_ROUTE_CHANGED_EVENT, ()) {
-                tracing::warn!(error = %error, "unable to notify the dashboard of an active host change");
+            if changed {
+                tracing::info!(
+                    input = input.value(),
+                    "paired host notice moved the active host"
+                );
+                if let Err(error) = app.emit(ACTIVE_ROUTE_CHANGED_EVENT, ()) {
+                    tracing::warn!(error = %error, "unable to notify the dashboard of an active host change");
+                }
             }
         }
         Ok::<(), String>(())
@@ -3775,26 +4174,244 @@ async fn receive_local_input_confirmed(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = app.state::<AppRuntime>();
         let mut settings = read_settings(&state)?;
-        let route = AgentDisplayRoute {
-            monitor,
+        let (route_outcome, active_changed) = apply_local_input_confirmation(
+            &mut settings,
+            &host_id,
+            &monitor,
             input,
-            confirmed: true,
-        };
-        if apply_verified_peer_route(&mut settings, &host_id, route) == PeerRouteOutcome::Applied {
+            unix_time_ms(),
+        );
+        let input_changed = route_outcome == PeerRouteOutcome::Applied;
+        let input_recorded = matches!(
+            route_outcome,
+            PeerRouteOutcome::Applied | PeerRouteOutcome::Unchanged
+        );
+        if input_recorded {
+            let local_monitor = shared_monitor_index_for_peer(
+                &settings.shared_monitors,
+                &settings.monitor_identity_links,
+                &monitor,
+            )
+            .map(|index| settings.shared_monitors[index].fingerprint.clone());
+            if let Some(local_monitor) = local_monitor {
+                record_host_input_update(
+                    &mut settings,
+                    &host_id,
+                    &local_monitor,
+                    Some(input),
+                    unix_time_ms(),
+                );
+            }
+        }
+        if input_recorded || active_changed.is_some() {
+            store_settings(&state, settings)?;
+        }
+        if input_changed {
             tracing::info!(
                 host_id = host_id.as_str(),
                 input = input.value(),
                 "adopted a paired host's confirmed display input"
             );
-            store_settings(&state, settings)?;
             if let Err(error) = app.emit(PEER_INPUTS_CHANGED_EVENT, ()) {
                 tracing::warn!(error = %error, "unable to notify windows of a paired host's input");
+            }
+        }
+        if active_changed == Some(true) {
+            if let Err(error) = app.emit(ACTIVE_ROUTE_CHANGED_EVENT, ()) {
+                tracing::warn!(error = %error, "unable to notify the dashboard of an active host change");
             }
         }
         Ok::<(), String>(())
     })
     .await;
     agent_notice_response(applied)
+}
+
+/// Applies a versioned host/display assignment. `Some(false)` means the
+/// version/tombstone was accepted but the visible value already agreed;
+/// `None` means the display/host is unknown or the entry is stale.
+fn apply_host_input_update(settings: &mut AppSettings, update: &AgentHostInput) -> Option<bool> {
+    let monitor_index = shared_monitor_index_for_peer(
+        &settings.shared_monitors,
+        &settings.monitor_identity_links,
+        &update.monitor,
+    )?;
+    let fingerprint = settings.shared_monitors[monitor_index].fingerprint.clone();
+    let current_version = settings
+        .host_inputs
+        .iter()
+        .find(|entry| {
+            entry.host_id == update.host_id && entry.monitor.matches_exactly(&fingerprint)
+        })
+        .map(|entry| entry.updated_at_ms)
+        .unwrap_or_default();
+    if update.updated_at_ms <= current_version {
+        return None;
+    }
+
+    let mut displaced_conflict = false;
+    if let Some(input) = update.input {
+        let mut conflicts = Vec::new();
+        if update.host_id != settings.local_host_id
+            && settings.shared_monitors[monitor_index].local_input == Some(input)
+        {
+            conflicts.push(settings.local_host_id.clone());
+        }
+        conflicts.extend(
+            settings
+                .peers
+                .iter()
+                .filter(|peer| {
+                    peer.id != update.host_id && peer.input_for(&fingerprint) == Some(input)
+                })
+                .map(|peer| peer.id.clone()),
+        );
+        let newer_conflict = conflicts.iter().any(|host_id| {
+            settings.host_inputs.iter().any(|entry| {
+                entry.host_id == *host_id
+                    && entry.monitor.matches_exactly(&fingerprint)
+                    && entry.updated_at_ms > update.updated_at_ms
+            })
+        });
+        if newer_conflict {
+            return None;
+        }
+        for host_id in conflicts {
+            displaced_conflict = true;
+            if host_id == settings.local_host_id {
+                settings.shared_monitors[monitor_index].local_input = None;
+            } else if let Some(peer) = settings.peers.iter_mut().find(|peer| peer.id == host_id) {
+                peer.set_input_for(&fingerprint, None);
+            }
+            settings.host_inputs.retain(|entry| {
+                entry.host_id != host_id || !entry.monitor.matches_exactly(&fingerprint)
+            });
+            settings.host_inputs.push(AgentHostInput {
+                host_id,
+                monitor: fingerprint.clone(),
+                input: None,
+                updated_at_ms: update.updated_at_ms,
+            });
+        }
+    }
+
+    let changed = displaced_conflict
+        || if update.host_id == settings.local_host_id {
+            let selected = &mut settings.shared_monitors[monitor_index];
+            let changed = selected.local_input != update.input;
+            selected.local_input = update.input;
+            changed
+        } else {
+            let peer = settings
+                .peers
+                .iter_mut()
+                .find(|peer| peer.id == update.host_id)?;
+            let changed = peer.input_for(&fingerprint) != update.input;
+            peer.set_input_for(&fingerprint, update.input);
+            changed
+        };
+
+    settings.host_inputs.retain(|entry| {
+        entry.host_id != update.host_id || !entry.monitor.matches_exactly(&fingerprint)
+    });
+    settings.host_inputs.push(AgentHostInput {
+        host_id: update.host_id.clone(),
+        monitor: fingerprint,
+        input: update.input,
+        updated_at_ms: update.updated_at_ms,
+    });
+    Some(changed)
+}
+
+fn record_host_input_update(
+    settings: &mut AppSettings,
+    host_id: &str,
+    monitor: &MonitorFingerprint,
+    input: Option<DisplayInput>,
+    now_ms: u64,
+) -> AgentHostInput {
+    let previous = settings
+        .host_inputs
+        .iter()
+        .find(|entry| entry.host_id == host_id && entry.monitor.matches_exactly(monitor))
+        .map(|entry| entry.updated_at_ms)
+        .unwrap_or_default();
+    let update = AgentHostInput {
+        host_id: host_id.to_owned(),
+        monitor: monitor.clone(),
+        input,
+        updated_at_ms: now_ms.max(previous.saturating_add(1)),
+    };
+    settings
+        .host_inputs
+        .retain(|entry| entry.host_id != host_id || !entry.monitor.matches_exactly(monitor));
+    settings.host_inputs.push(update.clone());
+    update
+}
+
+async fn receive_host_inputs_notice(
+    app: AppHandle,
+    assignments: Vec<AgentHostInput>,
+) -> AgentResponse {
+    let applied = tauri::async_runtime::spawn_blocking(move || {
+        let _scan = DASHBOARD_SCAN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = app.state::<AppRuntime>();
+        let mut settings = read_settings(&state)?;
+        let mut accepted = false;
+        let mut changed = false;
+        for assignment in &assignments {
+            if let Some(value_changed) = apply_host_input_update(&mut settings, assignment) {
+                accepted = true;
+                changed |= value_changed;
+            }
+        }
+        if accepted {
+            store_settings(&state, settings)?;
+        }
+        if changed {
+            if let Err(error) = app.emit(PEER_INPUTS_CHANGED_EVENT, ()) {
+                tracing::warn!(error = %error, "unable to notify windows of synchronized host inputs");
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await;
+    agent_notice_response(applied)
+}
+
+/// Applies everything a signed `LocalInputConfirmed` notice proves in one
+/// settings snapshot. Besides learning the sender's port, the receiver learns
+/// that the sender is currently on screen. Doing both atomically makes this
+/// independent of whether the separate active-input notice arrives first.
+fn apply_local_input_confirmation(
+    settings: &mut AppSettings,
+    host_id: &str,
+    monitor: &MonitorFingerprint,
+    input: DisplayInput,
+    now_ms: u64,
+) -> (PeerRouteOutcome, Option<bool>) {
+    let route_outcome = apply_verified_peer_route(
+        settings,
+        host_id,
+        AgentDisplayRoute {
+            monitor: monitor.clone(),
+            input,
+            confirmed: true,
+        },
+    );
+    // Only an accepted assignment may drive the screen state. If the input is
+    // already assigned to somebody else, resolving by input would incorrectly
+    // mark that other owner active even though this signed notice names the
+    // sender.
+    let active_changed = matches!(
+        route_outcome,
+        PeerRouteOutcome::Applied | PeerRouteOutcome::Unchanged
+    )
+    .then(|| apply_active_input_notice(settings, monitor, input, now_ms))
+    .flatten();
+    (route_outcome, active_changed)
 }
 
 /// Asks every paired host once, at startup, which port it occupies. A host
@@ -3851,6 +4468,14 @@ fn adopt_peer_routes_at_startup(app: &AppHandle) {
                 Err(_) => return,
             };
             let mut changed = false;
+            let mut accepted = false;
+            for assignment in &response.host_inputs {
+                if let Some(value_changed) = apply_host_input_update(&mut saved, assignment) {
+                    accepted = true;
+                    changed |= value_changed;
+                    adopted |= value_changed;
+                }
+            }
             for route in agent_display_routes(&response) {
                 if apply_verified_peer_route(&mut saved, &peer.id, route)
                     == PeerRouteOutcome::Applied
@@ -3859,7 +4484,7 @@ fn adopt_peer_routes_at_startup(app: &AppHandle) {
                     adopted = true;
                 }
             }
-            if changed {
+            if changed || accepted {
                 if let Err(error) = store_settings(&runtime, saved) {
                     tracing::warn!(error = %error, "unable to save a paired host's reported input");
                     return;
@@ -3951,8 +4576,7 @@ fn announce_confirmed_local_inputs(state: &AppRuntime, settings: &AppSettings) {
     }
 }
 
-fn store_settings(state: &AppRuntime, settings: AppSettings) -> Result<AppSettings, String> {
-    persist_settings(&state.settings_path, &settings).map_err(core_user_error)?;
+fn store_settings(state: &AppRuntime, mut settings: AppSettings) -> Result<AppSettings, String> {
     let mut current = state.settings.write().map_err(|_| {
         ui_text(
             "無法更新設定，請重新啟動 MuxSU",
@@ -3960,6 +4584,17 @@ fn store_settings(state: &AppRuntime, settings: AppSettings) -> Result<AppSettin
         )
         .to_owned()
     })?;
+    // Delivery ACKs and retry scheduling run independently of display scans.
+    // A settings snapshot taken just before one of those updates must not
+    // overwrite the durable outbox. Removing a peer (or a full reset) still
+    // drops only that peer's queued work.
+    settings.pending_peer_notices = current
+        .pending_peer_notices
+        .iter()
+        .filter(|notice| settings.peers.iter().any(|peer| peer.id == notice.peer_id))
+        .cloned()
+        .collect();
+    persist_settings(&state.settings_path, &settings).map_err(core_user_error)?;
     *current = settings.clone();
     Ok(settings)
 }
@@ -4002,7 +4637,46 @@ fn load_settings(path: &Path) -> AppSettings {
         );
         settings.monitor_identity_links = links;
     }
+    ensure_host_input_history(&mut settings);
     settings
+}
+
+/// Gives assignments written by versions before the sync ledger a baseline
+/// revision. Real edits use Unix milliseconds and therefore always supersede
+/// this migration value; retained tombstones continue to win over it.
+fn ensure_host_input_history(settings: &mut AppSettings) {
+    let mut missing = Vec::new();
+    for selected in &settings.shared_monitors {
+        if let Some(input) = selected
+            .local_input
+            .filter(|_| !settings.local_host_id.is_empty())
+        {
+            missing.push(AgentHostInput {
+                host_id: settings.local_host_id.clone(),
+                monitor: selected.fingerprint.clone(),
+                input: Some(input),
+                updated_at_ms: 1,
+            });
+        }
+        for peer in &settings.peers {
+            if let Some(input) = peer.input_for(&selected.fingerprint) {
+                missing.push(AgentHostInput {
+                    host_id: peer.id.clone(),
+                    monitor: selected.fingerprint.clone(),
+                    input: Some(input),
+                    updated_at_ms: 1,
+                });
+            }
+        }
+    }
+    for entry in missing {
+        let exists = settings.host_inputs.iter().any(|saved| {
+            saved.host_id == entry.host_id && saved.monitor.matches_exactly(&entry.monitor)
+        });
+        if !exists {
+            settings.host_inputs.push(entry);
+        }
+    }
 }
 
 /// The `AppSettings`/`HostRoute` shape shipped before multi-monitor support:
@@ -4150,6 +4824,8 @@ fn migrate_single_monitor_settings(value: serde_json::Value) -> AppSettings {
         host_aliases: Vec::new(),
         input_labels: Vec::new(),
         monitor_identity_links: Vec::new(),
+        host_inputs: Vec::new(),
+        pending_peer_notices: Vec::new(),
         shared_monitors_chosen: false,
         local_host_id: String::new(),
         diagnostics_enabled: false,
@@ -4194,6 +4870,8 @@ fn migrate_legacy_settings(legacy: LegacySettings) -> AppSettings {
         host_aliases: Vec::new(),
         input_labels: Vec::new(),
         monitor_identity_links: Vec::new(),
+        host_inputs: Vec::new(),
+        pending_peer_notices: Vec::new(),
         shared_monitors_chosen: false,
         local_host_id: String::new(),
         diagnostics_enabled: false,
@@ -4340,14 +5018,27 @@ fn monitor_inventory<C: MonitorControl>(
 /// A display confirmed switched within `ACTIVE_ROUTE_SETTLE_MS` is skipped: it
 /// can still report its previous input while it changes over.
 /// Returns whether any route changed.
+#[cfg(test)]
 fn sync_active_routes_with_live_inputs(
     settings: &mut AppSettings,
     inventory: &MonitorInventory,
     now_ms: u64,
 ) -> bool {
+    !active_input_updates_from_live_inputs(settings, inventory, now_ms).is_empty()
+}
+
+/// The changed routes plus the exact live inputs that proved each change, so
+/// callers can immediately mirror the result to local windows and paired
+/// hosts. Kept separate from the bool wrapper because most unit tests only
+/// care whether settings moved.
+fn active_input_updates_from_live_inputs(
+    settings: &mut AppSettings,
+    inventory: &MonitorInventory,
+    now_ms: u64,
+) -> Vec<ActiveInputUpdate> {
     let peers = settings.peers.clone();
     let links = settings.monitor_identity_links.clone();
-    let mut changed = false;
+    let mut updates = Vec::new();
     for selected in &mut settings.shared_monitors {
         if now_ms.saturating_sub(selected.active_route_confirmed_at_ms) < ACTIVE_ROUTE_SETTLE_MS {
             continue;
@@ -4369,37 +5060,38 @@ fn sync_active_routes_with_live_inputs(
                 active = selected.active_route.as_deref().unwrap_or_default(),
                 "live input moved the active host"
             );
-            changed = true;
+            updates.push(ActiveInputUpdate {
+                monitor: selected.fingerprint.clone(),
+                input: *current,
+            });
         }
     }
-    changed
+    updates
 }
 
 /// Applies a paired host's notice that it switched `fingerprint` to `input`.
 /// The receiver resolves the owning route from its own settings rather than
 /// trusting a route id from the sender. A recognized notice starts the settle
 /// period (see `sync_active_routes_with_live_inputs`) even when the route
-/// already matches. Returns whether the route changed.
+/// already matches. `Some(false)` means the notice was recognized and only
+/// refreshed that settle period; `None` means no single configured route owns
+/// the reported input.
 fn apply_active_input_notice(
     settings: &mut AppSettings,
     fingerprint: &MonitorFingerprint,
     input: DisplayInput,
     now_ms: u64,
-) -> bool {
-    let Some(index) = shared_monitor_index_for_peer(
+) -> Option<bool> {
+    let index = shared_monitor_index_for_peer(
         &settings.shared_monitors,
         &settings.monitor_identity_links,
         fingerprint,
-    ) else {
-        return false;
-    };
+    )?;
     let peers = &settings.peers;
     let selected = &mut settings.shared_monitors[index];
-    let Some(changed) = adopt_route_for_input(selected, peers, input) else {
-        return false;
-    };
+    let changed = adopt_route_for_input(selected, peers, input)?;
     selected.active_route_confirmed_at_ms = now_ms;
-    changed
+    Some(changed)
 }
 
 /// Marks the single route ("local" or a peer id) configured for `input` as the
@@ -5071,7 +5763,12 @@ struct DiagnosticPreview {
 #[tauri::command]
 async fn prepare_diagnostic_report(app: AppHandle) -> Result<DiagnosticPreview, String> {
     // A fresh scan, so the report shows the displays as they are now.
-    if let Err(error) = run_display_task(app.clone(), build_dashboard_state).await {
+    let event_app = app.clone();
+    if let Err(error) = run_display_task(app.clone(), move |state| {
+        build_dashboard_state(state, &event_app)
+    })
+    .await
+    {
         tracing::warn!(error = %error, "unable to scan displays for a diagnostic report");
     }
     let report = build_diagnostic_report(&app, diagnostics::ReportTrigger::Manual).await?;
@@ -5214,6 +5911,7 @@ pub fn run() -> anyhow::Result<()> {
             let mut settings = settings;
             let identity = if settings.local_host_id.is_empty() {
                 settings.local_host_id = detected.id.clone();
+                ensure_host_input_history(&mut settings);
                 if let Err(error) = persist_settings(&settings_path, &settings) {
                     tracing::warn!(error = %error, "unable to save this computer's host id");
                 }
@@ -5241,6 +5939,9 @@ pub fn run() -> anyhow::Result<()> {
                 local_host_name: identity.name,
                 announced_inputs: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 announced_input_lists: Arc::new(std::sync::Mutex::new(
+                    std::collections::HashSet::new(),
+                )),
+                notices_in_flight: Arc::new(std::sync::Mutex::new(
                     std::collections::HashSet::new(),
                 )),
             });
@@ -5315,8 +6016,19 @@ pub fn run() -> anyhow::Result<()> {
                     if let Err(error) = restart_agent(&runtime, &handle).await {
                         tracing::warn!(error = %error, "unable to start MuxSU agent");
                     }
+                    retry_pending_notices(&runtime);
                     exchange_host_layout_with_peers(&runtime, &handle);
                     adopt_peer_routes_at_startup(&handle);
+                }
+            });
+            let retry_handle: AppHandle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    sleep(Duration::from_secs(5)).await;
+                    let Some(runtime) = retry_handle.try_state::<AppRuntime>() else {
+                        return;
+                    };
+                    retry_pending_notices(&runtime);
                 }
             });
             Ok(())
@@ -6537,6 +7249,26 @@ mod tests {
     }
 
     #[test]
+    fn live_route_change_keeps_the_monitor_and_input_needed_for_remote_sync() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, Some("local"));
+
+        let updates = active_input_updates_from_live_inputs(
+            &mut settings,
+            &inventory_reading(&shared, 0x07),
+            SETTLED_MS,
+        );
+
+        assert_eq!(
+            updates,
+            vec![ActiveInputUpdate {
+                monitor: shared.fingerprint,
+                input: DisplayInput::new(0x07).unwrap(),
+            }]
+        );
+    }
+
+    #[test]
     fn live_input_moves_active_route_back_to_this_host_after_an_external_switch() {
         let shared = monitor("shared");
         let mut settings = routed_settings(&shared, 0x08, 0x07, Some("peer"));
@@ -6623,7 +7355,7 @@ mod tests {
             SETTLED_MS,
         );
 
-        assert!(changed);
+        assert_eq!(changed, Some(true));
         assert_eq!(
             settings.shared_monitors[0].active_route.as_deref(),
             Some("local")
@@ -6642,7 +7374,58 @@ mod tests {
             SETTLED_MS,
         );
 
-        assert!(changed);
+        assert_eq!(changed, Some(true));
+        assert_eq!(
+            settings.shared_monitors[0].active_route.as_deref(),
+            Some("peer")
+        );
+    }
+
+    #[test]
+    fn confirmed_peer_port_also_marks_that_peer_on_screen() {
+        // The active-input notice can arrive before the port notice. One
+        // LocalInputConfirmed action must therefore be enough to learn both
+        // the route assignment and which host is currently displayed.
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, Some("local"));
+        settings.peers[0].inputs.clear();
+
+        let (route_outcome, active_changed) = apply_local_input_confirmation(
+            &mut settings,
+            "peer",
+            &shared.fingerprint,
+            DisplayInput::new(0x07).unwrap(),
+            SETTLED_MS,
+        );
+
+        assert_eq!(route_outcome, PeerRouteOutcome::Applied);
+        assert_eq!(active_changed, Some(true));
+        assert_eq!(
+            settings.peers[0].input_for(&shared.fingerprint),
+            DisplayInput::new(0x07).ok()
+        );
+        assert_eq!(
+            settings.shared_monitors[0].active_route.as_deref(),
+            Some("peer")
+        );
+    }
+
+    #[test]
+    fn rejected_peer_port_cannot_move_the_screen_to_the_inputs_other_owner() {
+        let shared = monitor("shared");
+        let mut settings = routed_settings(&shared, 0x08, 0x07, Some("peer"));
+        settings.peers[0].inputs.clear();
+
+        let (route_outcome, active_changed) = apply_local_input_confirmation(
+            &mut settings,
+            "peer",
+            &shared.fingerprint,
+            DisplayInput::new(0x08).unwrap(),
+            SETTLED_MS,
+        );
+
+        assert_eq!(route_outcome, PeerRouteOutcome::Taken);
+        assert_eq!(active_changed, None);
         assert_eq!(
             settings.shared_monitors[0].active_route.as_deref(),
             Some("peer")
@@ -6655,18 +7438,24 @@ mod tests {
         let other = monitor("other");
         let mut settings = routed_settings(&shared, 0x08, 0x07, Some("peer"));
 
-        assert!(!apply_active_input_notice(
-            &mut settings,
-            &other.fingerprint,
-            DisplayInput::new(0x08).unwrap(),
-            SETTLED_MS
-        ));
-        assert!(!apply_active_input_notice(
-            &mut settings,
-            &shared.fingerprint,
-            DisplayInput::new(0x03).unwrap(),
-            SETTLED_MS
-        ));
+        assert_eq!(
+            apply_active_input_notice(
+                &mut settings,
+                &other.fingerprint,
+                DisplayInput::new(0x08).unwrap(),
+                SETTLED_MS
+            ),
+            None
+        );
+        assert_eq!(
+            apply_active_input_notice(
+                &mut settings,
+                &shared.fingerprint,
+                DisplayInput::new(0x03).unwrap(),
+                SETTLED_MS
+            ),
+            None
+        );
         assert_eq!(
             settings.shared_monitors[0].active_route.as_deref(),
             Some("peer")
@@ -6694,7 +7483,7 @@ mod tests {
             SETTLED_MS,
         );
 
-        assert!(changed);
+        assert_eq!(changed, Some(true));
         assert_eq!(
             settings.shared_monitors[0].active_route.as_deref(),
             Some("local")
@@ -6862,7 +7651,7 @@ mod tests {
             SETTLED_MS,
         );
 
-        assert!(!changed);
+        assert_eq!(changed, Some(false));
         assert_eq!(
             settings.shared_monitors[0].active_route_confirmed_at_ms,
             SETTLED_MS
@@ -7759,5 +8548,88 @@ mod tests {
             settings.shared_monitors,
             vec![SelectedMonitor::from(&selected)]
         );
+    }
+
+    #[test]
+    fn a_newer_host_input_tombstone_clears_and_blocks_stale_resurrection() {
+        let shared = monitor("shared");
+        let old_input = DisplayInput::new(0x11).unwrap();
+        let mut selected = SelectedMonitor::from(&shared);
+        selected.local_input = Some(old_input);
+        let mut settings = AppSettings {
+            local_host_id: "this-host".to_owned(),
+            shared_monitors: vec![selected],
+            host_inputs: vec![AgentHostInput {
+                host_id: "this-host".to_owned(),
+                monitor: shared.fingerprint.clone(),
+                input: Some(old_input),
+                updated_at_ms: 10,
+            }],
+            ..AppSettings::default()
+        };
+
+        let cleared = AgentHostInput {
+            host_id: "this-host".to_owned(),
+            monitor: shared.fingerprint.clone(),
+            input: None,
+            updated_at_ms: 20,
+        };
+        assert_eq!(apply_host_input_update(&mut settings, &cleared), Some(true));
+        assert_eq!(settings.shared_monitors[0].local_input, None);
+
+        let stale = AgentHostInput {
+            input: Some(old_input),
+            updated_at_ms: 15,
+            ..cleared
+        };
+        assert_eq!(apply_host_input_update(&mut settings, &stale), None);
+        assert_eq!(settings.shared_monitors[0].local_input, None);
+        assert_eq!(settings.host_inputs[0].input, None);
+    }
+
+    #[test]
+    fn durable_notice_streams_coalesce_only_matching_state() {
+        let monitor_a = monitor("a").fingerprint;
+        let monitor_b = monitor("b").fingerprint;
+        let active_a = AgentAction::ActiveInputChanged {
+            monitor: monitor_a.clone(),
+            input: DisplayInput::new(0x11).unwrap(),
+        };
+        let active_a_newer = AgentAction::ActiveInputChanged {
+            monitor: monitor_a,
+            input: DisplayInput::new(0x12).unwrap(),
+        };
+        let active_b = AgentAction::ActiveInputChanged {
+            monitor: monitor_b,
+            input: DisplayInput::new(0x11).unwrap(),
+        };
+
+        assert!(notice_supersedes(&active_a, &active_a_newer));
+        assert!(!notice_supersedes(&active_a, &active_b));
+        assert!(notice_supersedes(
+            &AgentAction::HostInputsChanged {
+                assignments: Vec::new()
+            },
+            &AgentAction::HostInputsChanged {
+                assignments: Vec::new()
+            }
+        ));
+        let one_off_confirmation = AgentAction::LocalInputConfirmed {
+            host_id: "host".to_owned(),
+            monitor: monitor("shared").fingerprint,
+            input: DisplayInput::new(0x11).unwrap(),
+        };
+        let full_snapshot = AgentAction::HostInputsChanged {
+            assignments: Vec::new(),
+        };
+        assert!(notice_supersedes(&full_snapshot, &one_off_confirmation));
+        assert!(!notice_supersedes(&one_off_confirmation, &full_snapshot));
+    }
+
+    #[test]
+    fn notice_retry_backoff_is_bounded() {
+        assert_eq!(retry_delay_ms(1), 2_000);
+        assert_eq!(retry_delay_ms(2), 4_000);
+        assert_eq!(retry_delay_ms(30), 300_000);
     }
 }

@@ -659,6 +659,14 @@ document.querySelector("#paired-routes")?.addEventListener("click", (event) => {
   if (button?.dataset.wakeId) void peerCommand("wake_peer", button.dataset.wakeId);
 });
 document.querySelector("#paired-routes")?.addEventListener("input", renderInputHints);
+document.querySelector("#paired-routes")?.addEventListener("focusout", () => {
+  // A remote update received while a select was open is deferred so the menu
+  // is not closed under the user. Apply it as soon as editing ends instead of
+  // waiting for the next 15-second full refresh.
+  window.setTimeout(() => {
+    if (peerInputsReloadPending) void reloadPeerInputs();
+  }, 0);
+});
 const inputLabels = document.querySelector<HTMLElement>("#input-labels");
 inputLabels?.addEventListener("change", (event) => {
   const field = (event.target as HTMLElement).closest<HTMLInputElement>("[data-label-input]");
@@ -684,6 +692,13 @@ inputLabels?.addEventListener("toggle", (event) => {
   if (group.open) next.add(monitorKey); else next.delete(monitorKey);
   openInputLabelGroups = next;
 }, true);
+inputLabels?.addEventListener("focusout", () => {
+  window.setTimeout(() => {
+    if (inputNamesReloadPending && !inputLabels.contains(document.activeElement)) {
+      renderInputNames();
+    }
+  }, 0);
+});
 document.querySelector("#monitor-strip")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-monitor-key]");
   if (!button?.dataset.monitorKey || button.dataset.monitorKey === activeMonitorKey) return;
@@ -877,6 +892,8 @@ let hostNames: Record<string, string> = {};
 let renaming: { routeId: string; draft: string } | null = null;
 let isRefreshing = false;
 let lastRefreshAt = 0;
+let peerInputsReloadPending = false;
+let inputNamesReloadPending = false;
 
 async function refresh(): Promise<void> {
   isRefreshing = true;
@@ -983,7 +1000,11 @@ async function reloadActiveRoutes(): Promise<void> {
  */
 async function reloadPeerInputs(): Promise<void> {
   const routes = document.querySelector("#paired-routes");
-  if (routes?.contains(document.activeElement)) return;
+  if (routes?.contains(document.activeElement)) {
+    peerInputsReloadPending = true;
+    return;
+  }
+  peerInputsReloadPending = false;
   try {
     const latest = await invoke<AppSettings>("get_settings");
     settings = { ...settings, peers: latest.peers };
@@ -1519,7 +1540,12 @@ function inputUsers(shared: SharedMonitorStatus, value: number): string[] {
  */
 function renderInputLabels(): void {
   const container = document.querySelector<HTMLElement>("#input-labels");
-  if (!container || container.contains(document.activeElement)) return;
+  if (!container) return;
+  if (container.contains(document.activeElement)) {
+    inputNamesReloadPending = true;
+    return;
+  }
+  inputNamesReloadPending = false;
   if (!dashboard.shared.length) {
     container.innerHTML = `<p class="peer-empty">${t("settings.noMonitors")}</p>`;
     return;

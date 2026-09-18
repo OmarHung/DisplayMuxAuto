@@ -31,7 +31,7 @@ pub const DEFAULT_AGENT_PORT: u16 = 47_653;
 pub const MUXSU_SERVICE_TYPE: &str = "_muxsu._tcp.local.";
 /// Bumped whenever authentication or request interpretation changes in a way
 /// that cannot safely interoperate with an older agent.
-pub const AGENT_PROTOCOL_VERSION: u32 = 3;
+pub const AGENT_PROTOCOL_VERSION: u32 = 4;
 const PAIRING_KEY_ITERATIONS: u32 = 600_000;
 const PAIRING_KEY_SALT: &[u8] = b"MuxSU pairing key v1";
 const PAIRING_KEY_BYTES: usize = 32;
@@ -507,36 +507,36 @@ pub enum AgentAction {
         monitor: Option<MonitorFingerprint>,
         input: DisplayInput,
     },
-    /// Best-effort notice that a paired host just switched `monitor` to
-    /// `input`, so the receiver can update which host it shows as active.
-    /// Agents older than this variant reject the request; senders ignore that.
+    /// Notice that a paired host just switched `monitor` to `input`, so the
+    /// receiver can update which host it shows as active. Application senders
+    /// retain and retry it until the signed response acknowledges delivery.
     ActiveInputChanged {
         monitor: MonitorFingerprint,
         input: DisplayInput,
     },
-    /// Best-effort notice of the host card order a paired host just saved,
+    /// Notice of the host card order a paired host just saved,
     /// as `LocalHostIdentity::id` values. `updated_at_ms` lets receivers keep
     /// the most recent order when several hosts change it.
     HostOrderChanged {
         order: Vec<String>,
         updated_at_ms: u64,
     },
-    /// Best-effort notice of every custom host name a paired host knows.
+    /// Notice of every custom host name a paired host knows.
     /// Receivers merge entry by entry, keeping the newer `updated_at_ms`.
     HostAliasesChanged {
         aliases: Vec<HostAlias>,
     },
-    /// Best-effort notice of every input note a paired host knows. Receivers
+    /// Notice of every input note a paired host knows. Receivers
     /// merge entry by entry, keeping the newer `updated_at_ms`.
     InputLabelsChanged {
         labels: Vec<InputLabel>,
     },
-    /// Best-effort notice of every display-identity claim a paired host knows.
+    /// Notice of every display-identity claim a paired host knows.
     /// Receivers merge entry by entry, keeping the newer `updated_at_ms`.
     MonitorIdentitiesChanged {
         links: Vec<MonitorIdentityLink>,
     },
-    /// Best-effort notice of the inputs a display told the sender it accepts.
+    /// Notice of the inputs a display told the sender it accepts.
     /// A display only answers the host it is showing, so the other host is
     /// left guessing at standard MCCS codes and cannot name a vendor-specific
     /// input at all. Receivers take these only when they have none of their
@@ -548,7 +548,7 @@ pub enum AgentAction {
         inputs: Vec<DisplayInput>,
         vendor_indexed: bool,
     },
-    /// Best-effort notice that the sender is on screen on `monitor` and reads
+    /// Notice that the sender is on screen on `monitor` and reads
     /// `input` there, so `input` is the port the sender is plugged into.
     /// Receivers adopt it as that host's input without the user picking one.
     /// Only a host that is on screen can vouch for its own port: DDC reports
@@ -561,6 +561,13 @@ pub enum AgentAction {
         host_id: String,
         monitor: MonitorFingerprint,
         input: DisplayInput,
+    },
+    /// A versioned, authoritative display-port assignment. Unlike
+    /// `LocalInputConfirmed`, this also represents a manual correction and an
+    /// explicit clear (`input: None`). Sending the complete changed entries
+    /// makes retries idempotent and lets peers that were offline converge.
+    HostInputsChanged {
+        assignments: Vec<AgentHostInput>,
     },
     /// Asks for the receiver's diagnostic snapshot, for a report the sender's
     /// user is putting together. Receivers answer only when their own user
@@ -606,6 +613,18 @@ pub struct InputLabel {
     pub monitor: MonitorFingerprint,
     pub input: DisplayInput,
     pub label: String,
+    pub updated_at_ms: u64,
+}
+
+/// The port one host occupies on one shared display. `input: None` is a
+/// tombstone: it must be retained and exchanged so an offline peer cannot
+/// resurrect an assignment that was cleared while it was away.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHostInput {
+    pub host_id: String,
+    pub monitor: MonitorFingerprint,
+    pub input: Option<DisplayInput>,
     pub updated_at_ms: u64,
 }
 
@@ -685,6 +704,10 @@ pub struct AgentResponse {
     /// The responder's display-identity claims, for the same catch-up.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub monitor_identity_links: Vec<MonitorIdentityLink>,
+    /// Versioned host/display input assignments for offline catch-up. Entries
+    /// with `input: None` are intentional clears and must not be discarded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_inputs: Vec<AgentHostInput>,
     /// The responder's redacted diagnostic snapshot as JSON, only in reply to
     /// `DiagnosticsRequested`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -707,7 +730,7 @@ fn response_signing_payload(
 ) -> Result<Vec<u8>, DisplayMuxError> {
     let mut unsigned = response.clone();
     unsigned.signature = None;
-    serde_json::to_vec(&("muxsu-response-v3", nonce, unsigned))
+    serde_json::to_vec(&("muxsu-response-v4", nonce, unsigned))
         .map_err(|error| DisplayMuxError::Backend(error.to_string()))
 }
 
@@ -1410,6 +1433,35 @@ mod tests {
             serde_json::from_str::<AgentAction>(&serialized).unwrap(),
             action
         );
+    }
+
+    #[test]
+    fn host_inputs_notice_round_trips_an_explicit_clear() {
+        let action = AgentAction::HostInputsChanged {
+            assignments: vec![AgentHostInput {
+                host_id: "2cf05de0c029-windows".to_owned(),
+                monitor: MonitorFingerprint::new("MSI", "3CF0", None::<String>),
+                input: None,
+                updated_at_ms: 1_757_000_000_000,
+            }],
+        };
+
+        let serialized = serde_json::to_string(&action).unwrap();
+
+        assert!(serialized.contains(r#""type":"host_inputs_changed""#));
+        assert!(serialized.contains(r#""input":null"#));
+        assert_eq!(
+            serde_json::from_str::<AgentAction>(&serialized).unwrap(),
+            action
+        );
+    }
+
+    #[test]
+    fn a_response_from_an_agent_without_host_inputs_still_deserializes() {
+        let response: AgentResponse =
+            serde_json::from_str(r#"{"ready":true,"message":"ok"}"#).unwrap();
+
+        assert!(response.host_inputs.is_empty());
     }
 
     /// An agent that predates `confirmed` omits it, and its reports must stay
