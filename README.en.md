@@ -11,6 +11,12 @@ MuxSU is a desktop utility for Windows 10/11 and macOS 12+ that lets multiple co
 
 It controls only the shared monitor you select. It does not change your operating system's display arrangement or switch any of your other work displays.
 
+<img src="docs/icon-brief/app-icon.png" alt="The MuxSU icon: Mark Uncle, with round glasses and a moustache" width="128" align="right">
+
+**About the name:** MuxSU is pronounced *Mǎkè Shū* — "Mark Uncle" in Mandarin (馬克叔). *Mux* is short for
+multiplexer; *SU* is *shū*, uncle. The app icon is Mark Uncle himself: each lens of his round glasses holds a
+computer, and the bridge between them joins the two, which is the whole idea — two computers sharing one display.
+
 ## When MuxSU Is Useful
 
 For example, when you have:
