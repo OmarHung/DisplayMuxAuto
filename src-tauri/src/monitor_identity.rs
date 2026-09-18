@@ -19,7 +19,7 @@
 //! identities count as the same shared display, while every write still
 //! demands an exact fingerprint match against a display present right now.
 
-use displaymux_core::{MonitorFingerprint, MonitorIdentityLink};
+use muxsu_core::{MonitorFingerprint, MonitorIdentityLink};
 
 /// Most entries sent in or accepted from one notice; keeps a notice well under
 /// the agent's packet limit.
@@ -47,10 +47,8 @@ const MAX_CHAIN_DEPTH: usize = 8;
 /// against a display present right now, and refuses outright when more than
 /// one display matches.
 ///
-/// The screen asks the same question of the same data, so `sameIdentity` in
-/// `src/main.ts` is this rule written again in TypeScript. The two must agree:
-/// when they did not, this side resolved a merge that the screen could not,
-/// and a display already merged went on being offered for merging.
+/// The webview receives this module's resolved identity for every fingerprint
+/// it renders, so this remains the single implementation of the rule.
 fn same_identity(left: &MonitorFingerprint, right: &MonitorFingerprint) -> bool {
     left.is_same_model(right)
         && match (&left.serial_number, &right.serial_number) {

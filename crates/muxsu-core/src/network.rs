@@ -3,6 +3,7 @@ use std::{
     fmt,
     future::Future,
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    num::NonZeroU32,
     str::FromStr,
     sync::{Arc, RwLock as StdRwLock},
     thread,
@@ -11,6 +12,7 @@ use std::{
 
 use hmac::{Hmac, Mac};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use ring::pbkdf2;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tokio::{
@@ -26,11 +28,13 @@ use crate::{
 };
 
 pub const DEFAULT_AGENT_PORT: u16 = 47_653;
-pub const DISPLAYMUX_SERVICE_TYPE: &str = "_displaymux._tcp.local.";
-/// Bumped whenever the agent wire protocol gains a field that changes how a
-/// request must be interpreted (not just an additive/ignorable one). A peer
-/// reporting a version below this may not understand per-monitor requests.
-pub const AGENT_PROTOCOL_VERSION: u32 = 2;
+pub const MUXSU_SERVICE_TYPE: &str = "_muxsu._tcp.local.";
+/// Bumped whenever authentication or request interpretation changes in a way
+/// that cannot safely interoperate with an older agent.
+pub const AGENT_PROTOCOL_VERSION: u32 = 3;
+const PAIRING_KEY_ITERATIONS: u32 = 600_000;
+const PAIRING_KEY_SALT: &[u8] = b"MuxSU pairing key v1";
+const PAIRING_KEY_BYTES: usize = 32;
 const MAX_CLOCK_SKEW: Duration = Duration::from_secs(30);
 const MAX_PACKET_BYTES: usize = 8 * 1024;
 /// How long a connection may take to deliver its request line. Anyone on the
@@ -39,6 +43,23 @@ const MAX_PACKET_BYTES: usize = 8 * 1024;
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Turns the user-entered pairing password into the key used by the wire
+/// protocol. The fixed, application-specific salt is intentional: two hosts
+/// that have never communicated must derive the same key from the same text.
+/// PBKDF2 still makes every captured request substantially more expensive to
+/// attack offline than using the password bytes directly as an HMAC key.
+pub fn derive_pairing_key(password: &str) -> [u8; PAIRING_KEY_BYTES] {
+    let mut key = [0_u8; PAIRING_KEY_BYTES];
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA256,
+        NonZeroU32::new(PAIRING_KEY_ITERATIONS).expect("the PBKDF2 work factor is non-zero"),
+        PAIRING_KEY_SALT,
+        password.as_bytes(),
+        &mut key,
+    );
+    key
+}
 
 pub struct MdnsPeerDiscovery {
     daemon: ServiceDaemon,
@@ -69,7 +90,7 @@ impl AdvertisedService {
     fn info(&self) -> Result<ServiceInfo, DisplayMuxError> {
         let dns_host_name = format!("{}.local.", dns_label(&self.name));
         ServiceInfo::new(
-            DISPLAYMUX_SERVICE_TYPE,
+            MUXSU_SERVICE_TYPE,
             &self.name,
             &dns_host_name,
             "",
@@ -100,7 +121,7 @@ impl LocalHostIdentity {
             .trim()
             .to_owned();
         let name = if host_name.is_empty() {
-            "DisplayMux".to_owned()
+            "MuxSU".to_owned()
         } else {
             host_name
         };
@@ -194,14 +215,14 @@ impl MdnsPeerDiscovery {
             .register(info)
             .map_err(|error| DisplayMuxError::Backend(error.to_string()))?;
         let receiver = daemon
-            .browse(DISPLAYMUX_SERVICE_TYPE)
+            .browse(MUXSU_SERVICE_TYPE)
             .map_err(|error| DisplayMuxError::Backend(error.to_string()))?;
         let peers = Arc::new(StdRwLock::new(HashMap::new()));
         let observed_peers = Arc::clone(&peers);
         let observed_local_id = local_id.clone();
 
         thread::Builder::new()
-            .name("displaymux-mdns".to_owned())
+            .name("muxsu-mdns".to_owned())
             .spawn(move || {
                 while let Ok(event) = receiver.recv() {
                     match event {
@@ -227,7 +248,7 @@ impl MdnsPeerDiscovery {
             })
             .map_err(|error| DisplayMuxError::Backend(error.to_string()))?;
 
-        tracing::info!(host = %friendly_name, "DisplayMux mDNS discovery started");
+        tracing::info!(host = %friendly_name, "MuxSU mDNS discovery started");
         Ok(Self {
             daemon,
             local_id,
@@ -385,7 +406,7 @@ fn dns_label(host_name: &str) -> String {
         .trim_matches('-')
         .to_owned();
     if label.is_empty() {
-        "displaymux".to_owned()
+        "muxsu".to_owned()
     } else {
         label
     }
@@ -639,10 +660,8 @@ pub struct AgentResponse {
     /// empty vec via `#[serde(default)]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub display_routes: Vec<AgentDisplayRoute>,
-    /// The responder's `AGENT_PROTOCOL_VERSION`. Absent on a pre-v2 peer's
-    /// response, which deserializes to `0` via `#[serde(default)]` — treat
-    /// any value less than `AGENT_PROTOCOL_VERSION` as "does not understand
-    /// per-monitor switch requests".
+    /// The responder's `AGENT_PROTOCOL_VERSION`. It is covered by the response
+    /// signature and must match before any response data is accepted.
     #[serde(default)]
     pub protocol_version: u32,
     /// The responder's host card order and when it last changed, so a host
@@ -663,27 +682,30 @@ pub struct AgentResponse {
     pub monitor_identity_links: Vec<MonitorIdentityLink>,
     /// Proof that whatever answered holds the pairing password, bound to the
     /// nonce of the request it answers so it cannot be lifted from an earlier
-    /// exchange. Absent from agents that predate it, so its absence means
-    /// "unknown", not "forged" — only decisions that must not be made on a
-    /// stranger's say-so may require it.
+    /// exchange. Current clients reject responses where this is absent or
+    /// fails to cover the complete response payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
 }
 
-/// What a reply's signature covers. Deliberately not the whole payload: the
-/// set of fields differs between versions, and a signature that breaks
-/// whenever a field is added would be read as an impostor rather than as a
-/// version gap. This is enough to establish who answered and which request
-/// they answered, which is what the decisions guarded by it turn on.
-fn response_signing_payload(nonce: &str, ready: bool) -> Result<Vec<u8>, DisplayMuxError> {
-    serde_json::to_vec(&("displaymux-response", nonce, ready))
+/// What a reply's signature covers: its complete payload except for the
+/// signature itself, plus the request nonce. In particular, the protocol
+/// version and every piece of synchronized state are authenticated rather
+/// than trusted merely because they arrived on the paired host's socket.
+fn response_signing_payload(
+    nonce: &str,
+    response: &AgentResponse,
+) -> Result<Vec<u8>, DisplayMuxError> {
+    let mut unsigned = response.clone();
+    unsigned.signature = None;
+    serde_json::to_vec(&("muxsu-response-v3", nonce, unsigned))
         .map_err(|error| DisplayMuxError::Backend(error.to_string()))
 }
 
 impl AgentResponse {
     /// Signs this reply against the nonce of the request it answers.
     pub fn signed_for(mut self, nonce: &str, shared_key: &[u8]) -> Self {
-        self.signature = response_signing_payload(nonce, self.ready)
+        self.signature = response_signing_payload(nonce, &self)
             .ok()
             .and_then(|payload| {
                 let mut mac = HmacSha256::new_from_slice(shared_key).ok()?;
@@ -695,9 +717,7 @@ impl AgentResponse {
 
     /// Whether this reply proves the responder holds the pairing password.
     ///
-    /// False for a reply that carries no signature, which is what an agent
-    /// predating this field sends — the caller decides whether that is
-    /// acceptable for what it is about to do.
+    /// False for a reply that carries no valid full-payload signature.
     pub fn proves_pairing(&self, nonce: &str, shared_key: &[u8]) -> bool {
         let Some(signature) = &self.signature else {
             return false;
@@ -705,7 +725,7 @@ impl AgentResponse {
         let Ok(supplied) = hex::decode(signature) else {
             return false;
         };
-        let Ok(payload) = response_signing_payload(nonce, self.ready) else {
+        let Ok(payload) = response_signing_payload(nonce, self) else {
             return false;
         };
         let Ok(mut mac) = HmacSha256::new_from_slice(shared_key) else {
@@ -751,7 +771,8 @@ impl AgentClient {
         action: AgentAction,
         nonce: impl Into<String>,
     ) -> Result<AgentResponse, DisplayMuxError> {
-        let request = AgentRequest::signed(action, nonce, &self.shared_key)?;
+        let nonce = nonce.into();
+        let request = AgentRequest::signed(action, nonce.clone(), &self.shared_key)?;
         let stream = timeout(
             self.connect_timeout,
             TcpStream::connect(self.endpoint.socket_addr()),
@@ -778,8 +799,26 @@ impl AgentClient {
         .await
         .map_err(|_| DisplayMuxError::PeerUnavailable("回應逾時".to_owned()))?
         .map_err(|error| DisplayMuxError::PeerUnavailable(error.to_string()))?;
-        parse_agent_response(&response)
+        let response = parse_agent_response(&response)?;
+        verify_agent_response(&response, &nonce, &self.shared_key)?;
+        Ok(response)
     }
+}
+
+fn verify_agent_response(
+    response: &AgentResponse,
+    nonce: &str,
+    shared_key: &[u8],
+) -> Result<(), DisplayMuxError> {
+    // A version mismatch is safe to report before authentication because it
+    // can only reject the response, never make untrusted data actionable.
+    if response.protocol_version != AGENT_PROTOCOL_VERSION {
+        return Err(DisplayMuxError::UnreadableRequest);
+    }
+    if !response.proves_pairing(nonce, shared_key) {
+        return Err(DisplayMuxError::AuthenticationFailed);
+    }
+    Ok(())
 }
 
 pub struct AgentServer {
@@ -875,7 +914,8 @@ where
     };
     if let Err(error) = request.verify(&shared_key) {
         tracing::warn!(error = %error, "agent request rejected");
-        return write_agent_response(&mut writer, &rejection_response(&error)).await;
+        let response = rejection_response(&error).signed_for(&request.nonce, &shared_key);
+        return write_agent_response(&mut writer, &response).await;
     }
 
     let mut nonces = seen_nonces.lock().await;
@@ -1355,6 +1395,8 @@ mod tests {
         let key = b"pairing-secret";
         let signed = AgentResponse {
             ready: true,
+            protocol_version: AGENT_PROTOCOL_VERSION,
+            message: "authenticated".to_owned(),
             ..AgentResponse::default()
         }
         .signed_for("nonce-a", key);
@@ -1371,6 +1413,54 @@ mod tests {
         assert!(
             !AgentResponse::default().proves_pairing("nonce-a", key),
             "an unsigned reply was taken as proof"
+        );
+
+        for tampered in [
+            AgentResponse {
+                protocol_version: AGENT_PROTOCOL_VERSION - 1,
+                ..signed.clone()
+            },
+            AgentResponse {
+                message: "tampered".to_owned(),
+                ..signed.clone()
+            },
+            AgentResponse {
+                ready: false,
+                ..signed.clone()
+            },
+        ] {
+            assert!(
+                !tampered.proves_pairing("nonce-a", key),
+                "a modified response payload retained a valid signature"
+            );
+        }
+    }
+
+    #[test]
+    fn pairing_passwords_are_stretched_and_domain_separated() {
+        let first = derive_pairing_key("a sufficiently long pairing password");
+        let same = derive_pairing_key("a sufficiently long pairing password");
+        let different = derive_pairing_key("a different sufficiently long password");
+
+        assert_eq!(first, same);
+        assert_ne!(first, different);
+        assert_ne!(first.as_slice(), b"a sufficiently long pairing password");
+    }
+
+    #[test]
+    fn a_signed_but_incompatible_response_is_rejected() {
+        let key = b"pairing-secret";
+        let response = AgentResponse {
+            ready: true,
+            protocol_version: AGENT_PROTOCOL_VERSION - 1,
+            ..AgentResponse::default()
+        }
+        .signed_for("nonce-a", key);
+
+        assert!(response.proves_pairing("nonce-a", key));
+        assert_eq!(
+            verify_agent_response(&response, "nonce-a", key),
+            Err(DisplayMuxError::UnreadableRequest)
         );
     }
 
@@ -1391,6 +1481,7 @@ mod tests {
                 .run(|_| async {
                     AgentResponse {
                         ready: true,
+                        protocol_version: AGENT_PROTOCOL_VERSION,
                         ..AgentResponse::default()
                     }
                 })

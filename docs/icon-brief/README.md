@@ -1,22 +1,18 @@
-# Icon brief — DisplayMuxAuto
+# Icon brief — MuxSU
 
 Two icons are needed. Everything the app ships is generated from them.
 
-DisplayMuxAuto shares one monitor between a Mac and a Windows PC, switching the monitor's
+MuxSU shares one monitor between a Mac and a Windows PC, switching the monitor's
 input over DDC/CI so neither computer has to be unplugged and no one has to reach for the
 monitor's buttons. It runs quietly in the background on both machines and is mostly invoked
 by a keyboard shortcut.
 
-## What is being replaced
+## Current mark
 
-The icons in this folder are placeholders, and nothing about their shapes is load-bearing.
-
-`current-app-icon.png` is a dark rounded square holding a monitor with a two-way arrow across
-its screen — the switching idea, stated literally. `current-menubar@2x.png` is a monitor
-outline drawn pixel by pixel in a script, which is exactly as good as that sounds.
-
-The monitor motif is a reasonable starting point and the palette below is genuinely the
-product's, but a stronger idea is welcome.
+The selected mark uses an ivory uncle silhouette on deep navy. Its round glasses contain a
+violet laptop and a turquoise desktop tower, joined by a small amber bridge to express two
+computers sharing one display. The swept hair, brows and moustache carry the "Mark Uncle"
+identity without drawing a conventional face.
 
 ## Deliverable A — application icon
 
@@ -53,6 +49,10 @@ screen pointing at it, and the only way to open its window or quit it.
 | **Colour** | None. Draw in solid black — see the constraint below. |
 | **Strokes** | Even weight, roughly 3–4 px at this scale. Avoid detail that closes up: a 2 px gap here is one pixel on a non-Retina display. |
 
+The final glyph simplifies the selected app icon to its swept hair, round glasses with a
+central bridge node, and moustache. The coloured lenses and computer details are omitted so
+the uncle signature remains readable in the 22 pt menu-bar slot.
+
 ### The colour is discarded
 
 macOS treats this as a **template image**: it reads only the alpha channel and repaints the
@@ -67,17 +67,22 @@ and nothing else.
 
 ## Palette
 
-The product's own tokens, not a set assembled for this brief. The deep green carries the
-interface in light mode; the mint replaces it in dark mode.
+The application icon and interface deliberately use separate colour systems. The icon uses
+deep navy and ivory with violet, turquoise and amber device accents. The application chrome
+keeps its neutral liquid-glass treatment inspired by macOS: translucent white or graphite
+surfaces, soft blue/violet ambient light, fine highlight borders and restrained system-blue
+actions.
 
 | Role | Light | Dark |
 |---|---|---|
-| Accent | `#137356` | `#6EE7B7` |
-| Ink | `#17211E` | `#E6EDE9` |
-| Canvas | `#E8ECE9` | `#0E1512` |
+| Action | `#087BEA` | `#65B7FF` |
+| Selection | `#5E6FF5` | `#AAB4FF` |
+| Ink | `#182235` | `#F3F7FF` |
+| Base canvas | `#DCE5F0` | `#080D17` |
+| Glass panel | `rgba(255,255,255,.58)` | `rgba(31,43,63,.58)` |
 
-The interface pairs these with **Manrope**. The app icon is free to leave the palette if the
-idea calls for it; the menu bar glyph has no colour to leave.
+The interface pairs these materials with **Manrope**. The menu bar glyph remains colourless
+because macOS supplies its colour from the current menu bar appearance.
 
 ## Handing the files back
 
@@ -109,8 +114,8 @@ For reference, where they end up in the repository:
 
 | File | What |
 |---|---|
-| `current-app-icon.png` | the placeholder app icon, 512 × 512 |
-| `current-menubar@2x.png` | the placeholder menu bar glyph, 44 × 44 |
+| `app-icon.png` | the final 1024 × 1024 MuxSU application icon |
+| `menubar@2x.png` | the final 44 × 44 MuxSU template glyph |
 
 Referenced from `src-tauri/tauri.conf.json` (`bundle.icon`) and `src-tauri/src/lib.rs`
 (`setup_macos_status_item`).

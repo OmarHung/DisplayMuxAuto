@@ -89,13 +89,6 @@ interface AppSettings {
   onboardingCompleted: boolean;
   hostSwitcherEnabled: boolean;
   hostSwitcherShortcut: string;
-  monitorIdentityLinks?: MonitorIdentityLink[];
-}
-
-interface MonitorIdentityLink {
-  alias: Fingerprint;
-  primary: Fingerprint | null;
-  updatedAtMs: number;
 }
 
 interface SharedMonitorStatus {
@@ -126,6 +119,7 @@ interface DashboardState {
   shared: SharedMonitorStatus[];
   selectionNotices: string[];
   monitorIdentityClaims?: MonitorIdentityClaim[];
+  resolvedMonitorIdentities: Record<string, string>;
   localHostName?: string;
 }
 
@@ -165,6 +159,7 @@ const standardInputs: InputOption[] = [
   [0x01, "VGA"], [0x03, "DVI"], [0x0f, "DP"],
   [0x11, "HDMI 1"], [0x12, "HDMI 2"], [0x1b, "Type-C"],
 ].map(([value, name]) => ({ value: value as number, name: name as string }));
+const MIN_SHARED_KEY_LENGTH = 15;
 
 const previewSettings: AppSettings = {
   localHost: "windows", sharedMonitors: [], peers: [],
@@ -174,6 +169,7 @@ const previewSettings: AppSettings = {
 const previewDashboard: DashboardState = {
   platform: "windows", localHost: "windows", agentConfigured: false,
   monitors: [], uncontrollableMonitors: [], shared: [], selectionNotices: [],
+  resolvedMonitorIdentities: {},
 };
 
 let settings = previewSettings;
@@ -260,8 +256,8 @@ app.innerHTML = `
     <aside class="sidebar" aria-label="${t("nav.aria")}">
       <div class="brand-block">
         <div class="brand-header">
-          <div class="brand-icon"><i data-lucide="monitor"></i></div>
-          <span class="brand-title">DisplayMuxAuto</span>
+          <div class="brand-icon" aria-hidden="true"></div>
+          <span class="brand-title"><span>Mux</span><span>SU</span></span>
         </div>
         <label class="language-picker">
           <i data-lucide="languages"></i>
@@ -355,7 +351,7 @@ app.innerHTML = `
               </div>
 
               <div class="form-section two-columns">
-                <label class="field"><span>${t("settings.password")}</span><div class="input-wrap"><i data-lucide="key-round"></i><input id="shared-key" type="password" minlength="8" placeholder="${t("settings.passwordPlaceholder")}" /></div><small>${t("settings.passwordHint")}</small></label>
+                <label class="field"><span>${t("settings.password")}</span><div class="input-wrap"><i data-lucide="key-round"></i><input id="shared-key" type="password" minlength="${MIN_SHARED_KEY_LENGTH}" placeholder="${t("settings.passwordPlaceholder")}" /></div><small>${t("settings.passwordHint")}</small></label>
                 <label class="field compact"><span>${t("settings.wait")}</span><input id="wait-seconds" type="number" min="5" max="120" /><small>${t("settings.waitHint")}</small></label>
               </div>
 
@@ -1099,7 +1095,7 @@ function getFlatMonitorSvg(isUltrawide: boolean): string {
 }
 
 function selectedMonitorFor(shared: SharedMonitorStatus): SelectedMonitor | undefined {
-  return settings.sharedMonitors.find((sm) => sameIdentity(sm.fingerprint, shared.fingerprint));
+  return settings.sharedMonitors.find((sm) => sameDisplay(sm.fingerprint, shared.fingerprint));
 }
 
 /** A display's resolution belongs to the display mode it is in right now, not
@@ -2251,7 +2247,7 @@ async function checkForUpdates(manual: boolean): Promise<void> {
 }
 
 function showUpdateDialog(update: UpdateInfo): void {
-  setText("#update-title", `DisplayMuxAuto ${update.version ?? ""}`);
+  setText("#update-title", `MuxSU ${update.version ?? ""}`);
   setText("#update-version", t("update.currentVersion", { version: update.currentVersion }));
   const notes = document.querySelector<HTMLElement>("#update-notes");
   if (notes) renderMarkdown(notes, update.notes?.trim() || t("update.noneNotes"));
@@ -2316,7 +2312,7 @@ function onboardingStatus(step: number): { ready: boolean; title: string; detail
     return { ready: false, title: t("onboarding.noDisplayDetected"), detail: t("onboarding.noDisplayDetectedDetail") };
   }
   if (step === 3) {
-    const ready = settings.sharedKey.trim().length >= 8;
+    const ready = [...settings.sharedKey].length >= MIN_SHARED_KEY_LENGTH;
     return {
       ready,
       title: ready ? t("onboarding.pairingReady") : t("onboarding.pairingNotReady"),
@@ -2532,24 +2528,13 @@ function resolutionSourceName(value: ResolutionSource | null): string {
   if (value === "windowsDisplayMode") return t("resolution.windows");
   return t("resolution.unknown");
 }
-/** The identity a fingerprint resolves to, following the user's merges. Mirrors
- *  `monitor_identity::primary_for`; the bound stops a malformed chain looping. */
-function primaryFingerprint(fingerprint: Fingerprint): Fingerprint {
-  let current = fingerprint;
-  for (let step = 0; step < 8; step += 1) {
-    const link = (settings.monitorIdentityLinks ?? []).find((entry) => sameIdentity(entry.alias, current));
-    if (!link?.primary || sameIdentity(link.primary, current)) return current;
-    current = link.primary;
-  }
-  return current;
-}
-
-/** Whether two identities name one physical display, following the user's
- *  merges. Mirrors `monitor_identity::is_same_display`: being the same display
- *  is an equivalence, so both sides are resolved — a stored selection can
- *  itself be an alias. */
+/** Whether two fingerprints name one physical display. Rust resolves every
+ *  fingerprint with the authoritative serial-number and merge rules; this
+ *  side only compares the opaque identities returned with the dashboard. */
 function sameDisplay(left: Fingerprint, right: Fingerprint): boolean {
-  return sameIdentity(primaryFingerprint(left), primaryFingerprint(right));
+  const leftIdentity = dashboard.resolvedMonitorIdentities[JSON.stringify(left)];
+  const rightIdentity = dashboard.resolvedMonitorIdentities[JSON.stringify(right)];
+  return leftIdentity != null && leftIdentity === rightIdentity;
 }
 
 /** Whether a display present right now is one of this computer's shared displays. */
@@ -2557,23 +2542,6 @@ function isSharedDisplay(fingerprint: Fingerprint): boolean {
   return settings.sharedMonitors.some((sm) => sameDisplay(sm.fingerprint, fingerprint));
 }
 
-/** Whether two fingerprints name the same identity, for deciding what belongs
- *  to which display. Must agree with `monitor_identity::same_identity`, which
- *  is the same rule written again in Rust: when the two drifted, the backend
- *  resolved a merge that the screen could not, so a merged display went on
- *  being offered for merging.
- *
- *  Two serial numbers that are both present and different mean two displays.
- *  An absent one is unknown rather than a difference — Windows reads this
- *  MSI's serial and macOS reads none from it, so requiring both to match kept
- *  every merge from crossing between them. Switching never comes through here:
- *  that happens in Rust and still demands an exact fingerprint. */
-function sameIdentity(left: Fingerprint, right: Fingerprint): boolean {
-  if (left.manufacturer_id.toUpperCase() !== right.manufacturer_id.toUpperCase()) return false;
-  if (left.product_code.toUpperCase() !== right.product_code.toUpperCase()) return false;
-  if (left.serial_number == null || right.serial_number == null) return true;
-  return left.serial_number === right.serial_number;
-}
 function escapeHtml(value: string): string { return value.replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char] ?? char); }
 function cssEscape(value: string): string { return typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&"); }
 function setText(selector: string, value: string): void { const element = document.querySelector(selector); if (element) element.textContent = value; }

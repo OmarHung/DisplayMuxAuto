@@ -1,23 +1,23 @@
-# DisplayMuxAuto
+# MuxSU
 
 [繁體中文](README.md) | English
 
-> DisplayMuxAuto extends [DisplayMux](https://github.com/HenryHsu/DisplayMux) by Henry Hsu, under the MIT licence.
+> MuxSU extends [DisplayMux](https://github.com/HenryHsu/DisplayMux) by Henry Hsu, under the MIT licence.
 > The original switches one shared monitor between two computers; this project builds on it so the two hosts work
 > out each other's ports, display identities and settings between themselves, leaving less to be entered by hand.
 > Release history before v0.1.6 points at the original project.
 
-DisplayMuxAuto is a desktop utility for Windows 10/11 and macOS 12+ that lets multiple computers share a single monitor. It switches the monitor input directly from your computer, so you do not need to reach for the monitor's physical controls.
+MuxSU is a desktop utility for Windows 10/11 and macOS 12+ that lets multiple computers share a single monitor. It switches the monitor input directly from your computer, so you do not need to reach for the monitor's physical controls.
 
 It controls only the shared monitor you select. It does not change your operating system's display arrangement or switch any of your other work displays.
 
-## When DisplayMuxAuto Is Useful
+## When MuxSU Is Useful
 
 For example, when you have:
 - One or more shared monitors connected to two computers at once
 - Other dedicated displays that should not be switched (optional)
 
-DisplayMuxAuto only switches the shared monitors you select. Every other display keeps its picture and its place in the arrangement.
+MuxSU only switches the shared monitors you select. Every other display keeps its picture and its place in the arrangement.
 You can share more than one monitor; each host stores its own input port for each shared monitor separately.
 
 ## What It Does
@@ -58,19 +58,19 @@ The computer names, addresses and display details shown below are anonymized sam
 
 Which computer each shared monitor is currently handed to, and the input each one uses. With more than one shared monitor, a control at the top sends all of them to the same host at once.
 
-![DisplayMuxAuto switch center with two shared monitors, one on this PC and one on the Mac](assets/screenshots/switch-center.en.png)
+![MuxSU switch center with two shared monitors, one on this PC and one on the Mac](assets/screenshots/switch-center.en.png)
 
 ### Display and Host Settings (top)
 
 Choosing shared monitors, naming this computer, its port on each monitor, and input notes.
 
-![DisplayMuxAuto display and host settings, upper half, with two shared monitors and their ports](assets/screenshots/monitor-and-host-settings.en.png)
+![MuxSU display and host settings, upper half, with two shared monitors and their ports](assets/screenshots/monitor-and-host-settings.en.png)
 
 ### Display and Host Settings (lower)
 
 Added hosts and their inputs, the pairing password, the global shortcut, and reset at the bottom.
 
-![DisplayMuxAuto display and host settings, lower half, with added hosts, pairing password, shortcut and reset](assets/screenshots/hosts-and-reset.en.png)
+![MuxSU display and host settings, lower half, with added hosts, pairing password, shortcut and reset](assets/screenshots/hosts-and-reset.en.png)
 
 ## Before You Begin
 
@@ -78,9 +78,9 @@ Check that:
 
 1. The shared monitor supports DDC/CI.
 2. DDC/CI is enabled in the monitor's OSD menu.
-3. Every computer taking part has DisplayMuxAuto installed and running.
+3. Every computer taking part has MuxSU installed and running.
 4. The computers you want to pair are on the same private local network.
-5. Every computer has exactly the same pairing password, at least 8 characters long.
+5. Every computer has exactly the same pairing password, at least 15 characters long.
 
 A monitor that shows a picture is not necessarily passing DDC/CI through the cable, adapter or dock you are using. If no monitor is detected, start with [Connection and Compatibility Limitations](#connection-and-compatibility-limitations) below.
 
@@ -90,15 +90,15 @@ A monitor that shows a picture is not necessarily passing DDC/CI through the cab
 
 Open the Display and Host settings page and refresh the monitor list:
 
-- On first setup, if there is exactly one controllable external monitor, DisplayMuxAuto selects it for you.
+- On first setup, if there is exactly one controllable external monitor, MuxSU selects it for you.
 - Otherwise choose by hand. You can select more than one shared monitor.
 - Once you have made a choice — including removing a monitor from sharing, or running a reset — nothing is selected for you again, and a monitor you removed stays removed.
 
-DisplayMuxAuto locks on to the monitor's manufacturer, model and serial number. It never guesses from **primary display** or display arrangement order.
+MuxSU locks on to the monitor's manufacturer, model and serial number. It never guesses from **primary display** or display arrangement order.
 
 ### 2. Confirm This Computer's Port
 
-After you select a monitor, DisplayMuxAuto reads its current input right away and saves the port this computer uses.
+After you select a monitor, MuxSU reads its current input right away and saves the port this computer uses.
 
 What detection reads is which input the display is showing. If this computer is not on that display at the time, there is nothing to detect — choose the port you actually plugged into from the list. A port set by hand is shared with the other hosts exactly like a detected one.
 
@@ -106,7 +106,7 @@ Ports appear as VGA, DVI, DP, HDMI or Type-C, so there are no technical codes to
 
 ### 3. Set a Pairing Password
 
-Enter exactly the same pairing password on every computer, at least 8 characters long.
+Enter exactly the same pairing password on every computer, at least 15 characters long.
 
 The password signs and verifies the requests hosts make of each other on the local network — asking for status, asking another host to perform a switch, and sending a wake. Hosts with different passwords cannot control each other.
 
@@ -114,16 +114,16 @@ The password signs and verifies the requests hosts make of each other on the loc
 
 Find the other computer under "Add other hosts on this network" and press Add.
 
-If that computer has already selected its shared monitor, DisplayMuxAuto fills in the port it uses when all of the following hold:
+If that computer has already selected its shared monitor, MuxSU fills in the port it uses when all of the following hold:
 
 - The pairing password verifies
 - Both computers identify the same monitor
 - The other computer's port is an input this monitor can use
 - That port is not already assigned to this computer or another host
 
-When this cannot be established safely, the choice is left to you. DisplayMuxAuto does not guess which port another computer is plugged into.
+When this cannot be established safely, the choice is left to you. MuxSU does not guess which port another computer is plugged into.
 
-Syncing between hosts — ports, input lists, host names, input notes and identity merges — needs v0.1.11 or later on both sides. Switching still works with an older host, but none of that information travels.
+Both hosts must use the same MuxSU Agent protocol version. When they differ, MuxSU rejects the connection before accepting remote data or performing a switch.
 
 ### 5. Save and Repeat on the Other Computers
 
@@ -143,22 +143,22 @@ Repeat the same steps on every computer taking part. Turning on "Start at login"
 
 Once set up, pick the target host in the switch centre. With several shared monitors, "All displays" sends every one of them to the same host in a single action.
 
-When switching to a remote host, DisplayMuxAuto:
+When switching to a remote host, MuxSU:
 
 1. Attempts to wake the target host over Wake-on-LAN.
-2. Checks whether the target host's DisplayMuxAuto Agent is ready.
+2. Checks whether the target host's MuxSU Agent is ready.
 3. Prefers switching the shared monitor over DDC/CI from this computer.
 4. Falls back to asking a verified remote host to perform the switch if the local DDC/CI path fails.
 
-If the network Agent is temporarily unreachable, DisplayMuxAuto still tries local DDC/CI. If the target computer is not yet producing a picture, the monitor may go briefly black.
+If the network Agent is temporarily unreachable, MuxSU still tries local DDC/CI. If the target computer is not yet producing a picture, the monitor may go briefly black.
 
-On Windows, closing or minimizing the window leaves the app running in the system tray. Only "Quit DisplayMuxAuto" from the tray actually exits.
+On Windows, closing or minimizing the window leaves the app running in the system tray. Only "Quit MuxSU" from the tray actually exits.
 
 ### Global Host Switcher
 
 With "Global host switcher" enabled in settings, a shortcut (`Ctrl/Cmd + Alt + Space` by default) summons a small window for handing the shared monitor to another host, without returning to the main window first. You can record your own shortcut; the app checks it against common application shortcuts before accepting it.
 
-![DisplayMuxAuto host switcher window listing this computer and the added Mac](assets/screenshots/host-switcher.en.png)
+![MuxSU host switcher window listing this computer and the added Mac](assets/screenshots/host-switcher.en.png)
 
 ## One Display, Different Identities
 
@@ -168,7 +168,7 @@ When that happens, the settings page lists the identity that belongs to no share
 
 A merge only decides which identities count as the same display. It does not relax the safety check on switching: before any DDC/CI command goes out, the display's identity must still match exactly.
 
-![DisplayMuxAuto display identity merging: one merged card and one identity waiting to be merged](assets/screenshots/display-identity-merge.en.png)
+![MuxSU display identity merging: one merged card and one identity waiting to be merged](assets/screenshots/display-identity-merge.en.png)
 
 ## Reset
 
@@ -181,13 +181,13 @@ A reset cannot be undone. Nothing is selected for sharing again afterwards.
 
 ## Input Port List
 
-DisplayMuxAuto uses the input list the display itself provides, minus the ports already assigned.
+MuxSU uses the input list the display itself provides, minus the ports already assigned.
 
 If the display, hub, dock or adapter cannot provide one, no guessed list is offered. The field says the display's inputs have not been read and keeps the current setting. A generic list describes no particular display, and on a given one every entry may be wrong — and a wrong port aims the switch at an input with nothing on it.
 
 If another paired host can read that display, it shares what it found and the field becomes usable again.
 
-Some displays use vendor-specific values for Type-C or other inputs. DisplayMuxAuto keeps the raw value the display reported for switching, but shows "Other input" when it cannot name it with confidence, rather than labelling it wrongly. You can give such an input a note of your own.
+Some displays use vendor-specific values for Type-C or other inputs. MuxSU keeps the raw value the display reported for switching, but shows "Other input" when it cannot name it with confidence, rather than labelling it wrongly. You can give such an input a note of your own.
 
 After changing a monitor, cable, dock or the port you are actually plugged into, select the shared monitor again and check each host's settings.
 
@@ -199,9 +199,9 @@ Check, in order:
 2. The selected monitor is the external shared one, not a laptop's built-in panel.
 3. Test with a direct cable between the monitor and the computer.
 4. Temporarily remove any KVM, adapter or dock to see whether the problem sits in between.
-5. Refresh DisplayMuxAuto's monitor and host lists.
+5. Refresh MuxSU's monitor and host lists.
 6. Confirm both computers use the same pairing password and that their clocks are correct.
-7. Confirm the firewall allows mDNS and the DisplayMuxAuto Agent on private networks.
+7. Confirm the firewall allows mDNS and the MuxSU Agent on private networks.
 
 If a direct connection can control the monitor but a dock only carries the picture, the dock or its driver is not passing DDC/CI through. Pairing again cannot restore a hardware channel that is not there.
 
@@ -228,23 +228,24 @@ These may carry the picture without offering DDC/CI to third-party software:
 - Silicon Motion InstantView / SM76x / SM77x devices
 - HDMI or USB-C adapters that do not pass DDC through
 
-A DisplayLink or dock utility being able to change brightness does not mean DisplayMuxAuto can reach the physical monitor's control channel.
+A DisplayLink or dock utility being able to change brightness does not mean MuxSU can reach the physical monitor's control channel.
 
 ## Wake-on-LAN and Networking
 
-- mDNS uses `5353/UDP` to find DisplayMuxAuto hosts on the same local network.
-- The DisplayMuxAuto Agent uses `47653/TCP` by default.
+- mDNS uses `5353/UDP` to find MuxSU hosts on the same local network.
+- The MuxSU Agent uses `47653/TCP` by default.
 - On macOS, enable "Wake for network access".
 - On Windows, enable Wake-on-LAN in the network adapter and in BIOS/UEFI.
-- Whether a fully powered-off computer can be woken depends on its hardware, firmware and operating system settings. DisplayMuxAuto cannot guarantee it.
+- Whether a fully powered-off computer can be woken depends on its hardware, firmware and operating system settings. MuxSU cannot guarantee it.
 
 IP addresses, MAC addresses and the Agent port are picked up and stored while searching for hosts. After a DHCP address changes, searching again updates them; a paired host that has moved is only followed once an authenticated connection confirms it.
 
 ## Security and Privacy
 
-- DisplayMuxAuto only controls the single target whose full monitor identity matches.
+- MuxSU only controls the single target whose full monitor identity matches.
 - The operation stops if the target is missing, the identity is incomplete, or several matching monitors appear at once.
 - Requests between paired hosts are verified with HMAC-SHA256, a time limit and nonce replay protection.
+- Pairing passwords are stretched with PBKDF2-HMAC-SHA256; the complete Agent response and its protocol version are authenticated as well.
 - The pairing password is never written to ordinary operation logs.
 - Wake-on-LAN packets only wake a computer. They do not authorize a switch.
 - mDNS only broadcasts what host discovery needs, on the local network.
@@ -252,24 +253,24 @@ IP addresses, MAC addresses and the Agent port are picked up and stored while se
 
 ## Installation and Updates
 
-Download the Windows installer or the macOS Universal DMG from a trusted DisplayMuxAuto GitHub Release.
+Download the Windows installer or the macOS Universal DMG from a trusted MuxSU GitHub Release.
 
-DisplayMuxAuto can check GitHub Releases for a newer version, but never downloads or installs one without confirmation. Once you choose to install, the update package's signature is verified first.
+MuxSU can check GitHub Releases for a newer version, but never downloads or installs one without confirmation. Once you choose to install, the update package's signature is verified first.
 
 ### Upgrading from Before the Rename
 
-The app was renamed from DisplayMux to DisplayMuxAuto in v0.1.11. Your settings survive — the identifier they are stored under is unchanged — but the installation itself differs by platform:
+The app was renamed from DisplayMux to DisplayMuxAuto in v0.1.11 and has now been fully renamed to **MuxSU**. MuxSU uses a new app identifier, so it does not read settings, pairings, language, or theme preferences from older versions. Configure them again after upgrading.
 
-- **Windows**: the installer removes the old DisplayMux install and its autostart entry before installing.
-- **macOS**: the updater replaces the app in place, so there is no second copy, but the file is still named `DisplayMux.app`. Rename it in Applications if you would like.
+- **Windows**: the installer removes an old DisplayMux or DisplayMuxAuto install and its autostart entry before installing MuxSU.
+- **macOS**: remove the old app and install `MuxSU.app` again so that its filename and new app identity agree.
 
 ### macOS Gatekeeper
 
 The macOS DMG is currently ad-hoc signed, not signed and notarized with an Apple Developer ID. On first launch, Gatekeeper may ask for manual approval:
 
-1. Drag `DisplayMuxAuto.app` to `/Applications` and try opening it once.
+1. Drag `MuxSU.app` to `/Applications` and try opening it once.
 2. Open System Settings → Privacy & Security.
-3. Find DisplayMuxAuto under Security and press "Open Anyway".
+3. Find MuxSU under Security and press "Open Anyway".
 4. Authenticate and confirm.
 
 Only allow it when you are sure the app came from this project's trusted release. See Apple's [Open apps safely on your Mac](https://support.apple.com/102445) for details.
@@ -311,12 +312,12 @@ Artifacts land in `target/release/bundle/`. Windows produces an NSIS installer b
 The CLI is Windows-only and is meant for developers diagnosing monitor identification and switching. It is not part of normal use:
 
 ```powershell
-cargo run -p displaymux-cli -- list
-cargo run -p displaymux-cli -- switch <manufacturer> <product> <serial|-> <input> --dry-run
+cargo run -p muxsu-cli -- list
+cargo run -p muxsu-cli -- switch <manufacturer> <product> <serial|-> <input> --dry-run
 ```
 
 Only drop `--dry-run` once you have confirmed the target is correct.
 
 ## License
 
-DisplayMuxAuto is released under the [MIT License](LICENSE), keeping the original DisplayMux copyright notice.
+MuxSU is released under the [MIT License](LICENSE), keeping the original DisplayMux copyright notice.

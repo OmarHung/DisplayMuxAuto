@@ -81,13 +81,13 @@ jobs:
           APPLE_SIGNING_IDENTITY: "-"
         with:
           tagName: v__VERSION__
-          releaseName: DisplayMuxAuto v__VERSION__
+          releaseName: MuxSU v__VERSION__
           releaseDraft: true
           prerelease: ${{ steps.channel.outputs.prerelease }}
           generateReleaseNotes: true
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
-          releaseAssetNamePattern: "DisplayMuxAuto-[version]-[platform]-[arch][setup][ext]"
+          releaseAssetNamePattern: "MuxSU-[version]-[platform]-[arch][setup][ext]"
           args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json
 
   publish-release:

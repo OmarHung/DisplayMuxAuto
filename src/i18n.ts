@@ -6,7 +6,7 @@ export type LocalePreference = "system" | AppLocale;
 export type MessageKey = keyof typeof en;
 type Parameters = Record<string, string | number>;
 
-const localeStorageKey = "displaymux.locale";
+const localeStorageKey = "muxsu.locale";
 
 function detectLocale(languageTags: readonly string[]): AppLocale {
   for (const tag of languageTags) {

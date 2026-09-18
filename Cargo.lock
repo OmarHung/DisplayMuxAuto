@@ -888,58 +888,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "displaymux-app"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "displaymux-core",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "displaymux-cli"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "displaymux-core",
-]
-
-[[package]]
-name = "displaymux-core"
-version = "0.3.0"
-dependencies = [
- "core-foundation 0.10.1",
- "ddc",
- "ddc-macos",
- "hex",
- "hmac",
- "hostname",
- "io-kit-sys",
- "mac_address",
- "mdns-sd",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "windows-sys 0.61.2",
- "wmi",
-]
-
-[[package]]
 name = "dlopen2"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2471,6 +2419,59 @@ dependencies = [
  "serde",
  "thiserror 2.0.20",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "muxsu-app"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "muxsu-core",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "muxsu-cli"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "muxsu-core",
+]
+
+[[package]]
+name = "muxsu-core"
+version = "0.3.0"
+dependencies = [
+ "core-foundation 0.10.1",
+ "ddc",
+ "ddc-macos",
+ "hex",
+ "hmac",
+ "hostname",
+ "io-kit-sys",
+ "mac_address",
+ "mdns-sd",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "windows-sys 0.61.2",
+ "wmi",
 ]
 
 [[package]]

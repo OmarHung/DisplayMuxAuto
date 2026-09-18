@@ -5,7 +5,7 @@
 //! so a note set on one computer shows up on every paired computer. Each entry
 //! carries its own timestamp, like `host_alias`.
 
-use displaymux_core::{DisplayInput, InputLabel, MonitorFingerprint};
+use muxsu_core::{DisplayInput, InputLabel, MonitorFingerprint};
 
 /// Longest note accepted, in characters.
 pub const MAX_LABEL_CHARS: usize = 24;

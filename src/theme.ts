@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 export type ThemePreference = "system" | "light" | "dark";
 type ResolvedTheme = Exclude<ThemePreference, "system">;
 
-const themeStorageKey = "displaymux.theme";
+const themeStorageKey = "muxsu.theme";
 const darkSchemeQuery = "(prefers-color-scheme: dark)";
 
 function isThemePreference(value: string | null): value is ThemePreference {

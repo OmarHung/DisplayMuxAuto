@@ -11,17 +11,17 @@ use std::{
     str::FromStr,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, RwLock,
+        Arc, Mutex as StdMutex, OnceLock, RwLock,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use displaymux_core::{
-    AgentAction, AgentClient, AgentDisplayRoute, AgentResponse, AgentServer, DestinationHost,
-    DiscoveredPeer, DisplayInput, DisplayMuxError, DisplayMuxProfile, DisplayMuxService, HostAlias,
-    InputLabel, LocalHostIdentity, MacAddress, MdnsPeerDiscovery, MonitorControl,
-    MonitorDescriptor, MonitorFingerprint, MonitorIdentityLink, PeerDiscovery, PeerEndpoint,
-    ResolutionSource, SwitchMode, SwitchOutcome, WakeTarget, AGENT_PROTOCOL_VERSION,
+use muxsu_core::{
+    derive_pairing_key, AgentAction, AgentClient, AgentDisplayRoute, AgentResponse, AgentServer,
+    DestinationHost, DiscoveredPeer, DisplayInput, DisplayMuxError, DisplayMuxProfile,
+    DisplayMuxService, HostAlias, InputLabel, LocalHostIdentity, MacAddress, MdnsPeerDiscovery,
+    MonitorControl, MonitorDescriptor, MonitorFingerprint, MonitorIdentityLink, PeerDiscovery,
+    PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome, WakeTarget, AGENT_PROTOCOL_VERSION,
     DEFAULT_AGENT_PORT,
 };
 use serde::{Deserialize, Serialize};
@@ -33,7 +33,8 @@ use tokio::{sync::Mutex, time::sleep};
 
 static NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 static UI_LOCALE: AtomicU64 = AtomicU64::new(0);
-const MIN_SHARED_KEY_LENGTH: usize = 8;
+static PAIRING_KEY_CACHE: OnceLock<StdMutex<Option<(String, Arc<[u8]>)>>> = OnceLock::new();
+const MIN_SHARED_KEY_LENGTH: usize = 15;
 const DEFAULT_HOST_SWITCHER_SHORTCUT: &str = "CommandOrControl+Shift+Space";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,18 +133,12 @@ fn set_locale(locale: String, app: AppHandle) -> Result<(), String> {
         Ordering::Relaxed,
     );
     #[cfg(target_os = "windows")]
-    if let Some(tray) = app.tray_by_id("displaymux") {
+    if let Some(tray) = app.tray_by_id("muxsu") {
         use tauri::menu::MenuBuilder;
         let menu = MenuBuilder::new(&app)
-            .text(
-                "tray-open",
-                ui_text("開啟 DisplayMuxAuto", "Open DisplayMuxAuto"),
-            )
+            .text("tray-open", ui_text("開啟 MuxSU", "Open MuxSU"))
             .separator()
-            .text(
-                "tray-quit",
-                ui_text("結束 DisplayMuxAuto", "Quit DisplayMuxAuto"),
-            )
+            .text("tray-quit", ui_text("結束 MuxSU", "Quit MuxSU"))
             .build()
             .map_err(user_error)?;
         tray.set_menu(Some(menu)).map_err(user_error)?;
@@ -159,7 +154,7 @@ struct SelectedMonitor {
     name: String,
     fingerprint: MonitorFingerprint,
     #[serde(default)]
-    max_resolution: Option<displaymux_core::MonitorResolution>,
+    max_resolution: Option<muxsu_core::MonitorResolution>,
     #[serde(default)]
     resolution_source: Option<ResolutionSource>,
     // Formerly top-level fields on `AppSettings`; each selected monitor now
@@ -315,7 +310,7 @@ impl Default for AppSettings {
 
 /// A stable, opaque, frontend-facing id for a monitor identity. Not
 /// persisted — recomputed from the fingerprint on every call. Kept local to
-/// this crate because `MonitorFingerprint::stable_key()` in `displaymux-core`
+/// this crate because `MonitorFingerprint::stable_key()` in `muxsu-core`
 /// is `pub(crate)` there and not visible here.
 fn monitor_key(fingerprint: &MonitorFingerprint) -> String {
     format!(
@@ -430,7 +425,7 @@ struct SharedMonitorStatus {
     ddc_available: bool,
     display_state: SharedDisplayState,
     status_text: String,
-    connection: Option<displaymux_core::MonitorConnection>,
+    connection: Option<muxsu_core::MonitorConnection>,
     connection_input_conflict: bool,
 }
 
@@ -498,7 +493,7 @@ fn reading_is_this_host_port(monitor: &MonitorDescriptor, input: DisplayInput) -
         .connection
         .as_ref()
         .and_then(|connection| connection.sink_interface)
-        .and_then(|sink| displaymux_core::input_matches_sink(sink, input))
+        .and_then(|sink| muxsu_core::input_matches_sink(sink, input))
         == Some(false);
     if contradicts {
         tracing::info!(
@@ -543,6 +538,11 @@ struct DashboardState {
     shared: Vec<SharedMonitorStatus>,
     selection_notices: Vec<String>,
     monitor_identity_claims: Vec<MonitorIdentityClaim>,
+    /// Maps the JSON representation of every fingerprint sent to the webview
+    /// to the backend-resolved physical-display identity. The frontend only
+    /// compares these opaque results; the serial-number and merge rules live
+    /// exclusively in `monitor_identity`.
+    resolved_monitor_identities: HashMap<String, String>,
     /// The name paired hosts discover this computer by, so its own card can
     /// default to it rather than to a generic "this Mac".
     local_host_name: String,
@@ -585,6 +585,48 @@ fn monitor_identity_claims(settings: &AppSettings) -> Vec<MonitorIdentityClaim> 
         .collect()
 }
 
+fn resolved_monitor_identities(
+    settings: &AppSettings,
+    monitors: &[MonitorDescriptor],
+    uncontrollable_monitors: &[MonitorDescriptor],
+) -> HashMap<String, String> {
+    let mut fingerprints = Vec::<&MonitorFingerprint>::new();
+    fingerprints.extend(
+        settings
+            .shared_monitors
+            .iter()
+            .map(|selected| &selected.fingerprint),
+    );
+    fingerprints.extend(
+        settings
+            .peers
+            .iter()
+            .flat_map(|peer| peer.inputs.iter().map(|assignment| &assignment.monitor)),
+    );
+    fingerprints.extend(monitors.iter().map(|monitor| &monitor.fingerprint));
+    fingerprints.extend(
+        uncontrollable_monitors
+            .iter()
+            .map(|monitor| &monitor.fingerprint),
+    );
+    for link in &settings.monitor_identity_links {
+        fingerprints.push(&link.alias);
+        if let Some(primary) = &link.primary {
+            fingerprints.push(primary);
+        }
+    }
+
+    fingerprints
+        .into_iter()
+        .filter_map(|fingerprint| {
+            let serialized = serde_json::to_string(fingerprint).ok()?;
+            let resolved =
+                monitor_identity::primary_for(&settings.monitor_identity_links, fingerprint);
+            Some((serialized, monitor_key(resolved)))
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum MonitorSelectionChange {
     SelectedOnlyMonitor { name: String },
@@ -595,7 +637,7 @@ struct MonitorInventory {
     detected: Vec<MonitorDescriptor>,
     controllable: Vec<MonitorDescriptor>,
     /// The input each controllable display reported while it was probed.
-    current_inputs: HashMap<displaymux_core::MonitorId, DisplayInput>,
+    current_inputs: HashMap<muxsu_core::MonitorId, DisplayInput>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -688,8 +730,8 @@ async fn discover_peers(state: State<'_, AppRuntime>) -> Result<Vec<DiscoveredPe
     sleep(Duration::from_millis(700)).await;
     let discovery = state.discovery.as_ref().ok_or_else(|| {
         ui_text(
-            "無法啟動區域網路搜尋；請確認防火牆允許 DisplayMuxAuto 使用私人網路",
-            "Unable to start local network discovery. Allow DisplayMuxAuto through the firewall on private networks.",
+            "無法啟動區域網路搜尋；請確認防火牆允許 MuxSU 使用私人網路",
+            "Unable to start local network discovery. Allow MuxSU through the firewall on private networks.",
         )
         .to_owned()
     })?;
@@ -965,8 +1007,8 @@ fn check_host_switcher_shortcut(
         return Ok(ShortcutCheckResult {
             available: false,
             message: ui_text(
-                "此快捷鍵已由 DisplayMuxAuto 的其他功能使用",
-                "This shortcut is already used by another DisplayMuxAuto feature.",
+                "此快捷鍵已由 MuxSU 的其他功能使用",
+                "This shortcut is already used by another MuxSU feature.",
             )
             .to_owned(),
         });
@@ -1399,6 +1441,8 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
                 (Vec::new(), Vec::new(), shared, Vec::new())
             }
         };
+    let resolved_monitor_identities =
+        resolved_monitor_identities(&settings, &monitors, &uncontrollable_monitors);
     Ok(DashboardState {
         platform: std::env::consts::OS,
         local_host: settings.local_host,
@@ -1408,6 +1452,7 @@ fn build_dashboard_state(state: &AppRuntime) -> Result<DashboardState, String> {
         shared,
         selection_notices,
         monitor_identity_claims: monitor_identity_claims(&settings),
+        resolved_monitor_identities,
         local_host_name: state.local_host_name.clone(),
     })
 }
@@ -1716,40 +1761,15 @@ async fn switch_host(
     }
 }
 
-/// Decides whether an outbound `AgentAction::SwitchInput` may name a target
-/// monitor, based on the receiving peer's advertised protocol version. Never
-/// guesses: a pre-v2 peer is only used when there is exactly one shared
-/// monitor selected locally (unambiguous under the old, monitor-less wire
-/// shape); otherwise the peer must be updated first.
+/// Confirms the peer speaks the current authenticated protocol before sending
+/// a monitor-specific switch. `request_peer` rejects every other version.
 async fn resolve_switch_monitor_field(
     settings: &AppSettings,
     peer: &HostRoute,
     target_fingerprint: &MonitorFingerprint,
 ) -> Result<Option<MonitorFingerprint>, String> {
-    let ping = request_peer(settings, peer, AgentAction::Ping).await?;
-    plan_switch_input(
-        ping.protocol_version,
-        settings.shared_monitors.len(),
-        target_fingerprint,
-    )
-}
-
-fn plan_switch_input(
-    protocol_version: u32,
-    shared_monitor_count: usize,
-    target: &MonitorFingerprint,
-) -> Result<Option<MonitorFingerprint>, String> {
-    if protocol_version >= AGENT_PROTOCOL_VERSION {
-        return Ok(Some(target.clone()));
-    }
-    if shared_monitor_count <= 1 {
-        return Ok(None);
-    }
-    Err(ui_text(
-        "此配對主機使用舊版 DisplayMuxAuto，僅支援單一共用螢幕；請將該主機更新到最新版本以切換多台螢幕",
-        "This paired host is running an older DisplayMuxAuto version that only supports a single shared display; update it to switch multiple displays.",
-    )
-    .to_owned())
+    request_peer(settings, peer, AgentAction::Ping).await?;
+    Ok(Some(target_fingerprint.clone()))
 }
 
 fn outcome_result(
@@ -1912,7 +1932,7 @@ async fn request_peer(
             ),
         });
     }
-    let response = AgentClient::new(endpoint, Arc::<[u8]>::from(settings.shared_key.as_bytes()))
+    let response = AgentClient::new(endpoint, stretched_pairing_key(&settings.shared_key))
         .request(action, next_nonce())
         .await
         .map_err(core_user_error)?;
@@ -2441,9 +2461,8 @@ fn moved_peer_endpoint(peer: &HostRoute, discovered: &[DiscoveredPeer]) -> Optio
 /// answering.
 ///
 /// Discovery is unauthenticated and a host id is public, so an address learned
-/// there is only a claim. A reply on its own is no better a claim: nothing in
-/// it was signed until now, so anything that accepted the connection could
-/// have sent it.
+/// there is only a claim. The current client accepts the reply only after its
+/// full payload, nonce and exact protocol version pass authentication.
 async fn peer_proves_pairing(settings: &AppSettings, peer: &HostRoute) -> bool {
     let Ok(endpoint) = route_endpoint(peer) else {
         return false;
@@ -2452,7 +2471,7 @@ async fn peer_proves_pairing(settings: &AppSettings, peer: &HostRoute) -> bool {
         return false;
     }
     let nonce = next_nonce();
-    let key = Arc::<[u8]>::from(settings.shared_key.as_bytes());
+    let key = stretched_pairing_key(&settings.shared_key);
     match AgentClient::new(endpoint, Arc::clone(&key))
         .request(AgentAction::Ping, nonce.clone())
         .await
@@ -2467,9 +2486,8 @@ async fn peer_proves_pairing(settings: &AppSettings, peer: &HostRoute) -> bool {
 ///
 /// Following an address on discovery alone hands the pairing to whoever
 /// advertises the right id, which anyone on the network can read off the air
-/// and repeat. An older agent does not sign its reply and so cannot prove
-/// anything; its address stays where the user put it, which is where it was
-/// before any of this followed a move at all.
+/// and repeat. A response without the current full-payload signature and exact
+/// protocol version proves nothing, so the saved address remains unchanged.
 async fn confirmed_move(
     settings: &AppSettings,
     peer: &HostRoute,
@@ -2539,7 +2557,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
     }
     let server = AgentServer::new(
         SocketAddr::from(([0, 0, 0, 0], DEFAULT_AGENT_PORT)),
-        Arc::<[u8]>::from(settings.shared_key.as_bytes()),
+        stretched_pairing_key(&settings.shared_key),
     );
     let live_settings = Arc::clone(&state.settings);
     let app = app.clone();
@@ -2614,8 +2632,8 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                             AgentResponse {
                                 ready: true,
                                 message: ui_text(
-                                    "DisplayMuxAuto Agent 已就緒",
-                                    "DisplayMuxAuto Agent is ready",
+                                    "MuxSU Agent 已就緒",
+                                    "MuxSU Agent is ready",
                                 )
                                 .to_owned(),
                                 display_route: display_routes.first().cloned(),
@@ -2753,7 +2771,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
             })
             .await;
         if let Err(error) = result {
-            tracing::error!(error = %error, "DisplayMuxAuto agent stopped");
+            tracing::error!(error = %error, "MuxSU agent stopped");
         }
     }));
     Ok(())
@@ -3878,8 +3896,8 @@ fn store_settings(state: &AppRuntime, settings: AppSettings) -> Result<AppSettin
     persist_settings(&state.settings_path, &settings).map_err(core_user_error)?;
     let mut current = state.settings.write().map_err(|_| {
         ui_text(
-            "無法更新設定，請重新啟動 DisplayMuxAuto",
-            "Unable to update settings. Restart DisplayMuxAuto.",
+            "無法更新設定，請重新啟動 MuxSU",
+            "Unable to update settings. Restart MuxSU.",
         )
         .to_owned()
     })?;
@@ -3898,8 +3916,8 @@ fn read_settings_inner(state: &AppRuntime) -> Result<AppSettings, String> {
         .map(|settings| settings.clone())
         .map_err(|_| {
             ui_text(
-                "無法讀取設定，請重新啟動 DisplayMuxAuto",
-                "Unable to read settings. Restart DisplayMuxAuto.",
+                "無法讀取設定，請重新啟動 MuxSU",
+                "Unable to read settings. Restart MuxSU.",
             )
             .to_owned()
         })
@@ -4345,7 +4363,7 @@ fn uncontrollable_monitors(inventory: &MonitorInventory) -> Vec<MonitorDescripto
 /// means the monitor was showing another host when the input was read.
 fn connection_input_conflict(
     selected: &SelectedMonitor,
-    connection: Option<&displaymux_core::MonitorConnection>,
+    connection: Option<&muxsu_core::MonitorConnection>,
 ) -> bool {
     if selected.vendor_indexed_inputs {
         return false;
@@ -4356,7 +4374,7 @@ fn connection_input_conflict(
     ) else {
         return false;
     };
-    displaymux_core::input_matches_sink(sink, input) == Some(false)
+    muxsu_core::input_matches_sink(sink, input) == Some(false)
 }
 
 fn common_input_sources() -> Vec<DisplayInput> {
@@ -4519,12 +4537,12 @@ fn reconcile_monitor_selection(
 
 #[cfg(target_os = "windows")]
 fn platform_controller() -> Result<impl MonitorControl, DisplayMuxError> {
-    displaymux_core::windows::WindowsMonitorController::new()
+    muxsu_core::windows::WindowsMonitorController::new()
 }
 
 #[cfg(target_os = "macos")]
 fn platform_controller() -> Result<impl MonitorControl, DisplayMuxError> {
-    Ok(displaymux_core::macos::MacOsMonitorController::new())
+    Ok(muxsu_core::macos::MacOsMonitorController::new())
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -4542,19 +4560,19 @@ impl MonitorControl for UnsupportedController {
     }
     fn read_input(
         &self,
-        _monitor: &displaymux_core::MonitorId,
+        _monitor: &muxsu_core::MonitorId,
     ) -> Result<DisplayInput, DisplayMuxError> {
         Err(DisplayMuxError::UnsupportedPlatform)
     }
     fn supported_inputs(
         &self,
-        _monitor: &displaymux_core::MonitorId,
+        _monitor: &muxsu_core::MonitorId,
     ) -> Result<Vec<DisplayInput>, DisplayMuxError> {
         Err(DisplayMuxError::UnsupportedPlatform)
     }
     fn write_input(
         &self,
-        _monitor: &displaymux_core::MonitorId,
+        _monitor: &muxsu_core::MonitorId,
         _input: DisplayInput,
     ) -> Result<(), DisplayMuxError> {
         Err(DisplayMuxError::UnsupportedPlatform)
@@ -4601,6 +4619,27 @@ fn has_valid_shared_key(shared_key: &str) -> bool {
     shared_key.chars().count() >= MIN_SHARED_KEY_LENGTH
 }
 
+fn stretched_pairing_key(shared_key: &str) -> Arc<[u8]> {
+    let cache = PAIRING_KEY_CACHE.get_or_init(|| StdMutex::new(None));
+    if let Some((_, key)) = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|(password, _)| password == shared_key)
+    {
+        return Arc::clone(key);
+    }
+
+    // Derive outside the lock. A second first caller may do the same work,
+    // but no request is blocked behind an expensive password operation.
+    let key = Arc::<[u8]>::from(derive_pairing_key(shared_key).to_vec());
+    *cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some((shared_key.to_owned(), Arc::clone(&key)));
+    key
+}
+
 fn settings_for_current_build(settings: AppSettings) -> AppSettings {
     // A development executable may point at a dev server and, on Windows, may
     // be a console process. Never persist it as a login item.
@@ -4630,40 +4669,40 @@ fn launched_from_autostart(args: impl IntoIterator<Item = String>) -> bool {
 fn hide_main_window(window: &tauri::Window) {
     #[cfg(target_os = "windows")]
     if let Err(error) = window.set_skip_taskbar(true) {
-        tracing::warn!(error = %error, "unable to remove DisplayMuxAuto from the taskbar");
+        tracing::warn!(error = %error, "unable to remove MuxSU from the taskbar");
     }
     if let Err(error) = window.hide() {
-        tracing::warn!(error = %error, "unable to hide DisplayMuxAuto in the system tray");
+        tracing::warn!(error = %error, "unable to hide MuxSU in the system tray");
     }
 }
 
 #[cfg(target_os = "windows")]
 fn hide_windows_main_webview(window: &tauri::WebviewWindow) {
     if let Err(error) = window.set_skip_taskbar(true) {
-        tracing::warn!(error = %error, "unable to remove DisplayMuxAuto from the taskbar");
+        tracing::warn!(error = %error, "unable to remove MuxSU from the taskbar");
     }
     if let Err(error) = window.hide() {
-        tracing::warn!(error = %error, "unable to hide DisplayMuxAuto in the system tray");
+        tracing::warn!(error = %error, "unable to hide MuxSU in the system tray");
     }
 }
 
 fn show_main_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
-        tracing::warn!("unable to find the DisplayMuxAuto main window");
+        tracing::warn!("unable to find the MuxSU main window");
         return;
     };
     #[cfg(target_os = "windows")]
     if let Err(error) = window.set_skip_taskbar(false) {
-        tracing::warn!(error = %error, "unable to restore DisplayMuxAuto to the taskbar");
+        tracing::warn!(error = %error, "unable to restore MuxSU to the taskbar");
     }
     if let Err(error) = window.show() {
-        tracing::warn!(error = %error, "unable to show DisplayMuxAuto from the system tray");
+        tracing::warn!(error = %error, "unable to show MuxSU from the system tray");
     }
     if let Err(error) = window.unminimize() {
-        tracing::warn!(error = %error, "unable to unminimize DisplayMuxAuto");
+        tracing::warn!(error = %error, "unable to unminimize MuxSU");
     }
     if let Err(error) = window.set_focus() {
-        tracing::warn!(error = %error, "unable to focus DisplayMuxAuto");
+        tracing::warn!(error = %error, "unable to focus MuxSU");
     }
 }
 
@@ -4678,15 +4717,9 @@ fn setup_macos_status_item(app: &tauri::App) -> tauri::Result<()> {
     use tauri::{image::Image, menu::MenuBuilder, tray::TrayIconBuilder};
 
     let menu = MenuBuilder::new(app)
-        .text(
-            "tray-open",
-            ui_text("開啟 DisplayMuxAuto", "Open DisplayMuxAuto"),
-        )
+        .text("tray-open", ui_text("開啟 MuxSU", "Open MuxSU"))
         .separator()
-        .text(
-            "tray-quit",
-            ui_text("結束 DisplayMuxAuto", "Quit DisplayMuxAuto"),
-        )
+        .text("tray-quit", ui_text("結束 MuxSU", "Quit MuxSU"))
         .build()?;
     // The menu bar draws a template image in whatever colour it is using, so
     // the icon carries a shape in its alpha channel and no colour of its own.
@@ -4701,7 +4734,7 @@ fn setup_macos_status_item(app: &tauri::App) -> tauri::Result<()> {
         MENU_BAR_ICON_SIDE,
         MENU_BAR_ICON_SIDE,
     );
-    TrayIconBuilder::with_id("displaymux")
+    TrayIconBuilder::with_id("muxsu")
         .menu(&menu)
         .icon(icon)
         .icon_as_template(true)
@@ -4725,19 +4758,13 @@ fn setup_windows_tray(app: &tauri::App) -> tauri::Result<()> {
     };
 
     let menu = MenuBuilder::new(app)
-        .text(
-            "tray-open",
-            ui_text("開啟 DisplayMuxAuto", "Open DisplayMuxAuto"),
-        )
+        .text("tray-open", ui_text("開啟 MuxSU", "Open MuxSU"))
         .separator()
-        .text(
-            "tray-quit",
-            ui_text("結束 DisplayMuxAuto", "Quit DisplayMuxAuto"),
-        )
+        .text("tray-quit", ui_text("結束 MuxSU", "Quit MuxSU"))
         .build()?;
-    let mut tray = TrayIconBuilder::with_id("displaymux")
+    let mut tray = TrayIconBuilder::with_id("muxsu")
         .menu(&menu)
-        .tooltip("DisplayMuxAuto")
+        .tooltip("MuxSU")
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "tray-open" => show_main_window(app),
@@ -4776,7 +4803,7 @@ pub fn run() -> anyhow::Result<()> {
         // This must remain the first plugin so a second launch exits before any
         // other plugin or application setup can create duplicate resources.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            tracing::info!("second DisplayMuxAuto launch redirected to the existing instance");
+            tracing::info!("second MuxSU launch redirected to the existing instance");
             show_main_window(app);
         }))
         .plugin(tauri_plugin_autostart::init(
@@ -4831,7 +4858,7 @@ pub fn run() -> anyhow::Result<()> {
             }
             let detected = LocalHostIdentity::detect(local_host()).unwrap_or_else(|error| {
                 tracing::warn!(error = %error, "unable to read this computer's host name");
-                LocalHostIdentity::from_parts("DisplayMuxAuto".to_owned(), local_host(), None)
+                LocalHostIdentity::from_parts("MuxSU".to_owned(), local_host(), None)
             });
             // Fixed once and then kept: every paired host stores this id, so
             // re-deriving it would silently strand this computer's pairings,
@@ -4854,7 +4881,7 @@ pub fn run() -> anyhow::Result<()> {
             let discovery = MdnsPeerDiscovery::start(&identity, DEFAULT_AGENT_PORT)
                 .map(Some)
                 .unwrap_or_else(|error| {
-                    tracing::warn!(error = %error, "unable to start DisplayMuxAuto mDNS discovery");
+                    tracing::warn!(error = %error, "unable to start MuxSU mDNS discovery");
                     None
                 });
             app.manage(AppRuntime {
@@ -4928,7 +4955,7 @@ pub fn run() -> anyhow::Result<()> {
                     .handle()
                     .set_activation_policy(tauri::ActivationPolicy::Accessory)
                 {
-                    tracing::warn!(error = %error, "unable to keep DisplayMuxAuto out of the Dock");
+                    tracing::warn!(error = %error, "unable to keep MuxSU out of the Dock");
                 }
             }
             #[cfg(target_os = "windows")]
@@ -4944,7 +4971,7 @@ pub fn run() -> anyhow::Result<()> {
             tauri::async_runtime::spawn(async move {
                 if let Some(runtime) = handle.try_state::<AppRuntime>() {
                     if let Err(error) = restart_agent(&runtime, &handle).await {
-                        tracing::warn!(error = %error, "unable to start DisplayMuxAuto agent");
+                        tracing::warn!(error = %error, "unable to start MuxSU agent");
                     }
                     exchange_host_layout_with_peers(&runtime, &handle);
                     adopt_peer_routes_at_startup(&handle);
@@ -5005,7 +5032,7 @@ mod tests {
 
         fn read_input(
             &self,
-            monitor: &displaymux_core::MonitorId,
+            monitor: &muxsu_core::MonitorId,
         ) -> Result<DisplayInput, DisplayMuxError> {
             if self.controllable.contains(monitor.as_str()) {
                 DisplayInput::new(0x0f)
@@ -5016,7 +5043,7 @@ mod tests {
 
         fn supported_inputs(
             &self,
-            monitor: &displaymux_core::MonitorId,
+            monitor: &muxsu_core::MonitorId,
         ) -> Result<Vec<DisplayInput>, DisplayMuxError> {
             if self.controllable.contains(monitor.as_str()) {
                 Ok(vec![
@@ -5033,7 +5060,7 @@ mod tests {
 
         fn write_input(
             &self,
-            _monitor: &displaymux_core::MonitorId,
+            _monitor: &muxsu_core::MonitorId,
             _input: DisplayInput,
         ) -> Result<(), DisplayMuxError> {
             unreachable!("selection tests never write an input")
@@ -5042,12 +5069,12 @@ mod tests {
 
     fn monitor(id: &str) -> MonitorDescriptor {
         MonitorDescriptor {
-            id: displaymux_core::MonitorId::new(id),
+            id: muxsu_core::MonitorId::new(id),
             name: id.to_owned(),
             fingerprint: MonitorFingerprint::new("ACM", id, Some(format!("serial-{id}"))),
             active: true,
             built_in: false,
-            max_resolution: Some(displaymux_core::MonitorResolution::new(2560, 1440)),
+            max_resolution: Some(muxsu_core::MonitorResolution::new(2560, 1440)),
             resolution_source: Some(ResolutionSource::WindowsDisplayMode),
             connection: None,
         }
@@ -5068,11 +5095,11 @@ mod tests {
         assert_eq!(uncontrollable_monitors(&inventory), vec![unreachable]);
     }
 
-    fn hdmi_connection() -> displaymux_core::MonitorConnection {
-        displaymux_core::MonitorConnection::classify(
-            Some(displaymux_core::HostOutput::UsbC),
+    fn hdmi_connection() -> muxsu_core::MonitorConnection {
+        muxsu_core::MonitorConnection::classify(
+            Some(muxsu_core::HostOutput::UsbC),
             None,
-            Some(displaymux_core::SinkInterface::Hdmi),
+            Some(muxsu_core::SinkInterface::Hdmi),
             false,
         )
     }
@@ -5114,10 +5141,36 @@ mod tests {
     }
 
     #[test]
-    fn shared_key_requires_at_least_eight_characters() {
-        assert!(!has_valid_shared_key("1234567"));
-        assert!(has_valid_shared_key("12345678"));
-        assert!(has_valid_shared_key("配對密碼八個字元"));
+    fn shared_key_requires_at_least_fifteen_characters() {
+        assert!(!has_valid_shared_key("12345678901234"));
+        assert!(has_valid_shared_key("123456789012345"));
+        assert!(has_valid_shared_key("這是一組至少十五字元的配對密碼"));
+    }
+
+    #[test]
+    fn frontend_receives_backend_resolved_monitor_identities() {
+        let primary = monitor("primary");
+        let alias = monitor("alias");
+        let settings = AppSettings {
+            shared_monitors: vec![SelectedMonitor::from(&primary)],
+            monitor_identity_links: monitor_identity::with_link(
+                &[],
+                &alias.fingerprint,
+                Some(&primary.fingerprint),
+                1,
+            ),
+            ..AppSettings::default()
+        };
+
+        let resolved = resolved_monitor_identities(&settings, &[alias.clone()], &[]);
+        let primary_json = serde_json::to_string(&primary.fingerprint).unwrap();
+        let alias_json = serde_json::to_string(&alias.fingerprint).unwrap();
+
+        assert_eq!(resolved.get(&primary_json), resolved.get(&alias_json));
+        assert_eq!(
+            resolved.get(&alias_json),
+            Some(&monitor_key(&primary.fingerprint))
+        );
     }
 
     #[test]
@@ -5144,8 +5197,7 @@ mod tests {
     fn the_settings_file_is_not_left_readable_by_other_accounts() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory =
-            std::env::temp_dir().join(format!("displaymux-perms-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!("muxsu-perms-{}", std::process::id()));
         let path = directory.join("settings.json");
         persist_settings(&path, &AppSettings::default()).unwrap();
 
@@ -5221,10 +5273,10 @@ mod tests {
     #[test]
     fn only_the_explicit_login_argument_starts_windows_hidden() {
         assert!(launched_from_autostart([
-            "DisplayMuxAuto.exe".to_owned(),
+            "MuxSU.exe".to_owned(),
             "--autostart".to_owned(),
         ]));
-        assert!(!launched_from_autostart(["DisplayMuxAuto.exe".to_owned()]));
+        assert!(!launched_from_autostart(["MuxSU.exe".to_owned()]));
     }
 
     #[test]
@@ -5401,14 +5453,14 @@ mod tests {
 
         fn read_input(
             &self,
-            _monitor: &displaymux_core::MonitorId,
+            _monitor: &muxsu_core::MonitorId,
         ) -> Result<DisplayInput, DisplayMuxError> {
             DisplayInput::new(0x08)
         }
 
         fn supported_inputs(
             &self,
-            _monitor: &displaymux_core::MonitorId,
+            _monitor: &muxsu_core::MonitorId,
         ) -> Result<Vec<DisplayInput>, DisplayMuxError> {
             Ok(vec![
                 DisplayInput::new(0x0f).unwrap(),
@@ -5418,14 +5470,14 @@ mod tests {
 
         fn input_value_maximum(
             &self,
-            _monitor: &displaymux_core::MonitorId,
+            _monitor: &muxsu_core::MonitorId,
         ) -> Result<Option<u32>, DisplayMuxError> {
             Ok(self.maximum)
         }
 
         fn write_input(
             &self,
-            _monitor: &displaymux_core::MonitorId,
+            _monitor: &muxsu_core::MonitorId,
             _input: DisplayInput,
         ) -> Result<(), DisplayMuxError> {
             unreachable!("selection tests never write an input")
@@ -5444,28 +5496,28 @@ mod tests {
 
         fn read_input(
             &self,
-            _monitor: &displaymux_core::MonitorId,
+            _monitor: &muxsu_core::MonitorId,
         ) -> Result<DisplayInput, DisplayMuxError> {
             Err(DisplayMuxError::Backend("DDC/CI unavailable".to_owned()))
         }
 
         fn supported_inputs(
             &self,
-            _monitor: &displaymux_core::MonitorId,
+            _monitor: &muxsu_core::MonitorId,
         ) -> Result<Vec<DisplayInput>, DisplayMuxError> {
             Err(DisplayMuxError::Backend("DDC/CI unavailable".to_owned()))
         }
 
         fn input_value_maximum(
             &self,
-            _monitor: &displaymux_core::MonitorId,
+            _monitor: &muxsu_core::MonitorId,
         ) -> Result<Option<u32>, DisplayMuxError> {
             Err(DisplayMuxError::Backend("DDC/CI unavailable".to_owned()))
         }
 
         fn write_input(
             &self,
-            _monitor: &displaymux_core::MonitorId,
+            _monitor: &muxsu_core::MonitorId,
             _input: DisplayInput,
         ) -> Result<(), DisplayMuxError> {
             unreachable!("selection tests never write an input")
@@ -6155,7 +6207,7 @@ mod tests {
     fn peer_display_is_not_guessed_between_two_shared_displays_of_the_same_model() {
         let left = monitor("twin");
         let right = MonitorDescriptor {
-            id: displaymux_core::MonitorId::new("twin-right"),
+            id: muxsu_core::MonitorId::new("twin-right"),
             fingerprint: MonitorFingerprint {
                 serial_number: Some("serial-twin-right".to_owned()),
                 ..left.fingerprint.clone()
@@ -6521,10 +6573,10 @@ mod tests {
         // added while it was showing another host stayed blank no matter how
         // often the user refreshed after switching it here.
         let mut display = monitor("shared");
-        display.connection = Some(displaymux_core::MonitorConnection::classify(
-            Some(displaymux_core::HostOutput::DisplayPort),
+        display.connection = Some(muxsu_core::MonitorConnection::classify(
+            Some(muxsu_core::HostOutput::DisplayPort),
             None,
-            Some(displaymux_core::SinkInterface::DisplayPort),
+            Some(muxsu_core::SinkInterface::DisplayPort),
             false,
         ));
         let mut settings = AppSettings {
@@ -6548,10 +6600,10 @@ mod tests {
         // HDMI 1 cannot be this host's port on a DisplayPort link: the display
         // is showing somebody else, and storing it would aim a switch wrong.
         let mut display = monitor("shared");
-        display.connection = Some(displaymux_core::MonitorConnection::classify(
-            Some(displaymux_core::HostOutput::DisplayPort),
+        display.connection = Some(muxsu_core::MonitorConnection::classify(
+            Some(muxsu_core::HostOutput::DisplayPort),
             None,
-            Some(displaymux_core::SinkInterface::DisplayPort),
+            Some(muxsu_core::SinkInterface::DisplayPort),
             false,
         ));
         let mut settings = AppSettings {
@@ -7157,33 +7209,6 @@ mod tests {
             settings.shared_monitors[1],
             SelectedMonitor::from(&unaffected)
         );
-    }
-
-    #[test]
-    fn plan_switch_input_targets_v2_peers_by_fingerprint() {
-        let fingerprint = monitor("target").fingerprint;
-        assert_eq!(
-            plan_switch_input(AGENT_PROTOCOL_VERSION, 1, &fingerprint),
-            Ok(Some(fingerprint.clone()))
-        );
-        assert_eq!(
-            plan_switch_input(AGENT_PROTOCOL_VERSION, 3, &fingerprint),
-            Ok(Some(fingerprint))
-        );
-    }
-
-    #[test]
-    fn plan_switch_input_falls_back_to_legacy_shape_for_a_single_monitor() {
-        let fingerprint = monitor("target").fingerprint;
-        assert_eq!(plan_switch_input(0, 1, &fingerprint), Ok(None));
-        assert_eq!(plan_switch_input(0, 0, &fingerprint), Ok(None));
-    }
-
-    #[test]
-    fn plan_switch_input_refuses_to_guess_for_an_old_peer_with_multiple_monitors() {
-        let fingerprint = monitor("target").fingerprint;
-        assert!(plan_switch_input(0, 2, &fingerprint).is_err());
-        assert!(plan_switch_input(AGENT_PROTOCOL_VERSION - 1, 2, &fingerprint).is_err());
     }
 
     #[test]

@@ -2,6 +2,7 @@ import "@fontsource-variable/manrope";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { locale, t } from "./i18n";
+import { initializeTheme } from "./theme";
 import "./host-switcher.css";
 
 type Platform = "windows" | "mac";
@@ -41,7 +42,8 @@ interface OperationResult {
 type Row = { kind: "header"; monitorName: string } | { kind: "host"; monitorKey: string; host: HostOption };
 
 const root = document.querySelector<HTMLElement>("#host-switcher-app")!;
-if (!root) throw new Error("DisplayMuxAuto host switcher root was not found");
+if (!root) throw new Error("MuxSU host switcher root was not found");
+initializeTheme();
 
 let state: HostSwitcherState = { monitors: [] };
 let rows: Row[] = [];
@@ -94,7 +96,7 @@ function render(message?: { title: string; detail: string; error?: boolean }): v
     <main class="switcher-shell" aria-labelledby="switcher-title">
       <header class="switcher-header">
         <div>
-          <p class="eyebrow">DISPLAYMUXAUTO</p>
+          <p class="eyebrow">MUXSU</p>
           <h1 id="switcher-title">${t("switcher.title")}</h1>
           <p>${escapeHtml(headerLine)}</p>
         </div>
@@ -102,7 +104,7 @@ function render(message?: { title: string; detail: string; error?: boolean }): v
       <section class="host-list" role="listbox" aria-label="${t("switcher.hostListAria")}">
         ${rows.map((row, index) => row.kind === "header"
           ? `<div class="host-group-header">${escapeHtml(row.monitorName)}</div>`
-          : `<button type="button" class="host-option ${index === selectedIndex ? "is-selected" : ""}"
+          : `<button type="button" class="host-option ${index === selectedIndex ? "is-selected" : ""} ${row.host.isActive ? "is-active" : ""}"
             data-row-index="${index}" role="option" aria-selected="${index === selectedIndex}"
             ${isSelectableRow(row) && !switching ? "" : "disabled"}>
             <span class="platform-mark ${row.host.platform}">${row.host.platform === "mac" ? "M" : "W"}</span>

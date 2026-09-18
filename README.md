@@ -1,12 +1,12 @@
-# DisplayMuxAuto
+# MuxSU
 
 繁體中文 | [English](README.en.md)
 
-> DisplayMuxAuto 是 [DisplayMux](https://github.com/HenryHsu/DisplayMux)（作者 Henry Hsu，MIT 授權）的延伸開發版本。
+> MuxSU 是 [DisplayMux](https://github.com/HenryHsu/DisplayMux)（作者 Henry Hsu，MIT 授權）的延伸開發版本。
 > 原專案負責把一台共用螢幕在兩台電腦之間切換；本專案在其基礎上，讓兩台主機自動協調彼此的接口、螢幕身分與設定，
 > 減少手動輸入。v0.1.6 以前的版本紀錄指向原專案。
 
-DisplayMuxAuto 是一款適用於 Windows 10／11 與 macOS 12+ 的桌面工具，讓多台電腦共用同一台螢幕時，可以直接從電腦切換螢幕輸入，不必伸手操作螢幕按鍵。
+MuxSU 是一款適用於 Windows 10／11 與 macOS 12+ 的桌面工具，讓多台電腦共用同一台螢幕時，可以直接從電腦切換螢幕輸入，不必伸手操作螢幕按鍵。
 
 它只控制你選定的共用螢幕，不會改變作業系統的螢幕排列，也不會切換其他工作螢幕。
 
@@ -16,7 +16,7 @@ DisplayMuxAuto 是一款適用於 Windows 10／11 與 macOS 12+ 的桌面工具�
 - 一台或多台同時連接兩台電腦的共用螢幕
 - 其他不需要切換的專用螢幕（非必要）
 
-DisplayMuxAuto 只會切換你指定的共用螢幕。其他螢幕會保持原本的畫面與排列。
+MuxSU 只會切換你指定的共用螢幕。其他螢幕會保持原本的畫面與排列。
 共用螢幕可以選取多台；每台主機會為每一台共用螢幕分別保存自己使用的輸入 Port。
 
 ## 主要功能
@@ -57,19 +57,19 @@ DisplayMuxAuto 只會切換你指定的共用螢幕。其他螢幕會保持原�
 
 可以直接看到每台共用螢幕目前交給哪台電腦，以及各自使用的輸入。共用螢幕不只一台時，上方會出現把全部螢幕一次切換過去的按鈕。
 
-![DisplayMuxAuto 切換中心，兩台共用螢幕，一台顯示本機、一台顯示 Mac](assets/screenshots/switch-center.png)
+![MuxSU 切換中心，兩台共用螢幕，一台顯示本機、一台顯示 Mac](assets/screenshots/switch-center.png)
 
 ### 螢幕與主機設定（上半）
 
 選擇共用螢幕、這台電腦的名稱與各螢幕的輸入 Port，以及輸入備註。
 
-![DisplayMuxAuto 螢幕與主機設定上半部，兩台共用螢幕與各自的輸入 Port](assets/screenshots/monitor-and-host-settings.png)
+![MuxSU 螢幕與主機設定上半部，兩台共用螢幕與各自的輸入 Port](assets/screenshots/monitor-and-host-settings.png)
 
 ### 螢幕與主機設定（下半）
 
 已加入的主機與它們的輸入、配對密碼、全域快捷鍵，以及最下方的重置。
 
-![DisplayMuxAuto 螢幕與主機設定下半部，已加入主機、配對密碼、快捷鍵與重置](assets/screenshots/hosts-and-reset.png)
+![MuxSU 螢幕與主機設定下半部，已加入主機、配對密碼、快捷鍵與重置](assets/screenshots/hosts-and-reset.png)
 
 ## 使用前準備
 
@@ -77,9 +77,9 @@ DisplayMuxAuto 只會切換你指定的共用螢幕。其他螢幕會保持原�
 
 1. 共用螢幕支援 DDC/CI。
 2. 已在螢幕的 OSD 設定中開啟 DDC/CI。
-3. 每台要參與切換的電腦都已安裝並啟動 DisplayMuxAuto。
+3. 每台要參與切換的電腦都已安裝並啟動 MuxSU。
 4. 要互相配對的電腦位於同一個私人區域網路。
-5. 每台電腦都設定完全相同、至少 8 個字元的配對密碼。
+5. 每台電腦都設定完全相同、至少 15 個字元的配對密碼。
 
 螢幕能正常顯示畫面，不一定代表目前使用的線材、轉接器或 Dock 也有轉送 DDC/CI。若偵測不到螢幕，請先參考下方的[連接與相容性限制](#連接與相容性限制)。
 
@@ -89,15 +89,15 @@ DisplayMuxAuto 只會切換你指定的共用螢幕。其他螢幕會保持原�
 
 開啟「螢幕與主機」設定頁並重新整理螢幕清單：
 
-- 第一次設定時，若只有一台可控制的外接螢幕，DisplayMuxAuto 會自動選取。
+- 第一次設定時，若只有一台可控制的外接螢幕，MuxSU 會自動選取。
 - 其他情況請手動選擇；可以選取多台共用螢幕。
 - 你做過選擇之後（包含把螢幕移出共用、或執行重置）就不會再自動選取，移出的螢幕不會自己回來。
 
-DisplayMuxAuto 會使用螢幕的製造商、型號與序號鎖定目標，不會依照**主螢幕**或螢幕排列順序猜測。
+MuxSU 會使用螢幕的製造商、型號與序號鎖定目標，不會依照**主螢幕**或螢幕排列順序猜測。
 
 ### 2. 確認這台電腦的輸入 Port
 
-選擇螢幕後，DisplayMuxAuto 會立即讀取目前輸入，並自動保存這台電腦使用的 Port。
+選擇螢幕後，MuxSU 會立即讀取目前輸入，並自動保存這台電腦使用的 Port。
 
 自動偵測讀到的是螢幕正在顯示哪個輸入。如果這台電腦當下沒有顯示在那台螢幕上，就無從偵測；這時請直接從下拉選單選擇你實際接上的 Port。手動設定的值會和自動偵測的值一樣同步給其他主機。
 
@@ -105,7 +105,7 @@ DisplayMuxAuto 會使用螢幕的製造商、型號與序號鎖定目標，不�
 
 ### 3. 設定配對密碼
 
-在所有電腦輸入完全相同的配對密碼，至少 8 個字元。
+在所有電腦輸入完全相同的配對密碼，至少 15 個字元。
 
 這組密碼用來簽署並驗證區域網路內主機之間的要求，例如查詢狀態、請求對方代為切換螢幕，以及送出喚醒。密碼不相同的主機無法互相控制。
 
@@ -113,7 +113,7 @@ DisplayMuxAuto 會使用螢幕的製造商、型號與序號鎖定目標，不�
 
 在「加入同網路的其他主機」中找到另一台電腦，然後按下「加入」。
 
-如果對方已完成共用螢幕設定，DisplayMuxAuto 會在下列條件全部成立時自動填入它使用的 Port：
+如果對方已完成共用螢幕設定，MuxSU 會在下列條件全部成立時自動填入它使用的 Port：
 
 - 配對密碼驗證成功
 - 雙方選擇的螢幕識別資訊相符
@@ -122,7 +122,7 @@ DisplayMuxAuto 會使用螢幕的製造商、型號與序號鎖定目標，不�
 
 若無法安全確認，介面會保留手動選擇，不會猜測另一台電腦接在哪個 Port。
 
-跨主機同步（接口、輸入清單、主機名稱、輸入備註、身分合併）需要雙方都使用 v0.1.11 或更新版本。與舊版主機仍可切換，但這些資訊不會自動傳遞。
+兩台主機必須使用相同的 MuxSU Agent 協議版本；版本不同時，MuxSU 會在採用任何遠端資料或執行切換前拒絕連線。
 
 ### 5. 儲存並在其他電腦重複設定
 
@@ -142,22 +142,22 @@ DisplayMuxAuto 會使用螢幕的製造商、型號與序號鎖定目標，不�
 
 設定完成後，在「切換中心」選擇目標主機即可。共用螢幕有多台時，也可以用「全部螢幕」一次把它們切換到同一台主機。
 
-切換至遠端主機時，DisplayMuxAuto 會：
+切換至遠端主機時，MuxSU 會：
 
 1. 嘗試透過 Wake-on-LAN 喚醒目標主機。
-2. 確認目標主機的 DisplayMuxAuto Agent 是否就緒。
+2. 確認目標主機的 MuxSU Agent 是否就緒。
 3. 優先從目前這台電腦透過 DDC/CI 切換共用螢幕。
 4. 如果本機 DDC/CI 路徑失敗，再嘗試請已驗證的遠端主機代為切換。
 
-網路 Agent 暫時無法連線時，DisplayMuxAuto 仍會嘗試使用本機 DDC/CI。若目標電腦尚未輸出畫面，螢幕可能短暫顯示黑畫面。
+網路 Agent 暫時無法連線時，MuxSU 仍會嘗試使用本機 DDC/CI。若目標電腦尚未輸出畫面，螢幕可能短暫顯示黑畫面。
 
-Windows 版關閉或最小化視窗後會留在系統匣執行。只有從系統匣選擇「結束 DisplayMuxAuto」才會真正關閉程式。
+Windows 版關閉或最小化視窗後會留在系統匣執行。只有從系統匣選擇「結束 MuxSU」才會真正關閉程式。
 
 ### 全域主機切換器
 
 在設定頁開啟「全域主機切換器」後，可以用快捷鍵（預設 `Ctrl/Cmd + Alt + Space`）叫出一個小視窗，直接選擇要把共用螢幕交給哪一台主機，不必先回到主視窗。快捷鍵可以自行錄製，介面會先檢查是否與常用程式衝突。
 
-![DisplayMuxAuto 的主機切換器小視窗，列出這台電腦與已加入的 Mac](assets/screenshots/host-switcher.png)
+![MuxSU 的主機切換器小視窗，列出這台電腦與已加入的 Mac](assets/screenshots/host-switcher.png)
 
 ## 同一台螢幕的不同身分
 
@@ -167,7 +167,7 @@ Windows 版關閉或最小化視窗後會留在系統匣執行。只有從系統
 
 合併只影響「哪些身分算同一台螢幕」，不影響切換時的安全檢查：實際送出 DDC/CI 指令前，仍然只認完整相符的 EDID 識別資訊。
 
-![DisplayMuxAuto 的螢幕身分合併：一張已合併的卡片，以及一台待合併的身分](assets/screenshots/display-identity-merge.png)
+![MuxSU 的螢幕身分合併：一張已合併的卡片，以及一台待合併的身分](assets/screenshots/display-identity-merge.png)
 
 ## 重置
 
@@ -180,13 +180,13 @@ Windows 版關閉或最小化視窗後會留在系統匣執行。只有從系統
 
 ## 輸入 Port 清單
 
-DisplayMuxAuto 使用螢幕自行提供的輸入清單，並排除已經分配的 Port。
+MuxSU 使用螢幕自行提供的輸入清單，並排除已經分配的 Port。
 
 若螢幕、HUB、Dock 或轉接器無法提供清單，介面不會改用猜測的選項，而是顯示尚未讀取到這台螢幕的輸入，並保留目前的設定。原因是這類清單描述的是「一般螢幕」，套到特定螢幕上每一項都可能是錯的，而選錯 Port 會把畫面切到一個沒有訊號的輸入。
 
 如果有另一台已配對主機讀得到這台螢幕，它會把讀到的清單同步過來，欄位就會恢復可用。
 
-部分螢幕會使用廠商自訂的 Type-C 或其他輸入值。DisplayMuxAuto 會保留螢幕回報的原始值供內部切換，但無法確定名稱時只會顯示「其他輸入」，避免錯誤標示。你可以為這類輸入加上自己的備註。
+部分螢幕會使用廠商自訂的 Type-C 或其他輸入值。MuxSU 會保留螢幕回報的原始值供內部切換，但無法確定名稱時只會顯示「其他輸入」，避免錯誤標示。你可以為這類輸入加上自己的備註。
 
 更換螢幕、線材、Dock 或實際連接 Port 後，請重新選擇共用螢幕並檢查每台主機的設定。
 
@@ -198,9 +198,9 @@ DisplayMuxAuto 使用螢幕自行提供的輸入清單，並排除已經分配�
 2. 目前選擇的是外接共用螢幕，而不是筆電內建螢幕。
 3. 改用螢幕與電腦之間的直連線材測試。
 4. 暫時移除 KVM、轉接器或 Dock，確認問題是否位於中間設備。
-5. 重新整理 DisplayMuxAuto 的螢幕與主機清單。
+5. 重新整理 MuxSU 的螢幕與主機清單。
 6. 確認兩台電腦使用相同配對密碼，且系統時間正確。
-7. 確認防火牆允許私人網路上的 mDNS 與 DisplayMuxAuto Agent。
+7. 確認防火牆允許私人網路上的 mDNS 與 MuxSU Agent。
 
 若直連可以控制、經過 Dock 後只能顯示畫面，通常表示 Dock 或驅動程式沒有轉送 DDC/CI；重新配對無法補回不存在的硬體通道。
 
@@ -227,23 +227,24 @@ macOS 是否能使用 DDC/CI，取決於 Mac 型號、macOS 版本、連接埠�
 - Silicon Motion InstantView／SM76x／SM77x 裝置
 - 未完整轉送 DDC 的 HDMI 或 USB-C 轉接器
 
-DisplayLink 或 Dock 自己的軟體能調整亮度，不代表 DisplayMuxAuto 也能取得實體螢幕的控制通道。
+DisplayLink 或 Dock 自己的軟體能調整亮度，不代表 MuxSU 也能取得實體螢幕的控制通道。
 
 ## Wake-on-LAN 與網路
 
-- mDNS 使用 `5353/UDP` 搜尋同一區域網路內的 DisplayMuxAuto 主機。
-- DisplayMuxAuto Agent 預設使用 `47653/TCP`。
+- mDNS 使用 `5353/UDP` 搜尋同一區域網路內的 MuxSU 主機。
+- MuxSU Agent 預設使用 `47653/TCP`。
 - macOS 可開啟「Wake for network access」。
 - Windows 可在網卡與 BIOS／UEFI 中啟用 Wake-on-LAN。
-- 完整關機後能否喚醒取決於電腦硬體、韌體與作業系統設定，DisplayMuxAuto 無法保證。
+- 完整關機後能否喚醒取決於電腦硬體、韌體與作業系統設定，MuxSU 無法保證。
 
 IP、MAC 位址與 Agent Port 會在搜尋主機時自動取得並保存。DHCP 位址改變後，再次搜尋即可更新資料；已配對主機換位址時，要通過驗證的連線確認之後才會改用新位址。
 
 ## 安全與隱私
 
-- DisplayMuxAuto 只會控制完整螢幕識別資訊相符的唯一目標。
+- MuxSU 只會控制完整螢幕識別資訊相符的唯一目標。
 - 找不到目標、缺少必要識別資訊或同時出現多台相符螢幕時，操作會停止。
 - 已配對主機之間使用 HMAC-SHA256、時間限制與 nonce 重播防護驗證控制要求。
+- 配對密碼會先以 PBKDF2-HMAC-SHA256 衍生驗證金鑰；Agent 回應的完整內容與協議版本也會驗證。
 - 配對密碼不會寫入一般操作日誌。
 - Wake-on-LAN 封包只用於喚醒，不會直接授權螢幕切換。
 - mDNS 只在區域網路廣播主機搜尋所需資訊。
@@ -251,24 +252,24 @@ IP、MAC 位址與 Agent Port 會在搜尋主機時自動取得並保存。DHCP 
 
 ## 安裝與更新
 
-請從可信任的 DisplayMuxAuto GitHub Release 下載 Windows 安裝程式或 macOS Universal DMG。
+請從可信任的 MuxSU GitHub Release 下載 Windows 安裝程式或 macOS Universal DMG。
 
-DisplayMuxAuto 可以檢查 GitHub Releases 是否有新版本，但不會在未確認的情況下自動下載或安裝。使用者選擇安裝後，程式會先驗證更新套件簽章。
+MuxSU 可以檢查 GitHub Releases 是否有新版本，但不會在未確認的情況下自動下載或安裝。使用者選擇安裝後，程式會先驗證更新套件簽章。
 
 ### 從改名前的版本升級
 
-App 在 v0.1.11 從 DisplayMux 改名為 DisplayMuxAuto。設定不會遺失（儲存設定所用的識別碼維持不變），但安裝本身兩個平台不同：
+App 在 v0.1.11 從 DisplayMux 改名為 DisplayMuxAuto，目前已完整改名為 **MuxSU**。MuxSU 使用新的 App 識別碼，因此不會讀取舊版的設定、配對資料、語言或主題偏好；升級後請重新設定一次。
 
-- **Windows**：安裝程式會先移除舊的 DisplayMux 安裝與它的開機啟動項，再安裝新版。
-- **macOS**：自動更新會就地覆蓋原本的 App，不會多出一份；但檔案名稱仍是 `DisplayMux.app`，可自行在「應用程式」中改名。
+- **Windows**：安裝程式會先移除舊的 DisplayMux 或 DisplayMuxAuto 安裝與它們的開機啟動項，再安裝 MuxSU。
+- **macOS**：建議移除舊 App 後重新安裝 `MuxSU.app`，確保檔名與新的 App 識別一致。
 
 ### macOS Gatekeeper
 
 目前 macOS DMG 使用 ad-hoc 簽章，尚未透過 Apple Developer ID 正式簽章與公證。第一次啟動時，Gatekeeper 可能要求手動允許：
 
-1. 將 `DisplayMuxAuto.app` 拖曳到 `/Applications`，並嘗試開啟一次。
+1. 將 `MuxSU.app` 拖曳到 `/Applications`，並嘗試開啟一次。
 2. 開啟「系統設定」→「隱私權與安全性」。
-3. 在「安全性」區域找到 DisplayMuxAuto，按下「仍要打開」。
+3. 在「安全性」區域找到 MuxSU，按下「仍要打開」。
 4. 完成身分驗證後再次確認。
 
 只有在確認 App 來自本專案可信任的 Release 時才應允許執行。詳細說明可參考 Apple 的 [Open apps safely on your Mac](https://support.apple.com/102445)。
@@ -310,12 +311,12 @@ macOS 可使用專用腳本建立 ad-hoc 簽章的 Universal DMG：
 CLI 只支援 Windows，適合開發者診斷螢幕識別與切換，不是一般使用者必要流程：
 
 ```powershell
-cargo run -p displaymux-cli -- list
-cargo run -p displaymux-cli -- switch <manufacturer> <product> <serial|-> <input> --dry-run
+cargo run -p muxsu-cli -- list
+cargo run -p muxsu-cli -- switch <manufacturer> <product> <serial|-> <input> --dry-run
 ```
 
 確認目標正確後，才應移除 `--dry-run` 執行實際切換。
 
 ## 授權條款
 
-DisplayMuxAuto 採用 [MIT License](LICENSE)，並保留原專案 DisplayMux 的版權宣告。
+MuxSU 採用 [MIT License](LICENSE)，並保留原專案 DisplayMux 的版權宣告。

@@ -1,9 +1,10 @@
-; Removes the DisplayMux install this app used to be, before installing over it.
+; Removes earlier DisplayMux and DisplayMuxAuto installs before installing
+; MuxSU over them.
 ;
 ; NSIS finds an earlier version by product name — its uninstall key is
 ; "...\Uninstall\${PRODUCTNAME}" — so once the app was renamed to
-; DisplayMuxAuto its installer sees no earlier version at all and installs
-; alongside the old one instead of replacing it.
+; DisplayMuxAuto, and now to MuxSU, its installer sees no differently named
+; earlier version at all and installs alongside it instead of replacing it.
 ;
 ; Left there, the old copy is not merely an unused folder. Autostart is on by
 ; default, and its registry entry is keyed by product name too, so both copies
@@ -12,14 +13,11 @@
 ;
 ; What follows is what a same-named upgrade would have done by itself.
 
-!define LEGACY_NAME "DisplayMux"
-!define LEGACY_UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${LEGACY_NAME}"
-
 ; The old install may be per-user or per-machine, and this installer's own
 ; context says nothing about which one it was, so both are checked.
-!macro RemoveLegacyInstall ROOT
-  ReadRegStr $R6 ${ROOT} "${LEGACY_UNINSTKEY}" "UninstallString"
-  ReadRegStr $R7 ${ROOT} "${LEGACY_UNINSTKEY}" "InstallLocation"
+!macro RemoveLegacyInstall ROOT LEGACY_NAME
+  ReadRegStr $R6 ${ROOT} "Software\Microsoft\Windows\CurrentVersion\Uninstall\${LEGACY_NAME}" "UninstallString"
+  ReadRegStr $R7 ${ROOT} "Software\Microsoft\Windows\CurrentVersion\Uninstall\${LEGACY_NAME}" "InstallLocation"
   ${If} $R6 != ""
   ${AndIf} $R7 != ""
     ; The installer writes InstallLocation with its quotation marks included:
@@ -55,7 +53,7 @@
         ; holding it, so both are left to whoever called it.
         Delete "$R7\uninstall.exe"
         RMDir "$R7"
-        DeleteRegKey ${ROOT} "${LEGACY_UNINSTKEY}"
+        DeleteRegKey ${ROOT} "Software\Microsoft\Windows\CurrentVersion\Uninstall\${LEGACY_NAME}"
       ${EndIf}
     ${EndIf}
   ${EndIf}
@@ -66,12 +64,15 @@
   Push $R7
   Push $R8
   Push $R9
-  !insertmacro RemoveLegacyInstall HKCU
-  !insertmacro RemoveLegacyInstall HKLM
+  !insertmacro RemoveLegacyInstall HKCU "DisplayMux"
+  !insertmacro RemoveLegacyInstall HKLM "DisplayMux"
+  !insertmacro RemoveLegacyInstall HKCU "DisplayMuxAuto"
+  !insertmacro RemoveLegacyInstall HKLM "DisplayMuxAuto"
   ; Written by the app at runtime rather than by the installer, so the
   ; uninstaller above leaves it. On its own it is enough to start the old copy
   ; at every login, whether or not the old files are still there.
-  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${LEGACY_NAME}"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "DisplayMux"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "DisplayMuxAuto"
   Pop $R9
   Pop $R8
   Pop $R7

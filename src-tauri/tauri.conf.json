@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DisplayMuxAuto",
+  "productName": "MuxSU",
   "version": "0.3.0",
-  "identifier": "com.displaymux.app",
+  "identifier": "io.github.omarhung.muxsu",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "DisplayMuxAuto",
+        "title": "MuxSU",
         "dragDropEnabled": false,
         "width": 1440,
         "height": 900,
@@ -25,7 +25,7 @@
       },
       {
         "label": "host-switcher",
-        "title": "DisplayMuxAuto Host Switcher",
+        "title": "MuxSU Host Switcher",
         "url": "host-switcher.html",
         "width": 600,
         "height": 480,
@@ -59,7 +59,7 @@
       }
     },
     "shortDescription": "Safely switch one shared monitor between two computers",
-    "longDescription": "DisplayMuxAuto coordinates Windows and macOS over a local network and changes only the configured shared monitor input. It extends DisplayMux by Henry Hsu.",
+    "longDescription": "MuxSU coordinates Windows and macOS over a local network and changes only the configured shared monitor input. It extends DisplayMux by Henry Hsu.",
     "resources": {
       "i18n/en.lproj/InfoPlist.strings": "en.lproj/InfoPlist.strings",
       "i18n/zh-Hant.lproj/InfoPlist.strings": "zh-Hant.lproj/InfoPlist.strings"

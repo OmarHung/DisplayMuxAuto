@@ -5,7 +5,7 @@
 //! Each entry carries its own timestamp: two hosts renaming different hosts at
 //! the same time keep both names.
 
-use displaymux_core::HostAlias;
+use muxsu_core::HostAlias;
 
 use crate::host_order::is_valid_host_id;
 

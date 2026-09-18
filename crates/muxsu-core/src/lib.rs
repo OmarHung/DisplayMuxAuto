@@ -28,9 +28,9 @@ pub use domain::{
 };
 pub use error::DisplayMuxError;
 pub use network::{
-    AgentAction, AgentClient, AgentDisplayRoute, AgentRequest, AgentResponse, AgentServer,
-    HostAlias, InputLabel, LocalHostIdentity, MacAddress, MdnsPeerDiscovery, MonitorIdentityLink,
-    PeerEndpoint, WakeTarget, AGENT_PROTOCOL_VERSION, DEFAULT_AGENT_PORT,
+    derive_pairing_key, AgentAction, AgentClient, AgentDisplayRoute, AgentRequest, AgentResponse,
+    AgentServer, HostAlias, InputLabel, LocalHostIdentity, MacAddress, MdnsPeerDiscovery,
+    MonitorIdentityLink, PeerEndpoint, WakeTarget, AGENT_PROTOCOL_VERSION, DEFAULT_AGENT_PORT,
 };
 pub use port::{MonitorControl, PeerDiscovery};
 pub use service::DisplayMuxService;

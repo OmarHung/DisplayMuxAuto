@@ -4,5 +4,5 @@
 )]
 
 fn main() -> anyhow::Result<()> {
-    displaymux_app_lib::run()
+    muxsu_app_lib::run()
 }

@@ -1,10 +1,10 @@
 use std::io::{self, Write};
 
 use anyhow::{bail, Context, Result};
-use displaymux_core::{DisplayInput, SwitchMode};
+use muxsu_core::{DisplayInput, SwitchMode};
 
 #[cfg(target_os = "windows")]
-use displaymux_core::{
+use muxsu_core::{
     windows::WindowsMonitorController, DisplayMuxProfile, DisplayMuxService, MonitorControl,
     MonitorFingerprint, SwitchOutcome,
 };
@@ -69,7 +69,7 @@ fn list_monitors() -> Result<()> {
 
 #[cfg(not(target_os = "windows"))]
 fn list_monitors() -> Result<()> {
-    bail!(displaymux_core::DisplayMuxError::UnsupportedPlatform)
+    bail!(muxsu_core::DisplayMuxError::UnsupportedPlatform)
 }
 
 #[cfg(target_os = "windows")]
@@ -128,20 +128,20 @@ fn switch_to(
     _manufacturer: String,
     _product: String,
     _serial: String,
-    _requested: displaymux_core::DisplayInput,
+    _requested: muxsu_core::DisplayInput,
     _mode: SwitchMode,
 ) -> Result<()> {
-    bail!(displaymux_core::DisplayMuxError::UnsupportedPlatform)
+    bail!(muxsu_core::DisplayMuxError::UnsupportedPlatform)
 }
 
 fn print_help() -> Result<()> {
     let stdout = io::stdout();
     let mut output = stdout.lock();
-    writeln!(output, "DisplayMux CLI")?;
-    writeln!(output, "  displaymux-cli list")?;
+    writeln!(output, "MuxSU CLI")?;
+    writeln!(output, "  muxsu-cli list")?;
     writeln!(
         output,
-        "  displaymux-cli switch <manufacturer> <product> <serial|-> <input> [--dry-run]"
+        "  muxsu-cli switch <manufacturer> <product> <serial|-> <input> [--dry-run]"
     )?;
     Ok(())
 }

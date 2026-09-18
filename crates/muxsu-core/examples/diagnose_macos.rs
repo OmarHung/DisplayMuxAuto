@@ -1,5 +1,5 @@
 //! Diagnostic tool for macOS DDC/CI detection issues.
-//! Run with: cargo run -p displaymux-core --example diagnose_macos
+//! Run with: cargo run -p muxsu-core --example diagnose_macos
 //! Not part of the shipped app; safe to delete after diagnosis.
 
 #[cfg(target_os = "macos")]
@@ -120,8 +120,8 @@ fn main() {
         Err(error) => println!("Monitor::enumerate() failed: {error}"),
     }
 
-    println!("== displaymux_core::macos::MacOsMonitorController (filtered) ==");
-    use displaymux_core::{macos::MacOsMonitorController, MonitorControl};
+    println!("== muxsu_core::macos::MacOsMonitorController (filtered) ==");
+    use muxsu_core::{macos::MacOsMonitorController, MonitorControl};
     let controller = MacOsMonitorController::new();
     match controller.enumerate() {
         Ok(descriptors) => {
@@ -138,10 +138,9 @@ fn main() {
                         "\n-- MacOsMonitorController::write_input probe on {} --",
                         descriptor.name
                     );
-                    match controller.write_input(
-                        &descriptor.id,
-                        displaymux_core::DisplayInput::new(0x0F).unwrap(),
-                    ) {
+                    match controller
+                        .write_input(&descriptor.id, muxsu_core::DisplayInput::new(0x0F).unwrap())
+                    {
                         Ok(()) => println!("write_input(0x0F): OK (verified switch took effect)"),
                         Err(error) => println!("write_input(0x0F): ERROR -> {error}"),
                     }

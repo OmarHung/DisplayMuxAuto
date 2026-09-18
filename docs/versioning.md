@@ -33,12 +33,12 @@ number to a change that leaves someone hunting for their app, it has stopped doi
 ## What this is not
 
 This is not the agent protocol version. `AGENT_PROTOCOL_VERSION` in
-`crates/displaymux-core/src/network.rs` decides whether two hosts can understand each other,
-moves on its own schedule, and is bumped only when a field changes how a request must be
-interpreted — never for one that is additive and ignorable.
+`crates/muxsu-core/src/network.rs` decides whether two hosts can understand and authenticate
+each other. It moves on its own schedule and is bumped whenever authentication or request
+interpretation changes incompatibly.
 
-Nothing may be decided on the basis of a peer's reported `protocol_version` where the decision
-has to be trustworthy: that field travels unsigned, so anything can claim any value.
+The complete Agent response, including `protocol_version`, is signed. A client accepts response
+data only after verifying that signature and an exact protocol-version match.
 
 ## The version lives in six places
 
@@ -48,8 +48,8 @@ All must agree, or the release workflow builds one version and names the artifac
 package.json
 src-tauri/tauri.conf.json
 src-tauri/Cargo.toml
-crates/displaymux-core/Cargo.toml
-crates/displaymux-cli/Cargo.toml
+crates/muxsu-core/Cargo.toml
+crates/muxsu-cli/Cargo.toml
 Cargo.lock                        # via `cargo update -w --offline`
 ```
 

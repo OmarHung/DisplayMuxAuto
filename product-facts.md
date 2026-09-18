@@ -1,4 +1,4 @@
-# DisplayMux Product Facts
+# MuxSU Product Facts
 
 最後查證：2026-09-15
 
@@ -21,7 +21,7 @@
 - Wake-on-LAN 的 magic packet 可以協助喚醒支援且已正確設定的網路介面。
 - Windows 官方支援範圍主要是睡眠 S3 與休眠 S4；Fast Startup 或完整關機 S5 不應承諾一定能喚醒，實際結果仍受主機板、韌體、網卡與供電設定影響。
 - macOS 的「Wake for network access」必須由使用者在系統設定中啟用；實際喚醒能力仍取決於 Mac 型號、電源狀態與網路連線方式。
-- DisplayMux 不得宣稱能喚醒已斷電、拔除電源，或硬體不支援網路喚醒的電腦。
+- MuxSU 不得宣稱能喚醒已斷電、拔除電源，或硬體不支援網路喚醒的電腦。
 
 來源：
 
@@ -32,9 +32,10 @@
 
 ## 區域網路主機探索
 
-- DisplayMux 使用 DNS-SD over mDNS 廣告 `_displaymux._tcp.local.` 服務，讓 Windows 與 macOS 在不啟用 SMB 檔案分享的情況下互相找到主機名稱與 Agent endpoint。
-- `mdns-sd` 可自動追蹤主機網路介面的 IP 變更，並透過 TXT properties 傳遞 DisplayMux 主機識別資料。
-- 探索僅在主機醒著且 DisplayMux 執行時有效；配對後必須保存 endpoint 與 MAC，才能在對方睡眠時嘗試 Wake-on-LAN。
+- MuxSU 使用 DNS-SD over mDNS 廣告 `_muxsu._tcp.local.` 服務，讓 Windows 與 macOS 在不啟用 SMB 檔案分享的情況下互相找到主機名稱與 Agent endpoint。
+- 配對密碼至少 15 個字元，並以 PBKDF2-HMAC-SHA256（600,000 次）衍生網路驗證金鑰；Agent 回應的完整內容與協議版本都包含在簽章內。
+- `mdns-sd` 可自動追蹤主機網路介面的 IP 變更，並透過 TXT properties 傳遞 MuxSU 主機識別資料。
+- 探索僅在主機醒著且 MuxSU 執行時有效；配對後必須保存 endpoint 與 MAC，才能在對方睡眠時嘗試 Wake-on-LAN。
 - macOS 15+ 的 Local Network Privacy 要求 app 說明區域網路用途，使用 Bonjour 時也應在 `Info.plist` 宣告瀏覽的 service type；macOS 不要求 iOS 的 multicast entitlement。
 
 來源：
@@ -60,7 +61,7 @@
 
 ## MCCS 輸入來源值
 
-- DisplayMux 以 VCP feature `0x60` 控制輸入來源；`0x0F`、`0x10`、`0x11`、`0x12` 可分別標示為 DisplayPort 1、DisplayPort 2、HDMI 1、HDMI 2。
+- MuxSU 以 VCP feature `0x60` 控制輸入來源；`0x0F`、`0x10`、`0x11`、`0x12` 可分別標示為 DisplayPort 1、DisplayPort 2、HDMI 1、HDMI 2。
 - 顯示器的 capabilities string 可宣告其接受的 `0x60` 值，但實際資料可能不完整或錯誤，不能取代切換時的安全檢查。
 - MCCS 沒有跨廠商一致的 USB-C 輸入值。未列於標準對照的值必須顯示為廠商自訂值，不得猜測接頭名稱。
 
@@ -77,7 +78,7 @@
 - 有些螢幕在不同顯示模式下回報不同的 EDID 產品碼（MSI MPG 274U 在 3840×2160 回報 `MSI:3CF0`、在 1920×1080 回報 `MSI:7CF0`，兩種模式都沒有序號），而且 macOS 自己的顯示器記錄回報的是同樣那兩組值。切換模式在每一台主機上都會讀成不同螢幕，因此「這兩個身分是同一台螢幕」無法由程式推導，只能由使用者宣告。
 - 「是同一台螢幕」是等價關係，比對時**兩邊**都必須先解析成主身分。只解析觀測到的那一邊，會讓以別名儲存的選擇連自己都認不出來，進而每次加入共用都產生一筆重複。這條規則適用於所有「當下在線的螢幕 vs 已儲存選擇」的比對，前端與後端都一樣。
 - 使用者宣告的身分等價只決定「哪一台螢幕是使用者要的」，不決定「能不能寫入」。切換時仍必須從當下在線的螢幕中挑出**恰好一個完整指紋精確符合**的目標再送出，等價關係永遠不放寬這道檢查。
-- 跨主機切換 command 必須攜帶明確的目標螢幕指紋；若配對主機回報的通訊協定版本不支援逐螢幕指定（舊版 Agent），且本機選取超過一台共用螢幕，必須直接拒絕並提示使用者更新該主機，不得以猜測方式送出指令。
+- 跨主機切換 command 必須攜帶明確的目標螢幕指紋；Agent 回應的通訊協定版本必須與目前版本完全一致，否則在採用任何回應資料前直接拒絕並提示使用者更新，不得以猜測方式降級。
 - 主機身分一旦決定就不得再衍生。配對主機以 `LocalHostIdentity::id` 記住這台電腦的配對、共用主機順序與自訂名稱，身分一變就全部失聯。MAC 位址不可直接充當身分：macOS 對 Wi-Fi 隱私位址、AWDL、bridge 與 Apple Silicon 的 `anpi` 裝置都發放 locally administered 位址，而系統列舉到哪一個並不穩定（實測同一台 Mac 曾以三個不同身分示人）。設了 locally-administered 位元或全零的位址一律不得用於身分；MAC 只用於 Wake-on-LAN。
 - 網路上的遠端 command 必須經過配對與驗證；不得提供未驗證的區網切換端點。
 - 切換流程應先確認目標主機代理程式已就緒；若離線，先送 Wake-on-LAN，再等待健康檢查。逾時時停止自動切換，讓使用者決定是否強制切換。

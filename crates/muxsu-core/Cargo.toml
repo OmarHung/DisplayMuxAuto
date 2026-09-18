@@ -1,5 +1,5 @@
 [package]
-name = "displaymux-core"
+name = "muxsu-core"
 version = "0.3.0"
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,7 @@ hostname.workspace = true
 hex.workspace = true
 mac_address.workspace = true
 mdns-sd.workspace = true
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

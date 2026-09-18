@@ -11,10 +11,10 @@
     <key>LSUIElement</key>
     <true/>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>DisplayMuxAuto uses the local network to find and connect to your other computer.</string>
+    <string>MuxSU uses the local network to find and connect to your other computer.</string>
     <key>NSBonjourServices</key>
     <array>
-      <string>_displaymux._tcp</string>
+      <string>_muxsu._tcp</string>
     </array>
   </dict>
 </plist>
