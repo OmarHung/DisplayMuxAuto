@@ -2423,7 +2423,7 @@ dependencies = [
 
 [[package]]
 name = "muxsu-app"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "muxsu-core",
@@ -2444,7 +2444,7 @@ dependencies = [
 
 [[package]]
 name = "muxsu-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "muxsu-core",
@@ -2452,7 +2452,7 @@ dependencies = [
 
 [[package]]
 name = "muxsu-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "core-foundation 0.10.1",
  "ddc",
