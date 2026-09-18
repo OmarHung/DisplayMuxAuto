@@ -1009,9 +1009,7 @@ fn unshare_monitor(settings: &mut AppSettings, target: &MonitorFingerprint) {
     let removed = settings
         .shared_monitors
         .iter()
-        .filter(|selected| {
-            monitor_identity::is_same_display(&links, &selected.fingerprint, target)
-        })
+        .filter(|selected| monitor_identity::is_same_display(&links, &selected.fingerprint, target))
         .map(|selected| selected.fingerprint.clone())
         .collect::<Vec<_>>();
     settings.shared_monitors.retain(|selected| {
