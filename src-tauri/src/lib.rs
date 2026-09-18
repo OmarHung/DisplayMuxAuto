@@ -3331,9 +3331,11 @@ fn record_failed_notice_attempt(settings: &mut AppSettings, notice_id: &str, now
     false
 }
 
-/// The notices to send now: each peer's oldest one, once it is due, unless a
-/// request to that peer is already in flight. Newer notices wait behind it,
-/// so a peer receives its changes in the order they were made.
+/// The notices to send now: for each peer with no request in flight, the
+/// oldest one that is due. One backing off after a failure does not hold back
+/// the rest: a newer notice of the same kind has already replaced an older
+/// one, and every entry is merged by its own timestamp, so notices of
+/// different kinds need no particular order.
 fn due_notice_ids(
     notices: &[PendingPeerNotice],
     in_flight: &std::collections::HashSet<String>,
@@ -3342,10 +3344,10 @@ fn due_notice_ids(
     let mut seen_peers = std::collections::HashSet::new();
     notices
         .iter()
-        .filter(|notice| seen_peers.insert(notice.peer_id.as_str()))
         .filter(|notice| {
             notice.next_attempt_at_ms <= now_ms && !in_flight.contains(&notice.peer_id)
         })
+        .filter(|notice| seen_peers.insert(notice.peer_id.as_str()))
         .map(|notice| notice.id.clone())
         .collect()
 }
@@ -9200,7 +9202,7 @@ mod tests {
     }
 
     #[test]
-    fn each_peer_is_sent_only_its_oldest_notice_once_due() {
+    fn each_peer_is_sent_its_oldest_due_notice_one_at_a_time() {
         let notices = [
             queued("a1", "peer-a", 10),
             queued("a2", "peer-a", 0),
@@ -9211,9 +9213,12 @@ mod tests {
         ];
         let in_flight = std::collections::HashSet::from(["peer-d".to_owned()]);
 
-        // peer-b's oldest notice is not due yet, so its newer one must wait
-        // too; peer-d already has a request in flight.
-        assert_eq!(due_notice_ids(&notices, &in_flight, 100), vec!["a1", "c1"]);
+        // peer-b's oldest notice is backing off after failing, and must not
+        // hold back its newer one; peer-d already has a request in flight.
+        assert_eq!(
+            due_notice_ids(&notices, &in_flight, 100),
+            vec!["a1", "b2", "c1"]
+        );
     }
 
     #[test]
