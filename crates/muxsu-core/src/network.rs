@@ -356,9 +356,29 @@ fn discovered_peer(service: &mdns_sd::ResolvedService) -> Option<DiscoveredPeer>
     })
 }
 
+/// Whether `address` is on a network MuxSU is meant for: this computer, a
+/// private LAN (RFC 1918), link-local, the shared range VPNs such as
+/// Tailscale use (RFC 6598), or an IPv6 unique-local or link-local network.
+/// The agent answers nothing else, and connects to nothing else, so a host
+/// with a public address is never exposed to, or led toward, the internet.
+pub fn is_local_network_address(address: IpAddr) -> bool {
+    match address.to_canonical() {
+        IpAddr::V4(address) => {
+            let [first, second, ..] = address.octets();
+            address.is_loopback()
+                || address.is_private()
+                || address.is_link_local()
+                || (first == 100 && (64..128).contains(&second))
+        }
+        IpAddr::V6(address) => {
+            address.is_loopback() || address.is_unique_local() || address.is_unicast_link_local()
+        }
+    }
+}
+
 fn preferred_address(addresses: impl Iterator<Item = IpAddr>) -> Option<IpAddr> {
     addresses
-        .filter(|address| !address.is_loopback())
+        .filter(|address| !address.is_loopback() && is_local_network_address(*address))
         .min_by_key(|address| match address {
             IpAddr::V4(address) if address.is_private() => 0,
             IpAddr::V4(_) => 1,
@@ -967,6 +987,10 @@ impl AgentServer {
                     continue;
                 }
             };
+            if !is_local_network_address(peer.ip()) {
+                tracing::debug!(peer = %peer, "agent connection refused: not a local network");
+                continue;
+            }
             let Some(slot) = self.connection_limits.try_admit(peer.ip()) else {
                 tracing::debug!(peer = %peer, "agent connection refused: too many open");
                 continue;
@@ -1240,6 +1264,48 @@ mod tests {
             preferred_address(addresses.iter().copied()),
             Some("192.168.1.25".parse().unwrap())
         );
+    }
+
+    #[test]
+    fn only_local_network_addresses_are_accepted() {
+        for local in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.9",
+            "192.168.1.25",
+            "169.254.10.20",
+            "100.100.1.2",
+            "::1",
+            "fd7a:115c:a1e0::1",
+            "fe80::1234",
+            "::ffff:192.168.1.25",
+        ] {
+            assert!(
+                is_local_network_address(local.parse().unwrap()),
+                "{local} should be accepted"
+            );
+        }
+        for remote in [
+            "8.8.8.8",
+            "172.32.0.1",
+            "100.128.0.1",
+            "2001:4860::8888",
+            "::ffff:8.8.8.8",
+        ] {
+            assert!(
+                !is_local_network_address(remote.parse().unwrap()),
+                "{remote} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_discovered_host_with_only_public_addresses_is_not_reachable() {
+        let addresses = HashSet::from([
+            "8.8.8.8".parse().unwrap(),
+            "2001:4860::8888".parse().unwrap(),
+        ]);
+        assert_eq!(preferred_address(addresses.iter().copied()), None);
     }
 
     #[test]

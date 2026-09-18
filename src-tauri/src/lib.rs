@@ -2176,6 +2176,21 @@ fn route_endpoint(peer: &HostRoute) -> Result<PeerEndpoint, DisplayMuxError> {
             UiLocale::English => format!("{} has an invalid IP address", peer.name),
         })
     })?;
+    if !muxsu_core::is_local_network_address(address) {
+        return Err(DisplayMuxError::PeerUnavailable(
+            match UiLocale::current() {
+                UiLocale::TraditionalChinese => {
+                    format!("{} 不在區域網路內，MuxSU 不會連線", peer.name)
+                }
+                UiLocale::English => {
+                    format!(
+                        "{} is not on a local network, so MuxSU will not connect to it",
+                        peer.name
+                    )
+                }
+            },
+        ));
+    }
     Ok(PeerEndpoint {
         address,
         port: peer.port,
@@ -8782,6 +8797,16 @@ mod tests {
                 ..host_input("this-host", &shared, 0x08, LEDGER_NOW_MS)
             }]
         );
+    }
+
+    #[test]
+    fn a_paired_host_saved_with_a_public_address_is_not_contacted() {
+        let shared = monitor("shared");
+        let mut peer = peer_using_input("peer", &shared, 0x07);
+        assert!(route_endpoint(&peer).is_ok());
+
+        peer.address = "8.8.8.8".to_owned();
+        assert!(route_endpoint(&peer).is_err());
     }
 
     #[test]
