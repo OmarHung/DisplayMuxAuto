@@ -180,13 +180,25 @@ impl IdentitySnapshot {
 }
 
 /// The key serial hashes are made with: the stretched pairing key when this
-/// host is paired, so it is as costly to guess as the password itself.
+/// host is paired, so it is as costly to guess as the password itself. An
+/// unpaired host has no one to compare with, so a key drawn once per run does.
 fn serial_key(settings: &AppSettings) -> Vec<u8> {
     if crate::has_valid_shared_key(&settings.shared_key) {
         crate::stretched_pairing_key(&settings.shared_key).to_vec()
     } else {
-        Vec::new()
+        unpaired_serial_key().to_vec()
     }
+}
+
+fn unpaired_serial_key() -> &'static [u8; 32] {
+    static KEY: OnceLock<[u8; 32]> = OnceLock::new();
+    KEY.get_or_init(|| {
+        let mut key = [0; 32];
+        if ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut key).is_err() {
+            tracing::warn!("unable to draw a key for diagnostic serial hashes");
+        }
+        key
+    })
 }
 
 /// `serial:` and the first 8 hex digits of the serial's HMAC-SHA256 under
@@ -770,6 +782,20 @@ mod tests {
         assert_ne!(
             serial_hash("CF0H246200009", group),
             serial_hash("CF0H246200009", b"another group's key")
+        );
+    }
+
+    /// An unpaired host has nobody to compare with, but an empty key would
+    /// make its hashes as easy to match against guessed serials as no key.
+    #[test]
+    fn an_unpaired_hosts_serial_hash_is_not_keyed_by_a_known_value() {
+        let unpaired = AppSettings::default();
+        let key = serial_key(&unpaired);
+
+        assert_eq!(key, serial_key(&unpaired), "one report must hash alike");
+        assert_ne!(
+            serial_hash("CF0H246200009", &key),
+            serial_hash("CF0H246200009", b"")
         );
     }
 

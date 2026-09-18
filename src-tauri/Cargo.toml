@@ -32,6 +32,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2.10"
 regex = "1"
+ring.workspace = true
 # Same features as the updater's copy, so the build carries one HTTP client.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 sha2.workspace = true
