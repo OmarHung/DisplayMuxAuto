@@ -137,18 +137,22 @@ jobs:
             --assets release-assets.json \
             --output release-notes.md
 
-      - name: Add release notes to updater manifest
+      - name: Add release notes and download URLs to updater manifest
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APP_VERSION: ${{ steps.app_version.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           tag="v${APP_VERSION}"
           mkdir -p updater-manifest
           gh release download "$tag" --pattern latest.json --dir updater-manifest
           node scripts/set-updater-notes.mjs \
             --manifest updater-manifest/latest.json \
-            --notes release-notes.md
+            --notes release-notes.md \
+            --assets release-assets.json \
+            --tag "$tag" \
+            --repository "$REPOSITORY"
           gh release upload "$tag" updater-manifest/latest.json --clobber
 
       - name: Publish signed release
