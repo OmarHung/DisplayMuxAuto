@@ -72,10 +72,10 @@ function hostsTab(minSharedKeyLength: number): string {
       </div>
       <div class="list" id="peer-list"></div>
     </div>
-    <div class="form-section">
+    <div class="form-section pairing-key-section">
       <h3 class="group-title">${t("settings.pairingTitle")}</h3>
       <div class="list">
-        <label class="row field-row pairing-password">
+        <label class="row field-row">
           <span><span class="row-title">${t("settings.password")}</span><span class="row-hint">${t("settings.passwordHint")}</span></span>
           <span class="input-wrap"><i data-lucide="key-round"></i><input class="field-input" id="shared-key" type="password" minlength="${minSharedKeyLength}" placeholder="${t("settings.passwordPlaceholder")}" /></span>
         </label>

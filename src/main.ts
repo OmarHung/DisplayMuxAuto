@@ -261,7 +261,9 @@ const onboardingSteps: readonly {
     body: t("onboarding.finishBody"),
     page: "settings",
     tab: "hosts",
-    target: ".pairing-password",
+    // The whole section, not the password row: a row sits inside a clipped
+    // glass card, which would cut off the highlight and keep it under the scrim.
+    target: ".pairing-key-section",
     placement: "top",
   },
 ];
