@@ -43,7 +43,9 @@
 .operation-dialog h2, .update-dialog h2 { margin-top: 4px; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 .operation-dialog p, .update-dialog > p { margin-top: 6px; color: var(--text-2); font-size: 13px; }
 
-.operation-dialog { text-align: center; }
+/* Only a spinner and two lines: nothing to scroll. WebKit counts the spinning
+   ring towards the scrollable area and would show a scrollbar. */
+.operation-dialog { overflow: visible; text-align: center; }
 .spinner {
   width: 30px;
   height: 30px;
