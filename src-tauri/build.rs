@@ -14,6 +14,8 @@ const COMMANDS: &[&str] = &[
     "set_host_order",
     "get_host_names",
     "set_host_name",
+    "get_host_appearances",
+    "set_host_appearance",
     "set_input_label",
     "set_monitor_identity_link",
     "set_local_input",
@@ -35,6 +37,7 @@ const COMMANDS: &[&str] = &[
     "prepare_diagnostic_report",
     "send_diagnostic_report",
     "save_diagnostic_report",
+    "refresh_tray",
 ];
 
 fn main() {

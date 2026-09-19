@@ -1,0 +1,174 @@
+/* Everything that floats above the window: progress, dialogs, the tour, toasts. */
+
+.section-kicker {
+  color: var(--accent-text);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+/* ── Scrim + dialog shell ──────────────────────────────────────────────── */
+
+.operation-overlay, .update-overlay {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms var(--ease);
+}
+.operation-overlay.is-visible, .update-overlay.is-visible { opacity: 1; pointer-events: auto; }
+
+.operation-dialog, .update-dialog {
+  position: relative;
+  width: min(460px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 24px;
+  border-radius: 28px;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  backdrop-filter: blur(40px) saturate(180%);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.3), inset 0 1px 0 var(--edge);
+  transform: scale(0.97);
+  transition: transform 240ms var(--ease);
+}
+.is-visible > .operation-dialog, .is-visible > .update-dialog { transform: none; }
+.operation-dialog h2, .update-dialog h2 { margin-top: 4px; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+.operation-dialog p, .update-dialog > p { margin-top: 6px; color: var(--text-2); font-size: 13px; }
+
+.operation-dialog { text-align: center; }
+.spinner {
+  width: 30px;
+  height: 30px;
+  margin: 0 auto 14px;
+  border: 3px solid var(--sep);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+.update-dialog { width: min(560px, 100%); }
+.update-notes {
+  max-height: 260px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  overflow: auto;
+  border-radius: 14px;
+  background: var(--glass-weak);
+  box-shadow: inset 0 0 0 1px var(--sep);
+  font-size: 13px;
+}
+.update-notes h1, .update-notes h2, .update-notes h3 { margin: 8px 0 4px; font-size: 14px; }
+.update-notes ul, .update-notes ol { margin: 4px 0; padding-left: 20px; }
+.update-notes p { margin: 4px 0; }
+.update-progress { height: 6px; margin-top: 14px; overflow: hidden; border-radius: 3px; background: var(--sep); }
+.update-progress div { width: 0; height: 100%; border-radius: 3px; background: var(--accent); transition: width 200ms; }
+.update-progress-label { margin-top: 6px; color: var(--text-3); font-size: 12px; }
+.update-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+.diagnostics-dialog { width: min(620px, 100%); }
+.diagnostics-scope { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.diagnostics-scope > div { padding: 12px 14px; border-radius: 14px; background: var(--glass-weak); box-shadow: inset 0 0 0 1px var(--sep); }
+.diagnostics-scope strong { font-size: 13px; }
+.diagnostics-scope p { margin-top: 4px; color: var(--text-2); font-size: 12px; }
+.diagnostics-preview { font: 11.5px/1.5 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
+
+/* ── Tour ──────────────────────────────────────────────────────────────── */
+
+.onboarding-overlay {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  background: var(--scrim);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms;
+}
+.onboarding-overlay.is-visible { opacity: 1; pointer-events: auto; }
+
+.onboarding-target {
+  position: relative;
+  z-index: 41;
+  border-radius: 20px;
+  box-shadow: 0 0 0 3px var(--accent), 0 0 0 9px color-mix(in srgb, var(--accent) 22%, transparent) !important;
+}
+
+.onboarding-tooltip {
+  position: fixed;
+  z-index: 42;
+  width: min(360px, calc(100vw - 32px));
+  padding: 18px;
+  border-radius: 24px;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  backdrop-filter: blur(40px) saturate(180%);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.3), inset 0 1px 0 var(--edge);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms var(--ease);
+}
+.onboarding-tooltip.is-visible { opacity: 1; pointer-events: auto; }
+.onboarding-tooltip-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.onboarding-counter { margin-top: 2px; color: var(--text-3); font-size: 12px; }
+.onboarding-skip { padding: 0; border: 0; background: none; color: var(--text-2); font-size: 12.5px; font-weight: 600; }
+.onboarding-step-label {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-text);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+.onboarding-tooltip h2 { margin-top: 8px; font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
+.onboarding-body { margin-top: 6px; color: var(--text-2); font-size: 13px; }
+.onboarding-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  font-size: 12.5px;
+}
+.onboarding-status span { color: var(--text-2); }
+.onboarding-status.is-ready { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.onboarding-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+/* ── Toast ─────────────────────────────────────────────────────────────── */
+
+.toast {
+  position: fixed;
+  z-index: 60;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: min(380px, calc(100vw - 36px));
+  padding: 12px 14px;
+  border-radius: 20px;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  backdrop-filter: blur(40px) saturate(180%);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.22), inset 0 1px 0 var(--edge);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px);
+  transition: opacity 220ms var(--ease), transform 220ms var(--ease);
+}
+.toast.is-visible { opacity: 1; pointer-events: auto; transform: none; }
+.toast .lucide { margin-top: 1px; color: var(--accent); }
+.toast.is-warning .lucide { color: var(--warn); }
+.toast div { display: flex; flex-direction: column; min-width: 0; }
+.toast strong { font-size: 13.5px; }
+.toast span { color: var(--text-2); font-size: 12.5px; overflow-wrap: anywhere; }

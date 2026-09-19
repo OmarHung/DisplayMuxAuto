@@ -1,8 +1,11 @@
-import "@fontsource-variable/manrope";
+import { createIcons } from "lucide";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { hostIconSet, hostLook } from "./host-look";
 import { locale, t } from "./i18n";
 import { initializeTheme } from "./theme";
+import "./styles/tokens.css";
+import "./styles/base.css";
 import "./host-switcher.css";
 
 type Platform = "windows" | "mac";
@@ -22,6 +25,9 @@ interface HostOption {
   available: boolean;
   /** The host the display is already showing. */
   isActive: boolean;
+  /** Custom icon and colour names; absent or null keeps the default. */
+  icon?: string | null;
+  color?: string | null;
 }
 
 interface HostSwitcherMonitor {
@@ -39,16 +45,39 @@ interface OperationResult {
   detail: string;
 }
 
-type Row = { kind: "header"; monitorName: string } | { kind: "host"; monitorKey: string; host: HostOption };
+/** "all", or the key of one shared display. */
+type Target = string;
+const ALL_DISPLAYS = "all";
+/** Digit keys reach this many hosts. */
+const MAX_NUMBERED_HOSTS = 9;
+
+/** One host as this window lists it, for the display (or displays) targeted. */
+interface HostRow {
+  id: string;
+  name: string;
+  platform: Platform;
+  /** Lucide icon and colour name, as the main window draws this host. */
+  icon: string;
+  color: string;
+  detail: string;
+  /** Displays among the target this host is on. */
+  showingCount: number;
+  /** Displays among the target a switch would move to this host. */
+  switchable: HostSwitcherMonitor[];
+}
 
 const root = document.querySelector<HTMLElement>("#host-switcher-app")!;
 if (!root) throw new Error("MuxSU host switcher root was not found");
 initializeTheme();
 
 let state: HostSwitcherState = { monitors: [] };
-let rows: Row[] = [];
+let target: Target = ALL_DISPLAYS;
+let rows: HostRow[] = [];
 let selectedIndex = 0;
 let switching = false;
+/** Counts switch batches. Opening the window again supersedes one still
+ *  running, so a stale batch neither carries on nor closes the new window. */
+let batch = 0;
 /** Emitted by the backend when this or a paired host saves a new host card order. */
 const HOST_ORDER_CHANGED_EVENT = "host-order-changed";
 /** Emitted by the backend when this or a paired host renames a host. */
@@ -72,115 +101,193 @@ function platformLabel(platform: Platform): string {
   return platform === "mac" ? "macOS" : "Windows";
 }
 
-function computeRows(): Row[] {
-  const showHeaders = state.monitors.length > 1;
-  return state.monitors.flatMap((monitor) => [
-    ...(showHeaders ? [{ kind: "header" as const, monitorName: monitor.name }] : []),
-    ...monitor.hosts.map((host) => ({ kind: "host" as const, monitorKey: monitor.monitorKey, host })),
-  ]);
+/** The targets Tab cycles through: every display at once, then each one. */
+function targets(): Target[] {
+  const keys = state.monitors.map((monitor) => monitor.monitorKey);
+  return keys.length > 1 ? [ALL_DISPLAYS, ...keys] : keys;
 }
 
-/** The host a display already shows is not somewhere to switch it to. The
- *  dashboard has always refused it; pressing it here reached the backend, which
- *  answered that the display was already on that input — leaving this window
- *  sitting on a message instead of doing anything. */
-function isSelectableRow(row: Row | undefined): row is Extract<Row, { kind: "host" }> {
-  return row?.kind === "host" && row.host.available && !row.host.isActive;
+function targetedMonitors(): HostSwitcherMonitor[] {
+  return target === ALL_DISPLAYS ? state.monitors : state.monitors.filter((monitor) => monitor.monitorKey === target);
+}
+
+function computeRows(): HostRow[] {
+  const monitors = targetedMonitors();
+  // Every display lists the same hosts in the same saved order.
+  const order = state.monitors[0]?.hosts ?? [];
+  return order.map((host, index) => {
+    const entries = monitors.map((monitor) => ({ monitor, option: monitor.hosts.find((item) => item.id === host.id) }));
+    const showingCount = entries.filter(({ option }) => option?.isActive).length;
+    // The host a display already shows is not somewhere to switch it to; the
+    // backend would only answer that the display is already on that input.
+    const switchable = entries.filter(({ option }) => option?.available && !option.isActive).map(({ monitor }) => monitor);
+    const single = monitors.length === 1 ? entries[0]?.option : undefined;
+    const detail = single
+      ? `${platformLabel(host.platform)} · ${single.inputName ?? t("switcher.inputUnset")}`
+      : platformLabel(host.platform);
+    const look = hostLook({ icon: host.icon, color: host.color }, host.platform, index);
+    return { id: host.id, name: host.name, platform: host.platform, icon: look.lucide, color: look.color, detail, showingCount, switchable };
+  });
+}
+
+function isSelectable(row: HostRow | undefined): row is HostRow {
+  return Boolean(row && row.switchable.length);
+}
+
+function rowState(row: HostRow, isFocused: boolean): string {
+  const isAll = targetedMonitors().length > 1;
+  if (isFocused && isSelectable(row)) return `↩ ${isAll ? t("switcher.switchAll") : t("action.switchShort")}`;
+  if (row.showingCount && isAll) return t("switcher.showingCount", { count: row.showingCount });
+  if (row.showingCount) return t("switcher.showing");
+  if (!isSelectable(row)) return t("switcher.inputUnset");
+  return "";
+}
+
+function targetLabel(key: Target): string {
+  if (key === ALL_DISPLAYS) return t("switcher.allDisplays", { count: state.monitors.length });
+  return state.monitors.find((monitor) => monitor.monitorKey === key)?.name ?? key;
 }
 
 function render(message?: { title: string; detail: string; error?: boolean }): void {
-  const headerLine = state.monitors.length
-    ? state.monitors.map((monitor) => monitor.name).join(" · ")
-    : t("switcher.noDisplay");
+  const allTargets = targets();
+  const numbered = Math.min(rows.length, MAX_NUMBERED_HOSTS);
   root.innerHTML = `
-    <main class="switcher-shell" aria-labelledby="switcher-title">
-      <header class="switcher-header">
-        <div>
-          <p class="eyebrow">MUXSU</p>
-          <h1 id="switcher-title">${t("switcher.title")}</h1>
-          <p>${escapeHtml(headerLine)}</p>
-        </div>
+    <main class="hud" aria-labelledby="switcher-title">
+      <header class="hud-head">
+        <h1 id="switcher-title">${t("switcher.title")}</h1>
+        ${allTargets.length > 1 ? `<span class="caption">${t("switcher.targetHint")}</span>` : `<span class="caption">${escapeHtml(state.monitors[0]?.name ?? t("switcher.noDisplay"))}</span>`}
       </header>
-      <section class="host-list" role="listbox" aria-label="${t("switcher.hostListAria")}">
-        ${rows.map((row, index) => row.kind === "header"
-          ? `<div class="host-group-header">${escapeHtml(row.monitorName)}</div>`
-          : `<button type="button" class="host-option ${index === selectedIndex ? "is-selected" : ""} ${row.host.isActive ? "is-active" : ""}"
-            data-row-index="${index}" role="option" aria-selected="${index === selectedIndex}"
-            ${isSelectableRow(row) && !switching ? "" : "disabled"}>
-            <span class="platform-mark ${row.host.platform}">${row.host.platform === "mac" ? "M" : "W"}</span>
-            <span class="host-copy">
-              <strong>${escapeHtml(row.host.name)}</strong>
-              <small>${platformLabel(row.host.platform)} · ${escapeHtml(row.host.inputName ?? t("switcher.inputUnset"))}</small>
-            </span>
-            <span class="host-status">${row.host.isActive ? t("switcher.showing") : row.host.isLocal ? t("switcher.local") : t("switcher.select")}</span>
-          </button>`).join("") || `<p class="empty-state">${t("switcher.noHosts")}</p>`}
+      ${allTargets.length > 1 ? `<nav class="targets" role="tablist">
+        ${allTargets.map((key) => `<button type="button" role="tab" class="${key === target ? "is-active" : ""}" aria-selected="${key === target}" data-target="${escapeHtml(key)}" ${switching ? "disabled" : ""}>${escapeHtml(targetLabel(key))}</button>`).join("")}
+      </nav>` : ""}
+      <section class="hud-list" role="listbox" aria-label="${t("switcher.hostListAria")}">
+        ${rows.map((row, index) => {
+          const isFocused = index === selectedIndex && isSelectable(row);
+          const isShowing = row.showingCount > 0 && row.showingCount === targetedMonitors().length;
+          return `<button type="button" class="hud-row ${isFocused ? "tint is-focused" : ""} ${isShowing ? "is-showing" : ""}" data-color="${row.color}"
+            data-row-index="${index}" role="option" aria-selected="${isFocused}" ${isSelectable(row) && !switching ? "" : "disabled"}>
+            <kbd>${index < MAX_NUMBERED_HOSTS ? index + 1 : ""}</kbd>
+            <span class="host-chip"><i data-lucide="${row.icon}"></i></span>
+            <span class="hud-copy"><b>${escapeHtml(row.name)}</b><small>${escapeHtml(row.detail)}</small></span>
+            <span class="hud-state">${escapeHtml(rowState(row, isFocused))}</span>
+          </button>`;
+        }).join("") || `<p class="empty-note">${t("switcher.noHosts")}</p>`}
       </section>
       ${message ? `<div class="switch-message ${message.error ? "is-error" : ""}" role="status"><strong>${escapeHtml(message.title)}</strong><span>${escapeHtml(message.detail)}</span></div>` : ""}
-      <footer>
-        <span>${t("switcher.navigationHint")}</span>
+      <footer class="hud-foot">
+        <span>${numbered > 1 ? `${t("switcher.numberHint", { count: numbered })} · ` : ""}${t("switcher.navigationHint")}</span>
         <span>${t("switcher.closeHint")}</span>
       </footer>
     </main>`;
+  createIcons({ icons: hostIconSet });
+}
+
+function refreshRows(keepHostId?: string): void {
+  rows = computeRows();
+  const kept = keepHostId ? rows.findIndex((row) => row.id === keepHostId && isSelectable(row)) : -1;
+  selectedIndex = kept !== -1 ? kept : Math.max(0, rows.findIndex((row) => isSelectable(row)));
 }
 
 function nextAvailableIndex(direction: 1 | -1): number {
-  if (!rows.some((row) => isSelectableRow(row))) return selectedIndex;
+  if (!rows.some((row) => isSelectable(row))) return selectedIndex;
   let candidate = selectedIndex;
   do {
     candidate = (candidate + direction + rows.length) % rows.length;
-  } while (!isSelectableRow(rows[candidate]));
+  } while (!isSelectable(rows[candidate]));
   return candidate;
 }
 
 function selectIndex(index: number): void {
-  if (!isSelectableRow(rows[index]) || switching) return;
+  if (!isSelectable(rows[index]) || switching) return;
   selectedIndex = index;
   render();
   document.querySelector<HTMLElement>(`[data-row-index="${index}"]`)?.focus();
+}
+
+function selectTarget(next: Target): void {
+  if (switching || next === target) return;
+  const keep = rows[selectedIndex]?.id;
+  target = next;
+  refreshRows(keep);
+  render();
+}
+
+function cycleTarget(direction: 1 | -1): void {
+  const all = targets();
+  if (all.length < 2) return;
+  const index = all.indexOf(target);
+  selectTarget(all[(index + direction + all.length) % all.length]);
 }
 
 async function hideSwitcher(): Promise<void> {
   try { await invoke("hide_host_switcher"); } catch { window.close(); }
 }
 
+function progressDetail(event: SwitchProgressEvent): string {
+  if (event.event === "waking") return t("switcher.waking", { name: event.peerName });
+  if (event.event === "waiting") return t("switcher.waiting", { name: event.peerName, seconds: event.seconds });
+  if (event.event === "remoteFallback") return t("switcher.remoteFallback", { name: event.peerName });
+  return t("switcher.switching");
+}
+
+/**
+ * Switches every targeted display that is not already on the chosen host, one
+ * at a time: the first switch wakes a sleeping host, so later ones find it
+ * ready. A display that fails does not stop the rest.
+ */
 async function switchToSelected(): Promise<void> {
   const row = rows[selectedIndex];
-  if (!isSelectableRow(row) || switching) return;
+  if (!isSelectable(row) || switching) return;
   switching = true;
+  const run = ++batch;
   render({ title: t("switcher.preparing"), detail: t("switcher.preparingDetail") });
-  const onEvent = new Channel<SwitchProgressEvent>();
-  onEvent.onmessage = (event) => {
-    const detail = event.event === "waking"
-      ? t("switcher.waking", { name: event.peerName })
-      : event.event === "waiting"
-        ? t("switcher.waiting", { name: event.peerName, seconds: event.seconds })
-        : event.event === "remoteFallback"
-          ? t("switcher.remoteFallback", { name: event.peerName })
-          : t("switcher.switching");
-    render({ title: t("switcher.preparing"), detail });
-  };
-  try {
-    const result = await invoke<OperationResult>("switch_host", { monitorId: row.monitorKey, targetId: row.host.id, onEvent });
-    render({ title: result.title, detail: result.detail });
-    window.setTimeout(() => {
-      // Cleared here and not left to the window closing: this window is hidden
-      // rather than destroyed, so a flag left set survives into the next time
-      // it opens — and every control, every key and the refresh itself are all
-      // gated on it. It would never accept anything again.
-      switching = false;
-      void hideSwitcher();
-    }, 450);
-  } catch (error) {
-    switching = false;
-    render({ title: t("switcher.failed"), detail: String(error), error: true });
+  const results: OperationResult[] = [];
+  const failures: string[] = [];
+  for (const monitor of row.switchable) {
+    const onEvent = new Channel<SwitchProgressEvent>();
+    const prefix = row.switchable.length > 1 ? `${monitor.name} · ` : "";
+    onEvent.onmessage = (event) => {
+      if (run === batch) render({ title: t("switcher.preparing"), detail: `${prefix}${progressDetail(event)}` });
+    };
+    try {
+      results.push(await invoke<OperationResult>("switch_host", { monitorId: monitor.monitorKey, targetId: row.id, onEvent }));
+    } catch (error) {
+      failures.push(`${monitor.name}: ${String(error)}`);
+    }
+    if (run !== batch) return;
   }
+  if (failures.length) {
+    switching = false;
+    // Displays that did switch have moved; show where everything is now, so
+    // a second try only goes after the ones that failed.
+    await loadState();
+    render({ title: t("switcher.failed"), detail: failures.join(" "), error: true });
+    return;
+  }
+  const last = results[results.length - 1];
+  render({ title: last?.title ?? "", detail: last?.detail ?? "" });
+  window.setTimeout(() => {
+    if (run !== batch) return;
+    // Cleared here and not left to the window closing: this window is hidden
+    // rather than destroyed, so a flag left set survives into the next time
+    // it opens — and every control, every key and the refresh itself are all
+    // gated on it. It would never accept anything again.
+    switching = false;
+    void hideSwitcher();
+  }, 450);
 }
 
 root.addEventListener("click", (event) => {
-  const option = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-row-index]");
+  const element = event.target as HTMLElement;
+  const tab = element.closest<HTMLButtonElement>("[data-target]");
+  if (tab?.dataset.target) {
+    selectTarget(tab.dataset.target);
+    return;
+  }
+  const option = element.closest<HTMLButtonElement>("[data-row-index]");
   if (!option) return;
   const index = Number(option.dataset.rowIndex);
-  if (Number.isInteger(index)) {
+  if (Number.isInteger(index) && isSelectable(rows[index])) {
     selectedIndex = index;
     void switchToSelected();
   }
@@ -193,12 +300,24 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (switching) return;
-  if (event.key === "Tab" || event.key === "ArrowDown" || event.key === "ArrowUp") {
+  if (event.key === "Tab" && targets().length > 1) {
     event.preventDefault();
-    const backwards = event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey);
-    selectIndex(nextAvailableIndex(backwards ? -1 : 1));
+    cycleTarget(event.shiftKey ? -1 : 1);
+  } else if (event.key === "Tab") {
+    // With one display there is no other target, so Tab keeps moving between hosts.
+    event.preventDefault();
+    selectIndex(nextAvailableIndex(event.shiftKey ? -1 : 1));
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    selectIndex(nextAvailableIndex(event.key === "ArrowUp" ? -1 : 1));
   } else if (event.key === "Enter") {
     event.preventDefault();
+    void switchToSelected();
+  } else if (/^[1-9]$/.test(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    const index = Number(event.key) - 1;
+    if (!isSelectable(rows[index])) return;
+    event.preventDefault();
+    selectedIndex = index;
     void switchToSelected();
   }
 });
@@ -219,8 +338,8 @@ async function initialize(): Promise<void> {
       }],
     };
   }
-  rows = computeRows();
-  selectedIndex = Math.max(0, rows.findIndex((row) => isSelectableRow(row)));
+  target = targets()[0] ?? ALL_DISPLAYS;
+  refreshRows();
   render();
   try {
     await listen(HOST_ORDER_CHANGED_EVENT, () => void reloadState());
@@ -240,30 +359,32 @@ async function initialize(): Promise<void> {
   // The window is hidden rather than closed, so re-read hosts each time it opens.
   window.addEventListener("focus", () => {
     // A switch that never finished must not leave the window inert the next
-    // time it is summoned.
+    // time it is summoned; whatever it was still doing is superseded.
+    batch += 1;
     switching = false;
     void reloadState();
   });
 }
 
-/** Re-reads hosts and their order, keeping the same host selected. */
+/** Re-reads hosts and their order, keeping the same target and host selected. */
 async function reloadState(): Promise<void> {
   if (switching) return;
-  const selected = rows[selectedIndex];
-  let latest: HostSwitcherState;
+  if (await loadState()) render();
+}
+
+/** Fetches the latest hosts into the rows without drawing them; false when
+ *  the backend could not answer. */
+async function loadState(): Promise<boolean> {
+  const keep = rows[selectedIndex]?.id;
   try {
-    latest = await invoke<HostSwitcherState>("get_host_switcher_state");
+    state = await invoke<HostSwitcherState>("get_host_switcher_state");
   } catch {
     // Keep showing the previous hosts; the next time the switcher opens it retries.
-    return;
+    return false;
   }
-  state = latest;
-  rows = computeRows();
-  const kept = selected?.kind === "host"
-    ? rows.findIndex((row) => row.kind === "host" && row.monitorKey === selected.monitorKey && row.host.id === selected.host.id)
-    : -1;
-  selectedIndex = kept !== -1 ? kept : Math.max(0, rows.findIndex((row) => isSelectableRow(row)));
-  render();
+  if (!targets().includes(target)) target = targets()[0] ?? ALL_DISPLAYS;
+  refreshRows(keep);
+  return true;
 }
 
 void initialize();

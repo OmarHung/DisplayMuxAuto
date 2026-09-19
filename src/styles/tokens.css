@@ -1,0 +1,117 @@
+/* Design tokens shared by the main window and the host switcher.
+   The theme is set on <html data-theme> by theme.ts. */
+
+:root {
+  color-scheme: light;
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  /* The window paints its own backdrop, so glass has something to blur on
+     every platform without asking the OS for a translucent window. */
+  --backdrop:
+    radial-gradient(38% 55% at 12% 14%, #8fb4ff 0%, transparent 70%),
+    radial-gradient(40% 50% at 90% 8%, #d6a8ff 0%, transparent 70%),
+    radial-gradient(45% 55% at 80% 96%, #8fe6d8 0%, transparent 70%),
+    radial-gradient(35% 45% at 14% 98%, #ffd0a8 0%, transparent 70%),
+    #eef1f7;
+
+  --glass: rgba(255, 255, 255, 0.46);
+  --glass-strong: rgba(255, 255, 255, 0.7);
+  --glass-weak: rgba(255, 255, 255, 0.26);
+  --glass-blur: blur(28px) saturate(180%);
+  --rim-hi: rgba(255, 255, 255, 0.95);
+  --rim-lo: rgba(255, 255, 255, 0.25);
+  --edge: rgba(255, 255, 255, 0.55);
+
+  --text: #0d0f16;
+  --text-2: rgba(20, 24, 36, 0.64);
+  --text-3: rgba(20, 24, 36, 0.44);
+  --sep: rgba(15, 20, 40, 0.09);
+  --field: rgba(255, 255, 255, 0.62);
+  --scrim: rgba(20, 26, 44, 0.28);
+
+  --shadow: 0 12px 40px rgba(30, 40, 80, 0.14), 0 2px 6px rgba(30, 40, 80, 0.06);
+  --shadow-lift: 0 4px 14px rgba(30, 40, 80, 0.1);
+
+  --accent: #007aff;
+  --accent-text: #0062cc;
+  --ok: #28a745;
+  --ok-glow: #34c759;
+  --warn: #b25e00;
+  --danger: #e0352b;
+
+  /* The colours a host can wear (host-look.ts). Each is dark enough under
+     white text, which a lit key or matrix cell puts on it. */
+  --host-indigo: #5e5ce6;
+  --host-teal: #0f9aa8;
+  --host-pink: #f0285a;
+  --host-blue: #007aff;
+  --host-orange: #f08a00;
+  --host-green: #2a9d48;
+  --host-purple: #a347d6;
+  --host-red: #e0352b;
+  --host-yellow: #c99400;
+  --host-graphite: #6e6e73;
+
+  --radius-panel: 26px;
+  --radius-card: 20px;
+  --radius-control: 12px;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --fast: 140ms;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --backdrop:
+    radial-gradient(40% 55% at 10% 12%, #2a3f9a 0%, transparent 70%),
+    radial-gradient(40% 50% at 92% 8%, #6a2c9a 0%, transparent 70%),
+    radial-gradient(45% 55% at 82% 96%, #0d6b73 0%, transparent 70%),
+    radial-gradient(35% 45% at 12% 98%, #7a3a1c 0%, transparent 70%),
+    #0a0c14;
+
+  --glass: rgba(38, 40, 54, 0.44);
+  --glass-strong: rgba(62, 64, 84, 0.58);
+  --glass-weak: rgba(255, 255, 255, 0.06);
+  --rim-hi: rgba(255, 255, 255, 0.38);
+  --rim-lo: rgba(255, 255, 255, 0.05);
+  --edge: rgba(255, 255, 255, 0.14);
+
+  --text: #f4f5fa;
+  --text-2: rgba(235, 238, 248, 0.66);
+  --text-3: rgba(235, 238, 248, 0.42);
+  --sep: rgba(255, 255, 255, 0.09);
+  --field: rgba(255, 255, 255, 0.08);
+  --scrim: rgba(0, 0, 0, 0.45);
+
+  --shadow: 0 16px 48px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --shadow-lift: 0 4px 14px rgba(0, 0, 0, 0.3);
+
+  --accent: #0a84ff;
+  --accent-text: #5eb0ff;
+  --ok: #30d158;
+  --ok-glow: #30d158;
+  --warn: #ffb340;
+  --danger: #ff453a;
+
+  --host-indigo: #7d7aff;
+  --host-teal: #2fb8cc;
+  --host-pink: #ff375f;
+  --host-blue: #0a84ff;
+  --host-orange: #ff9f0a;
+  --host-green: #30c255;
+  --host-purple: #bf5af2;
+  --host-red: #ff453a;
+  --host-yellow: #d9a800;
+  --host-graphite: #8e8e93;
+}
+
+[data-color="indigo"] { --c: var(--host-indigo); }
+[data-color="teal"] { --c: var(--host-teal); }
+[data-color="pink"] { --c: var(--host-pink); }
+[data-color="blue"] { --c: var(--host-blue); }
+[data-color="orange"] { --c: var(--host-orange); }
+[data-color="green"] { --c: var(--host-green); }
+[data-color="purple"] { --c: var(--host-purple); }
+[data-color="red"] { --c: var(--host-red); }
+[data-color="yellow"] { --c: var(--host-yellow); }
+[data-color="graphite"] { --c: var(--host-graphite); }

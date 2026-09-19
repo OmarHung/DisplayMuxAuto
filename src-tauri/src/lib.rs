@@ -1,9 +1,11 @@
 mod diagnostics;
 mod diagnostics_upload;
 mod host_alias;
+mod host_appearance;
 mod host_order;
 mod input_label;
 mod monitor_identity;
+mod tray;
 
 use std::{
     collections::HashMap,
@@ -21,10 +23,10 @@ use std::{
 use muxsu_core::{
     derive_pairing_key, AgentAction, AgentClient, AgentDisplayRoute, AgentHostInput, AgentResponse,
     AgentServer, DestinationHost, DiscoveredPeer, DisplayInput, DisplayMuxError, DisplayMuxProfile,
-    DisplayMuxService, HostAlias, InputLabel, LocalHostIdentity, MacAddress, MdnsPeerDiscovery,
-    MonitorControl, MonitorDescriptor, MonitorFingerprint, MonitorIdentityLink, PeerDiscovery,
-    PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome, WakeTarget, AGENT_PROTOCOL_VERSION,
-    DEFAULT_AGENT_PORT,
+    DisplayMuxService, HostAlias, HostAppearance, InputLabel, LocalHostIdentity, MacAddress,
+    MdnsPeerDiscovery, MonitorControl, MonitorDescriptor, MonitorFingerprint, MonitorIdentityLink,
+    PeerDiscovery, PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome, WakeTarget,
+    AGENT_PROTOCOL_VERSION, DEFAULT_AGENT_PORT,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
@@ -147,20 +149,16 @@ fn set_locale(locale: String, app: AppHandle) -> Result<(), String> {
         u64::from(selected == UiLocale::TraditionalChinese),
         Ordering::Relaxed,
     );
-    #[cfg(target_os = "windows")]
-    if let Some(tray) = app.tray_by_id("muxsu") {
-        use tauri::menu::MenuBuilder;
-        let menu = MenuBuilder::new(&app)
-            .text("tray-open", ui_text("開啟 MuxSU", "Open MuxSU"))
-            .separator()
-            .text("tray-quit", ui_text("結束 MuxSU", "Quit MuxSU"))
-            .build()
-            .map_err(user_error)?;
-        tray.set_menu(Some(menu)).map_err(user_error)?;
-    }
-    #[cfg(not(target_os = "windows"))]
-    let _ = app;
+    // The tray menu is written in the interface language.
+    tray::refresh_menu(&app);
     Ok(())
+}
+
+/// Rebuilds the tray menu after the main window changed something it lists:
+/// a shared display, a paired host, or a reset.
+#[tauri::command]
+fn refresh_tray(app: AppHandle) {
+    tray::refresh_menu(&app);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,6 +289,9 @@ struct AppSettings {
     /// Custom host names shared with paired hosts (see `host_alias`).
     /// Backend-owned like `host_order`.
     host_aliases: Vec<HostAlias>,
+    /// Custom host icons and colours shared with paired hosts (see
+    /// `host_appearance`). Backend-owned like `host_order`.
+    host_appearances: Vec<HostAppearance>,
     /// Notes for shared display inputs, shared with paired hosts (see
     /// `input_label`). Backend-owned like `host_order`.
     input_labels: Vec<InputLabel>,
@@ -342,6 +343,7 @@ impl Default for AppSettings {
             host_order: Vec::new(),
             host_order_updated_at_ms: 0,
             host_aliases: Vec::new(),
+            host_appearances: Vec::new(),
             input_labels: Vec::new(),
             monitor_identity_links: Vec::new(),
             host_inputs: Vec::new(),
@@ -380,6 +382,10 @@ struct HostSwitcherOption {
     /// refused to switch to it; this window had no way to know which one it
     /// was.
     is_active: bool,
+    /// The host's custom icon and colour (see `host_appearance`); `None`
+    /// leaves the switcher to draw its default.
+    icon: Option<String>,
+    color: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1064,6 +1070,12 @@ fn build_host_switcher_state(state: &AppRuntime, settings: &AppSettings) -> Host
         .iter()
         .map(|selected| {
             let mut hosts = Vec::with_capacity(settings.peers.len() + 1);
+            let look = |host_id: &str| {
+                let (icon, color) =
+                    host_appearance::appearance_for(&settings.host_appearances, host_id);
+                (icon.map(str::to_owned), color.map(str::to_owned))
+            };
+            let (local_icon, local_color) = look(&state.local_host_id);
             hosts.push(HostSwitcherOption {
                 id: "local".to_owned(),
                 // Falls back to the name paired hosts discover this computer
@@ -1084,9 +1096,12 @@ fn build_host_switcher_state(state: &AppRuntime, settings: &AppSettings) -> Host
                 // Everywhere else an unset route means this computer: it is
                 // the state before the display has ever been switched away.
                 is_active: shows_this_host(selected),
+                icon: local_icon,
+                color: local_color,
             });
             hosts.extend(settings.peers.iter().map(|peer| {
                 let input = peer.input_for(&selected.fingerprint);
+                let (icon, color) = look(&peer.id);
                 HostSwitcherOption {
                     id: peer.id.clone(),
                     name: host_alias::alias_for(&settings.host_aliases, &peer.id)
@@ -1097,6 +1112,8 @@ fn build_host_switcher_state(state: &AppRuntime, settings: &AppSettings) -> Host
                     is_local: false,
                     available: input.is_some(),
                     is_active: selected.active_route.as_deref() == Some(peer.id.as_str()),
+                    icon,
+                    color,
                 }
             }));
             hosts.sort_by_key(|host| route_order.iter().position(|route| *route == host.id));
@@ -1235,6 +1252,7 @@ fn settings_from_form(submitted: AppSettings, protected: &AppSettings) -> AppSet
         host_order: protected.host_order.clone(),
         host_order_updated_at_ms: protected.host_order_updated_at_ms,
         host_aliases: protected.host_aliases.clone(),
+        host_appearances: protected.host_appearances.clone(),
         input_labels: protected.input_labels.clone(),
         monitor_identity_links: protected.monitor_identity_links.clone(),
         host_inputs: protected.host_inputs.clone(),
@@ -1395,6 +1413,7 @@ async fn reset_settings(
     for event in [
         HOST_ORDER_CHANGED_EVENT,
         HOST_NAMES_CHANGED_EVENT,
+        HOST_APPEARANCES_CHANGED_EVENT,
         INPUT_LABELS_CHANGED_EVENT,
         MONITOR_IDENTITIES_CHANGED_EVENT,
     ] {
@@ -2555,9 +2574,10 @@ fn fit_agent_reply(mut reply: AgentResponse) -> AgentResponse {
     let fits = |reply: &AgentResponse| {
         serde_json::to_vec(reply).is_ok_and(|bytes| bytes.len() <= AGENT_REPLY_BUDGET_BYTES)
     };
-    let shed: [fn(&mut AgentResponse); 5] = [
+    let shed: [fn(&mut AgentResponse); 6] = [
         |reply| reply.monitor_identity_links.clear(),
         |reply| reply.input_labels.clear(),
+        |reply| reply.host_appearances.clear(),
         |reply| reply.host_aliases.clear(),
         |reply| reply.host_order.clear(),
         |reply| reply.host_inputs.clear(),
@@ -2889,6 +2909,9 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                         AgentAction::HostAliasesChanged { aliases } => {
                             receive_host_aliases_notice(app, aliases).await
                         }
+                        AgentAction::HostAppearancesChanged { appearances } => {
+                            receive_host_appearances_notice(app, appearances).await
+                        }
                         AgentAction::InputLabelsChanged { labels } => {
                             receive_input_labels_notice(app, labels).await
                         }
@@ -2934,6 +2957,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                 host_order,
                                 host_order_updated_at_ms,
                                 host_aliases,
+                                host_appearances,
                                 input_labels,
                                 monitor_identity_links,
                                 host_inputs,
@@ -2943,6 +2967,9 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                         settings.host_order,
                                         settings.host_order_updated_at_ms,
                                         host_alias::shareable_aliases(&settings.host_aliases),
+                                        host_appearance::shareable_appearances(
+                                            &settings.host_appearances,
+                                        ),
                                         input_label::shareable_labels(&settings.input_labels),
                                         settings.monitor_identity_links,
                                         settings.host_inputs,
@@ -2962,6 +2989,7 @@ async fn restart_agent(state: &AppRuntime, app: &AppHandle) -> Result<(), String
                                 host_order,
                                 host_order_updated_at_ms,
                                 host_aliases,
+                                host_appearances,
                                 input_labels,
                                 monitor_identity_links,
                                 host_inputs,
@@ -3202,6 +3230,10 @@ fn notice_supersedes(new: &AgentAction, pending: &AgentAction) -> bool {
     match (new, pending) {
         (AgentAction::HostOrderChanged { .. }, AgentAction::HostOrderChanged { .. })
         | (AgentAction::HostAliasesChanged { .. }, AgentAction::HostAliasesChanged { .. })
+        | (
+            AgentAction::HostAppearancesChanged { .. },
+            AgentAction::HostAppearancesChanged { .. },
+        )
         | (AgentAction::InputLabelsChanged { .. }, AgentAction::InputLabelsChanged { .. })
         | (
             AgentAction::MonitorIdentitiesChanged { .. },
@@ -3499,6 +3531,7 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
             };
             let their_order_updated_at_ms = theirs.host_order_updated_at_ms;
             let their_aliases = theirs.host_aliases.clone();
+            let their_appearances = theirs.host_appearances.clone();
             let their_labels = theirs.input_labels.clone();
             let their_identity_links = theirs.monitor_identity_links.clone();
             let their_host_inputs = theirs.host_inputs.clone();
@@ -3515,6 +3548,8 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
                     now_ms,
                 );
                 let names_changed = adopt_host_aliases(&mut latest, &theirs.host_aliases, now_ms);
+                let appearances_changed =
+                    adopt_host_appearances(&mut latest, &theirs.host_appearances, now_ms);
                 let labels_changed =
                     adopt_input_labels(&mut latest, &theirs.input_labels, now_ms);
                 let identities_changed =
@@ -3525,6 +3560,7 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
                 let host_inputs_changed = host_inputs_update.unwrap_or(false);
                 let latest = if order_changed
                     || names_changed
+                    || appearances_changed
                     || labels_changed
                     || identities_changed
                     || host_inputs_accepted
@@ -3537,6 +3573,7 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
                 for (changed, event) in [
                     (order_changed, HOST_ORDER_CHANGED_EVENT),
                     (names_changed, HOST_NAMES_CHANGED_EVENT),
+                    (appearances_changed, HOST_APPEARANCES_CHANGED_EVENT),
                     (labels_changed, INPUT_LABELS_CHANGED_EVENT),
                     (identities_changed, MONITOR_IDENTITIES_CHANGED_EVENT),
                     (host_inputs_changed, PEER_INPUTS_CHANGED_EVENT),
@@ -3572,6 +3609,14 @@ fn exchange_host_layout_with_peers(state: &AppRuntime, app: &AppHandle) {
                 };
                 if let Err(error) = request_peer(&latest, peer, action).await {
                     tracing::info!(peer = peer.name.as_str(), error = %error, "paired host did not accept the host names");
+                }
+            }
+            if host_appearance::has_newer_entries(&latest.host_appearances, &their_appearances) {
+                let action = AgentAction::HostAppearancesChanged {
+                    appearances: host_appearance::shareable_appearances(&latest.host_appearances),
+                };
+                if let Err(error) = request_peer(&latest, peer, action).await {
+                    tracing::info!(peer = peer.name.as_str(), error = %error, "paired host did not accept the host icons and colours");
                 }
             }
             if monitor_identity::needs_push(&latest.monitor_identity_links, &their_identity_links) {
@@ -3810,6 +3855,161 @@ fn alias_error_text(error: host_alias::AliasError) -> String {
             "Host names cannot contain line breaks or control characters",
         )
         .to_owned(),
+    }
+}
+
+/// Frontend event telling windows to re-read custom host icons and colours.
+const HOST_APPEARANCES_CHANGED_EVENT: &str = "host-appearances-changed";
+
+/// A host's custom icon and colour as the frontend reads them; `None` keeps
+/// the default.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RouteAppearance {
+    icon: Option<String>,
+    color: Option<String>,
+}
+
+/// The discovery id behind a route id ("local" or a peer id), if it is a host
+/// this computer knows.
+fn host_id_for_route(state: &AppRuntime, settings: &AppSettings, route_id: &str) -> Option<String> {
+    if route_id == host_order::LOCAL_ROUTE_ID {
+        return Some(state.local_host_id.clone());
+    }
+    settings
+        .peers
+        .iter()
+        .find(|peer| peer.id == route_id)
+        .map(|peer| peer.id.clone())
+}
+
+/// Custom looks by route id; hosts left at their default are omitted.
+fn route_host_appearances(
+    state: &AppRuntime,
+    settings: &AppSettings,
+) -> HashMap<String, RouteAppearance> {
+    std::iter::once((host_order::LOCAL_ROUTE_ID, state.local_host_id.as_str()))
+        .chain(
+            settings
+                .peers
+                .iter()
+                .map(|peer| (peer.id.as_str(), peer.id.as_str())),
+        )
+        .filter_map(|(route, host_id)| {
+            match host_appearance::appearance_for(&settings.host_appearances, host_id) {
+                (None, None) => None,
+                (icon, color) => Some((
+                    route.to_owned(),
+                    RouteAppearance {
+                        icon: icon.map(str::to_owned),
+                        color: color.map(str::to_owned),
+                    },
+                )),
+            }
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn get_host_appearances(
+    state: State<'_, AppRuntime>,
+) -> Result<HashMap<String, RouteAppearance>, String> {
+    let settings = read_settings(&state)?;
+    Ok(route_host_appearances(&state, &settings))
+}
+
+/// Gives the host behind `route_id` an icon and colour (empty restores the
+/// default) and shares every custom look with paired hosts. Returns looks by
+/// route id.
+#[tauri::command]
+fn set_host_appearance(
+    route_id: String,
+    icon: String,
+    color: String,
+    state: State<'_, AppRuntime>,
+    app: AppHandle,
+) -> Result<HashMap<String, RouteAppearance>, String> {
+    let mut settings = read_settings(&state)?;
+    let host_id = host_id_for_route(&state, &settings, &route_id).ok_or_else(|| {
+        ui_text(
+            "找不到這台主機，請重新整理後再試一次",
+            "This host was not found. Refresh and try again.",
+        )
+        .to_owned()
+    })?;
+    host_appearance::validate(&icon, &color).map_err(|_| {
+        ui_text(
+            "這個圖示或顏色無法使用",
+            "This icon or colour is not available",
+        )
+        .to_owned()
+    })?;
+    settings.host_appearances = host_appearance::with_appearance(
+        &settings.host_appearances,
+        &host_id,
+        icon,
+        color,
+        unix_time_ms(),
+    );
+    let settings = store_settings(&state, settings)?;
+    if let Err(error) = app.emit(HOST_APPEARANCES_CHANGED_EVENT, ()) {
+        tracing::warn!(error = %error, "unable to notify windows of a host icon change");
+    }
+    broadcast_to_peers(
+        &state,
+        &AgentAction::HostAppearancesChanged {
+            appearances: host_appearance::shareable_appearances(&settings.host_appearances),
+        },
+    );
+    Ok(route_host_appearances(&state, &settings))
+}
+
+async fn receive_host_appearances_notice(
+    app: AppHandle,
+    appearances: Vec<HostAppearance>,
+) -> AgentResponse {
+    let applied = tauri::async_runtime::spawn_blocking(move || {
+        // Serialize with dashboard scans, which write back a settings snapshot.
+        let _scan = DASHBOARD_SCAN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = app.state::<AppRuntime>();
+        let mut settings = read_settings(&state)?;
+        if adopt_host_appearances(&mut settings, &appearances, unix_time_ms()) {
+            store_settings(&state, settings)?;
+            if let Err(error) = app.emit(HOST_APPEARANCES_CHANGED_EVENT, ()) {
+                tracing::warn!(error = %error, "unable to notify windows of a host icon change");
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await;
+    agent_notice_response(applied)
+}
+
+/// Merges a paired host's custom host icons and colours into `settings`.
+/// Returns whether any changed.
+fn adopt_host_appearances(
+    settings: &mut AppSettings,
+    incoming: &[HostAppearance],
+    now_ms: u64,
+) -> bool {
+    // Looks only for hosts this one knows, like `adopt_host_aliases`.
+    let is_known = |host_id: &str| {
+        host_id == settings.local_host_id || settings.peers.iter().any(|peer| peer.id == host_id)
+    };
+    let incoming: Vec<HostAppearance> = incoming
+        .iter()
+        .filter(|entry| is_known(&entry.host_id))
+        .filter(|entry| is_plausible_revision(entry.updated_at_ms, now_ms))
+        .cloned()
+        .collect();
+    match host_appearance::merged_appearances(&settings.host_appearances, &incoming) {
+        Some(merged) => {
+            settings.host_appearances = merged;
+            true
+        }
+        None => false,
     }
 }
 
@@ -5002,6 +5202,7 @@ fn migrate_single_monitor_settings(value: serde_json::Value) -> AppSettings {
         host_order: Vec::new(),
         host_order_updated_at_ms: 0,
         host_aliases: Vec::new(),
+        host_appearances: Vec::new(),
         input_labels: Vec::new(),
         monitor_identity_links: Vec::new(),
         host_inputs: Vec::new(),
@@ -5048,6 +5249,7 @@ fn migrate_legacy_settings(legacy: LegacySettings) -> AppSettings {
         host_order: Vec::new(),
         host_order_updated_at_ms: 0,
         host_aliases: Vec::new(),
+        host_appearances: Vec::new(),
         input_labels: Vec::new(),
         monitor_identity_links: Vec::new(),
         host_inputs: Vec::new(),
@@ -5721,13 +5923,9 @@ fn show_main_window(app: &AppHandle) {
 /// icon was there but nothing answered a click.
 #[cfg(target_os = "macos")]
 fn setup_macos_status_item(app: &tauri::App) -> tauri::Result<()> {
-    use tauri::{image::Image, menu::MenuBuilder, tray::TrayIconBuilder};
+    use tauri::{image::Image, tray::TrayIconBuilder};
 
-    let menu = MenuBuilder::new(app)
-        .text("tray-open", ui_text("開啟 MuxSU", "Open MuxSU"))
-        .separator()
-        .text("tray-quit", ui_text("結束 MuxSU", "Quit MuxSU"))
-        .build()?;
+    let menu = tray::build_menu(app.handle())?;
     // The menu bar draws a template image in whatever colour it is using, so
     // the icon carries a shape in its alpha channel and no colour of its own.
     // The app icon would come out as a filled rounded square.
@@ -5741,43 +5939,29 @@ fn setup_macos_status_item(app: &tauri::App) -> tauri::Result<()> {
         MENU_BAR_ICON_SIDE,
         MENU_BAR_ICON_SIDE,
     );
-    TrayIconBuilder::with_id("muxsu")
+    TrayIconBuilder::with_id(tray::TRAY_ID)
         .menu(&menu)
         .icon(icon)
         .icon_as_template(true)
         // Opening the menu on a left click is what every other status item
         // does; this one has nowhere else to put "quit".
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "tray-open" => show_main_window(app),
-            "tray-quit" => app.exit(0),
-            _ => {}
-        })
+        .on_menu_event(|app, event| tray::handle_menu_event(app, event.id().as_ref()))
         .build(app)?;
+    tray::follow_changes(app.handle());
     Ok(())
 }
 
 #[cfg(target_os = "windows")]
 fn setup_windows_tray(app: &tauri::App) -> tauri::Result<()> {
-    use tauri::{
-        menu::MenuBuilder,
-        tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    };
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-    let menu = MenuBuilder::new(app)
-        .text("tray-open", ui_text("開啟 MuxSU", "Open MuxSU"))
-        .separator()
-        .text("tray-quit", ui_text("結束 MuxSU", "Quit MuxSU"))
-        .build()?;
-    let mut tray = TrayIconBuilder::with_id("muxsu")
+    let menu = tray::build_menu(app.handle())?;
+    let mut tray_icon = TrayIconBuilder::with_id(tray::TRAY_ID)
         .menu(&menu)
         .tooltip("MuxSU")
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "tray-open" => show_main_window(app),
-            "tray-quit" => app.exit(0),
-            _ => {}
-        })
+        .on_menu_event(|app, event| tray::handle_menu_event(app, event.id().as_ref()))
         .on_tray_icon_event(|tray, event| {
             if matches!(
                 event,
@@ -5794,9 +5978,10 @@ fn setup_windows_tray(app: &tauri::App) -> tauri::Result<()> {
             }
         });
     if let Some(icon) = app.default_window_icon().cloned() {
-        tray = tray.icon(icon);
+        tray_icon = tray_icon.icon(icon);
     }
-    tray.build(app)?;
+    tray_icon.build(app)?;
+    tray::follow_changes(app.handle());
     Ok(())
 }
 
@@ -6248,6 +6433,8 @@ pub fn run() -> anyhow::Result<()> {
             set_host_order,
             get_host_names,
             set_host_name,
+            get_host_appearances,
+            set_host_appearance,
             set_input_label,
             set_monitor_identity_link,
             set_local_input,
@@ -6268,7 +6455,8 @@ pub fn run() -> anyhow::Result<()> {
             set_diagnostics_consent,
             prepare_diagnostic_report,
             send_diagnostic_report,
-            save_diagnostic_report
+            save_diagnostic_report,
+            refresh_tray
         ])
         .run(tauri::generate_context!())
         .map_err(anyhow::Error::from)

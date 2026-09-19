@@ -1,8 +1,7 @@
-import "@fontsource-variable/manrope";
 import {
-  Activity, AlertCircle, ArrowLeftRight, CircleHelp, Computer, createIcons, Download, KeyRound, Laptop, Link,
-  ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Pencil, Github, Languages, Monitor, MonitorDot, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, TriangleAlert,
-  ShieldCheck, SunMoon, Trash2, UserRound, Zap,
+  Activity, AlertCircle, ChevronDown, ChevronUp, CircleHelp, createIcons, Download, ExternalLink, Github, Info,
+  KeyRound, Keyboard, Languages, LayoutGrid, Link, Monitor, MonitorDot, MonitorOff, Network, Pencil, Plus,
+  RefreshCw, RotateCcw, Save, Search, SunMoon, Trash2, TriangleAlert, UserRound, Zap,
 } from "lucide";
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, invoke } from "@tauri-apps/api/core";
@@ -10,9 +9,16 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import packageMetadata from "../package.json";
 import { locale, localePreference, setLocalePreference, t, type MessageKey } from "./i18n";
-import { diagnosticsDialogsHtml, diagnosticsSectionHtml, initDiagnostics } from "./diagnostics";
+import { initDiagnostics } from "./diagnostics";
+import { HOST_COLORS, HOST_ICONS, hostIconSet, hostLook, type CustomLook } from "./host-look";
+import { appShellHtml, SETTINGS_TABS, type SettingsTab } from "./layout";
 import { initializeTheme, setThemePreference } from "./theme";
-import "./styles.css";
+import "./styles/tokens.css";
+import "./styles/base.css";
+import "./styles/shell.css";
+import "./styles/switch-center.css";
+import "./styles/settings.css";
+import "./styles/overlays.css";
 
 type Platform = "windows" | "mac";
 type ResolutionSource = "edid" | "coreGraphicsDisplayMode" | "windowsDisplayMode";
@@ -163,6 +169,10 @@ const standardInputs: InputOption[] = [
   [0x11, "HDMI 1"], [0x12, "HDMI 2"], [0x1b, "Type-C"],
 ].map(([value, name]) => ({ value: value as number, name: name as string }));
 const MIN_SHARED_KEY_LENGTH = 15;
+/** With this many shared displays, a stage for each no longer fits side by side. */
+const MATRIX_MIN_DISPLAYS = 3;
+/** With this many hosts, a row of host keys no longer fits under one display. */
+const MATRIX_MIN_HOSTS = 4;
 
 const previewSettings: AppSettings = {
   localHost: "windows", sharedMonitors: [], peers: [],
@@ -179,7 +189,6 @@ let settings = previewSettings;
 let dashboard = previewDashboard;
 let discoveredPeers: DiscoveredPeer[] = [];
 let inputOptionsByMonitor: Record<string, InputOption[]> = {};
-let activeMonitorKey: string | null = null;
 let isPreview = false;
 let pendingUpdate: UpdateInfo | null = null;
 let isRecordingShortcut = false;
@@ -208,14 +217,16 @@ const releaseHistoryFallback = [
 
 const releaseUrl = (version: string) => `https://github.com/OmarHung/MuxSU/releases/tag/${version}`;
 
-const onboardingSteps = [
+const onboardingSteps: readonly {
+  label: string; title: string; body: string; page: string; tab?: SettingsTab; target: string; placement: string;
+}[] = [
   {
     label: t("onboarding.stepWelcome"),
     title: t("onboarding.dashboardTitle"),
     body: t("onboarding.dashboardBody"),
     page: "dashboard",
-    target: ".showcase-monitor-card",
-    placement: "right",
+    target: "#switch-panel > :first-child",
+    placement: "bottom",
   },
   {
     label: t("onboarding.stepSettings"),
@@ -223,13 +234,14 @@ const onboardingSteps = [
     body: t("onboarding.settingsBody"),
     page: "dashboard",
     target: '[data-page="settings"]',
-    placement: "right",
+    placement: "bottom",
   },
   {
     label: t("onboarding.stepDisplay"),
     title: t("onboarding.displayTitle"),
     body: t("onboarding.displayBody"),
     page: "settings",
+    tab: "displays",
     target: ".form-section.first",
     placement: "bottom",
   },
@@ -238,18 +250,20 @@ const onboardingSteps = [
     title: t("onboarding.pairingTitle"),
     body: t("onboarding.pairingBody"),
     page: "settings",
+    tab: "hosts",
     target: ".pairing-section",
-    placement: "top",
+    placement: "bottom",
   },
   {
     label: t("onboarding.stepFinish"),
     title: t("onboarding.finishTitle"),
     body: t("onboarding.finishBody"),
     page: "settings",
-    target: ".form-actions",
+    tab: "hosts",
+    target: ".pairing-password",
     placement: "top",
   },
-] as const;
+];
 
 let onboardingStep = 0;
 
@@ -258,281 +272,25 @@ if (!app) throw new Error(t("app.rootMissing"));
 document.documentElement.lang = locale;
 const themePreference = initializeTheme();
 
-app.innerHTML = `
-  <div class="app-shell">
-    <aside class="sidebar" aria-label="${t("nav.aria")}">
-      <div class="brand-block">
-        <div class="brand-header">
-          <div class="brand-icon" aria-hidden="true"></div>
-          <span class="brand-title"><span>Mux</span><span>SU</span></span>
-        </div>
-        <label class="language-picker">
-          <i data-lucide="languages"></i>
-          <span class="sr-only">${t("language.label")}</span>
-          <select id="language-select" aria-label="${t("language.label")}">
-            <option value="system">${t("language.system")}</option>
-            <option value="en">${t("language.english")}</option>
-            <option value="zh-TW">${t("language.traditionalChinese")}</option>
-          </select>
-          <i class="language-chevron" data-lucide="chevron-down"></i>
-        </label>
-        <label class="language-picker">
-          <i data-lucide="sun-moon"></i>
-          <span class="sr-only">${t("theme.label")}</span>
-          <select id="theme-select" aria-label="${t("theme.label")}">
-            <option value="system">${t("theme.system")}</option>
-            <option value="light">${t("theme.light")}</option>
-            <option value="dark">${t("theme.dark")}</option>
-          </select>
-          <i class="language-chevron" data-lucide="chevron-down"></i>
-        </label>
-      </div>
-      <nav class="sidebar-nav">
-        <button class="nav-button is-active" data-page="dashboard"><i data-lucide="arrow-left-right"></i><span>${t("nav.dashboard")}</span></button>
-        <button class="nav-button" data-page="settings"><i data-lucide="settings"></i><span>${t("nav.settings")}</span></button>
-      </nav>
-      <button class="nav-button nav-bottom" data-page="help"><i data-lucide="circle-help"></i><span>${t("nav.help")}</span></button>
-    </aside>
-    <main class="workspace">
-      <header class="topbar">
-        <h1 id="page-title">${t("page.dashboard")}</h1>
-        <div class="switch-all-bar" id="switch-all-bar" hidden></div>
-        <div class="topbar-actions">
-          <div class="agent-pill" id="agent-pill"><span class="status-dot"></span><span>${t("dashboard.agentMissing")}</span></div>
-          <button class="icon-button" id="update-button" title="${t("action.checkUpdates")}"><i data-lucide="download"></i></button>
-          <button class="icon-button" id="refresh-button" title="${t("action.refresh")}"><i data-lucide="refresh-cw"></i></button>
-        </div>
-      </header>
+app.innerHTML = appShellHtml({ releaseRows: releaseHistoryRows(releaseHistoryFallback), minSharedKeyLength: MIN_SHARED_KEY_LENGTH });
 
-      <section class="page is-active" id="dashboard-page">
-        <div class="monitor-strip" id="monitor-strip"></div>
-        <div class="switch-panel" id="switch-panel"></div>
-
-        <section class="status-summary-bar">
-          <div class="summary-item"><span>${t("dashboard.sharedLabel")}</span><strong id="monitor-health" class="text-accent">${t("dashboard.detecting")}</strong></div>
-          <span class="summary-pipe"></span>
-          <div class="summary-item"><span>${t("dashboard.hostsLabel")}</span><strong id="peer-health">${t("dashboard.hostCount", { count: 0 })}</strong></div>
-          <span class="summary-pipe"></span>
-          <div class="summary-item"><span>${t("dashboard.wakeLabel")}</span><strong id="wake-health" class="text-accent">${t("dashboard.noHosts")}</strong></div>
-        </section>
-      </section>
-
-      <section class="page" id="settings-page">
-        <div class="settings-layout">
-          <section class="settings-main">
-            <form id="settings-form">
-              <div class="form-section first">
-                <div class="pairing-heading">
-                  <strong>${t("settings.stepMonitor")}</strong>
-                </div>
-                <div class="monitor-picker" id="monitor-picker"></div>
-                <div class="monitor-merge" id="monitor-merge"></div>
-              </div>
-
-              <div class="form-section two-columns">
-                <label class="field"><span>${t("settings.localComputer")}</span><input id="local-host-name" maxlength="24" /><small>${t("settings.localComputerHint")}</small></label>
-              </div>
-
-              <div class="form-section">
-                <div class="pairing-heading">
-                  <strong>${t("settings.localInput")}</strong>
-                </div>
-                <div class="local-input-summary" id="local-input-summary"></div>
-              </div>
-
-              <div class="form-section">
-                <div class="pairing-heading">
-                  <strong>${t("settings.inputLabels")}</strong>
-                </div>
-                <small class="section-hint">${t("settings.inputLabelsHint")}</small>
-                <div class="input-labels" id="input-labels"></div>
-              </div>
-
-              <div class="form-section pairing-section">
-                <div class="pairing-heading">
-                  <strong>${t("settings.stepHosts")}</strong>
-                  <button class="scan-button" id="scan-button" type="button"><i data-lucide="search"></i>${t("action.searchAgain")}</button>
-                </div>
-                <div class="peer-list" id="peer-list"></div>
-                <div class="paired-routes" id="paired-routes"></div>
-              </div>
-
-              <div class="form-section two-columns">
-                <label class="field"><span>${t("settings.password")}</span><div class="input-wrap"><i data-lucide="key-round"></i><input id="shared-key" type="password" minlength="${MIN_SHARED_KEY_LENGTH}" placeholder="${t("settings.passwordPlaceholder")}" /></div><small>${t("settings.passwordHint")}</small></label>
-                <label class="field compact"><span>${t("settings.wait")}</span><input id="wait-seconds" type="number" min="5" max="120" /><small>${t("settings.waitHint")}</small></label>
-              </div>
-
-              <div class="form-section shortcut-section">
-                <label class="switch-row shortcut-toggle-row">
-                  <span class="switch-label">
-                    <strong>${t("settings.hostSwitcher")}</strong>
-                    <small>${t("settings.hostSwitcherHint")}</small>
-                  </span>
-                  <input id="host-switcher-enabled" type="checkbox" class="toggle-checkbox" />
-                  <span class="switch-slider"></span>
-                </label>
-                <div class="shortcut-editor">
-                  <div>
-                    <strong>${t("settings.shortcut")}</strong>
-                    <small>${t("settings.shortcutHint")}</small>
-                  </div>
-                  <button id="shortcut-recorder" class="shortcut-recorder" type="button">
-                    <span id="shortcut-value"></span>
-                    <em>${t("settings.recordShortcut")}</em>
-                  </button>
-                </div>
-                <small id="shortcut-status" class="shortcut-status" aria-live="polite"></small>
-              </div>
-
-              <div class="toggles-section">
-                <label class="switch-row">
-                  <span class="switch-label">
-                    <strong>${t("settings.autostart")}</strong>
-                    <small>${t("settings.autostartHint")}</small>
-                  </span>
-                  <input id="autostart" type="checkbox" class="toggle-checkbox" />
-                  <span class="switch-slider"></span>
-                </label>
-                <label class="switch-row">
-                  <span class="switch-label">
-                    <strong>${t("settings.autoUpdates")}</strong>
-                    <small>${t("settings.autoUpdatesHint")}</small>
-                  </span>
-                  <input id="check-updates" type="checkbox" class="toggle-checkbox" />
-                  <span class="switch-slider"></span>
-                </label>
-              </div>
-
-              <div class="form-actions" id="form-actions" hidden>
-                <p class="unsaved-note" aria-live="polite">
-                  <i data-lucide="alert-circle"></i>${t("settings.unsaved")}
-                </p>
-                <div class="form-actions-buttons">
-                  <button class="cancel-button" type="button" id="discard-button">${t("action.discard")}</button>
-                  <button class="save-button" type="submit"><i data-lucide="save"></i>${t("action.save")}</button>
-                </div>
-              </div>
-            </form>
-
-            ${diagnosticsSectionHtml()}
-
-            <div class="form-section reset-section">
-              <div class="pairing-heading"><strong>${t("settings.resetTitle")}</strong></div>
-              <p class="reset-note"><i data-lucide="triangle-alert"></i>${t("settings.resetIntro")}</p>
-              <div class="reset-actions">
-                <button type="button" class="reset-button" data-reset-scope="displays">
-                  <strong>${t("settings.resetDisplays")}</strong>
-                  <small>${t("settings.resetDisplaysHint")}</small>
-                </button>
-                <button type="button" class="reset-button is-danger" data-reset-scope="everything">
-                  <strong>${t("settings.resetEverything")}</strong>
-                  <small>${t("settings.resetEverythingHint")}</small>
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <aside class="compatibility-panel">
-            <h3>${t("settings.inputGuide")}</h3>
-            <div class="path-item"><span class="path-badge">01</span><div><strong>${t("settings.mccsTitle")}</strong><p>${t("settings.mccsBody")}</p></div></div>
-            <div class="path-item"><span class="path-badge">02</span><div><strong>${t("settings.ddcTitle")}</strong><p>${t("settings.ddcBody")}</p></div></div>
-            <div class="path-item"><span class="path-badge">03</span><div><strong>${t("settings.routingTitle")}</strong><p>${t("settings.routingBody")}</p></div></div>
-            <div class="compat-note"><i data-lucide="shield-check"></i><p>${t("settings.safetyBody")}</p></div>
-          </aside>
-        </div>
-      </section>
-
-      <section class="page" id="help-page">
-        <div class="help-content">
-          <p class="section-kicker">OPERATING NOTES</p><h2>${t("help.heading")}</h2>
-          <div class="note-list">
-            <article><span>01</span><div><h3>${t("help.replaceTitle")}</h3><p>${t("help.replaceBody")}</p></div></article>
-            <article><span>02</span><div><h3>${t("help.inputTitle")}</h3><p>${t("help.inputBody")}</p></div></article>
-            <article><span>03</span><div><h3>${t("help.autoTitle")}</h3><p>${t("help.autoBody")}</p></div></article>
-            <article><span>04</span><div><h3>${t("help.adapterTitle")}</h3><p>${t("help.adapterBody")}</p></div></article>
-          </div>
-
-          <p class="upstream-note">${t("help.upstream")}</p>
-
-          <section class="release-history" aria-labelledby="release-history-title">
-            <p class="section-kicker">RELEASE HISTORY</p><h2 id="release-history-title">${t("help.releaseHistoryTitle")}</h2>
-            <div class="release-table-wrap">
-              <table class="release-table">
-                <thead><tr><th scope="col">${t("help.releaseDate")}</th><th scope="col">${t("help.releaseVersion")}</th><th scope="col">${t("help.releaseLink")}</th></tr></thead>
-                <tbody id="release-history-body">
-                  ${releaseHistoryRows(releaseHistoryFallback)}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <section class="onboarding-replay" aria-labelledby="onboarding-replay-title">
-            <div>
-              <p class="section-kicker">GETTING STARTED</p>
-              <h2 id="onboarding-replay-title">${t("help.onboardingTitle")}</h2>
-              <p>${t("help.onboardingBody")}</p>
-            </div>
-            <button class="scan-button" id="onboarding-restart" type="button">${t("help.onboardingAction")}</button>
-          </section>
-
-          <section class="about-section" aria-labelledby="about-title">
-            <p class="section-kicker">ABOUT</p><h2 id="about-title">${t("about.title")}</h2>
-            <dl class="about-grid">
-              <div class="about-item">
-                <dt><i data-lucide="user-round"></i>${t("about.developer")}</dt>
-                <dd>Henry Hsu</dd>
-              </div>
-              <div class="about-item">
-                <dt><i data-lucide="github"></i>GitHub</dt>
-                <dd><a href="https://github.com/OmarHung/MuxSU" data-external-url>OmarHung/MuxSU<i data-lucide="external-link"></i></a></dd>
-              </div>
-              <div class="about-item">
-                <dt><i data-lucide="activity"></i>${t("about.version")}</dt>
-                <dd id="app-version" aria-live="polite">${t("about.loading")}</dd>
-              </div>
-            </dl>
-          </section>
-        </div>
-      </section>
-    </main>
-  </div>
-  <div class="operation-overlay" id="operation-overlay" aria-live="polite" aria-hidden="true"><div class="operation-dialog"><div class="spinner"></div><p class="section-kicker">SMART SWITCH</p><h2 id="operation-title">${t("operation.running")}</h2><p id="operation-detail">${t("operation.preparingBody")}</p></div></div>
-  <div class="update-overlay" id="update-overlay" aria-hidden="true">
-    <div class="update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-title" aria-describedby="update-version">
-      <p class="section-kicker">SIGNED UPDATE</p>
-      <h2 id="update-title">${t("update.available")}</h2>
-      <p id="update-version"></p>
-      <div class="update-notes" id="update-notes"></div>
-      <div class="update-progress" id="update-progress" hidden><div id="update-progress-bar"></div></div>
-      <p class="update-progress-label" id="update-progress-label"></p>
-      <div class="update-actions"><button class="scan-button" id="update-cancel" type="button">${t("action.later")}</button><button class="save-button" id="update-install" type="button"><i data-lucide="download"></i>${t("action.downloadInstall")}</button></div>
-    </div>
-  </div>
-  ${diagnosticsDialogsHtml()}
-  <div class="onboarding-overlay" id="onboarding-overlay" aria-hidden="true"></div>
-  <section class="onboarding-tooltip" id="onboarding-tooltip" role="dialog" aria-modal="false" aria-labelledby="onboarding-title" aria-describedby="onboarding-body" aria-hidden="true">
-    <div class="onboarding-tooltip-header">
-      <div><p class="section-kicker">PRODUCT TOUR</p><p class="onboarding-counter" id="onboarding-counter"></p></div>
-      <button class="onboarding-skip" id="onboarding-skip" type="button">${t("onboarding.skip")}</button>
-    </div>
-    <span class="onboarding-step-label" id="onboarding-step-label"></span>
-    <h2 id="onboarding-title"></h2>
-    <p class="onboarding-body" id="onboarding-body"></p>
-    <div class="onboarding-status" id="onboarding-status" hidden><strong id="onboarding-status-title"></strong><span id="onboarding-status-detail"></span></div>
-    <div class="onboarding-actions">
-      <button class="scan-button" id="onboarding-previous" type="button">${t("onboarding.previous")}</button>
-      <button class="save-button" id="onboarding-next" type="button"></button>
-    </div>
-  </section>
-  <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
-`;
-
-const iconSet = { Activity, AlertCircle, ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Pencil, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Link, Monitor, MonitorDot, MonitorOff, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, SunMoon, Trash2, TriangleAlert, UserRound, Zap };
+const iconSet = {
+  Activity, AlertCircle, ChevronDown, ChevronUp, CircleHelp, Download, ExternalLink, Github, Info, KeyRound, Keyboard,
+  Languages, LayoutGrid, Link, Monitor, MonitorDot, MonitorOff, Network, Pencil, Plus, RefreshCw, Save, Search, SunMoon,
+  RotateCcw, Trash2, TriangleAlert, UserRound, Zap, ...hostIconSet,
+};
 const refreshIcons = () => createIcons({ icons: iconSet });
 refreshIcons();
 
-const pageTitles: Record<string, string> = { dashboard: t("page.dashboard"), settings: t("page.settings"), help: t("page.help") };
 document.querySelectorAll<HTMLButtonElement>("[data-page]").forEach((button) => button.addEventListener("click", () => showPage(button.dataset.page ?? "dashboard")));
+document.querySelectorAll<HTMLButtonElement>("[data-settings-tab]").forEach((button) => button.addEventListener("click", () => {
+  const tab = SETTINGS_TABS.find((item) => item === button.dataset.settingsTab);
+  if (tab) showSettingsTab(tab);
+}));
+document.querySelector("#view-toggle")?.addEventListener("click", (event) => {
+  const view = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-view]")?.dataset.switchView;
+  if (view === "stage" || view === "matrix") setSwitchView(view);
+});
 document.querySelector<HTMLButtonElement>("#refresh-button")?.addEventListener("click", () => void refresh());
 document.querySelector<HTMLButtonElement>("#update-button")?.addEventListener("click", () => pendingUpdate ? showUpdateDialog(pendingUpdate) : void checkForUpdates(true));
 document.querySelector<HTMLButtonElement>("#update-cancel")?.addEventListener("click", hideUpdateDialog);
@@ -593,6 +351,14 @@ const diagnostics = initDiagnostics({
   withBusyButton,
 });
 document.querySelector<HTMLFormElement>("#settings-form")?.addEventListener("submit", (event) => void saveSettings(event));
+// The form spans every settings tab, and the browser cannot point at a field
+// on a hidden one: saving from another tab would just do nothing. Opening the
+// field's tab first lets the browser show which one to fix.
+document.querySelector<HTMLFormElement>("#settings-form")?.addEventListener("invalid", (event) => {
+  const panel = (event.target as HTMLElement).closest<HTMLElement>("[data-settings-panel]");
+  const tab = SETTINGS_TABS.find((item) => item === panel?.dataset.settingsPanel);
+  if (tab && !panel?.classList.contains("is-active")) showSettingsTab(tab);
+}, true);
 // Most of this page saves as it is changed; these few do not, and nothing said
 // so. Named one by one rather than watching the whole form, so a control that
 // saves itself never raises a warning that its change is waiting.
@@ -621,10 +387,7 @@ document.querySelector("#local-input-summary")?.addEventListener("change", (even
   const field = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-local-input]");
   if (field?.dataset.localInput) void commitLocalInput(field.dataset.localInput, field.value);
 });
-document.querySelector("#local-host-name")?.addEventListener("change", (event) => {
-  void renameLocalHost((event.target as HTMLInputElement).value);
-});
-document.querySelector(".settings-main")?.addEventListener("click", (event) => {
+document.querySelector("#settings-form")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-reset-scope]");
   if (button?.dataset.resetScope) requestReset(button.dataset.resetScope, button);
 });
@@ -647,12 +410,6 @@ document.querySelector("#peer-list")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-add-peer]");
   if (button?.dataset.addPeer) void addPeer(button.dataset.addPeer);
 });
-document.querySelector("#paired-routes")?.addEventListener("click", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-remove-peer], [data-probe-id], [data-wake-id]");
-  if (button?.dataset.removePeer) void removePeer(button.dataset.removePeer);
-  if (button?.dataset.probeId) void peerCommand("probe_peer", button.dataset.probeId);
-  if (button?.dataset.wakeId) void peerCommand("wake_peer", button.dataset.wakeId);
-});
 const inputLabels = document.querySelector<HTMLElement>("#input-labels");
 inputLabels?.addEventListener("change", (event) => {
   const field = (event.target as HTMLElement).closest<HTMLInputElement>("[data-label-input]");
@@ -670,14 +427,6 @@ inputLabels?.addEventListener("keydown", (event) => {
     field.blur();
   }
 });
-inputLabels?.addEventListener("toggle", (event) => {
-  const group = event.target as HTMLDetailsElement;
-  const monitorKey = group.dataset.labelGroup;
-  if (!monitorKey) return;
-  const next = new Set(openInputLabelGroups);
-  if (group.open) next.add(monitorKey); else next.delete(monitorKey);
-  openInputLabelGroups = next;
-}, true);
 inputLabels?.addEventListener("focusout", () => {
   window.setTimeout(() => {
     if (inputNamesReloadPending && !inputLabels.contains(document.activeElement)) {
@@ -685,33 +434,56 @@ inputLabels?.addEventListener("focusout", () => {
     }
   }, 0);
 });
-document.querySelector("#monitor-strip")?.addEventListener("click", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-monitor-key]");
-  if (!button?.dataset.monitorKey || button.dataset.monitorKey === activeMonitorKey) return;
-  activeMonitorKey = button.dataset.monitorKey;
-  renderMonitorStrip();
-  renderSwitchPanel();
-  refreshIcons();
-});
-const switchPanel = document.querySelector<HTMLElement>("#switch-panel");
-switchPanel?.addEventListener("click", (event) => {
-  const moveButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-move-route]");
-  if (moveButton?.dataset.moveRoute) {
-    moveRouteBy(moveButton.dataset.moveRoute, Number(moveButton.dataset.moveOffset));
+/** Hosts are named, ordered and diagnosed from one list on the hosts tab. */
+const hostList = document.querySelector<HTMLElement>("#host-list");
+hostList?.addEventListener("click", (event) => {
+  const target = event.target as HTMLElement;
+  const lookButton = target.closest<HTMLButtonElement>("[data-edit-look]");
+  if (lookButton?.dataset.editLook) {
+    toggleLookEditor(lookButton.dataset.editLook);
+    return;
   }
-  const renameButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-rename-route]");
+  if (target.closest("[data-close-look]")) {
+    toggleLookEditor(null);
+    return;
+  }
+  const lookChoice = target.closest<HTMLButtonElement>("[data-look-route]");
+  const lookRoute = lookChoice?.dataset.lookRoute;
+  if (lookChoice && lookRoute) {
+    if (lookChoice.dataset.lookIcon) void setHostLook(lookRoute, { icon: lookChoice.dataset.lookIcon });
+    else if (lookChoice.dataset.lookColor) void setHostLook(lookRoute, { color: lookChoice.dataset.lookColor });
+    else if (lookChoice.hasAttribute("data-look-reset")) void setHostLook(lookRoute, "reset");
+    return;
+  }
+  const moveButton = target.closest<HTMLButtonElement>("[data-move-route]");
+  if (moveButton?.dataset.moveRoute) moveRouteBy(moveButton.dataset.moveRoute, Number(moveButton.dataset.moveOffset));
+  const renameButton = target.closest<HTMLButtonElement>("[data-rename-route]");
   if (renameButton?.dataset.renameRoute) startRenaming(renameButton.dataset.renameRoute);
+  const peerButton = target.closest<HTMLButtonElement>("[data-remove-peer], [data-probe-id], [data-wake-id]");
+  if (peerButton?.dataset.removePeer) void removePeer(peerButton.dataset.removePeer);
+  if (peerButton?.dataset.probeId) void peerCommand("probe_peer", peerButton.dataset.probeId);
+  if (peerButton?.dataset.wakeId) void peerCommand("wake_peer", peerButton.dataset.wakeId);
 });
-switchPanel?.addEventListener("input", (event) => {
+hostList?.addEventListener("input", (event) => {
   const field = event.target as HTMLInputElement;
   if (field.dataset.renameInput && renaming?.routeId === field.dataset.renameInput) {
     renaming = { ...renaming, draft: field.value };
   }
 });
-switchPanel?.addEventListener("keydown", (event) => {
+hostList?.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && editingLook && (event.target as HTMLElement).closest(".look-editor, [data-edit-look]")) {
+    event.preventDefault();
+    const routeId = editingLook;
+    editingLook = null;
+    renderHostList();
+    refreshIcons();
+    document.querySelector<HTMLButtonElement>(`[data-edit-look="${cssEscape(routeId)}"]`)?.focus();
+    return;
+  }
   const field = event.target as HTMLInputElement;
   if (!field.dataset.renameInput) return;
   if (event.key === "Enter") {
+    // Inside the settings form, Enter would otherwise submit every setting.
     event.preventDefault();
     void commitRename(field.dataset.renameInput);
   } else if (event.key === "Escape") {
@@ -719,11 +491,11 @@ switchPanel?.addEventListener("keydown", (event) => {
     stopRenaming(field.dataset.renameInput);
   }
 });
-switchPanel?.addEventListener("focusout", (event) => {
+hostList?.addEventListener("focusout", (event) => {
   const field = event.target as HTMLInputElement;
   if (field.dataset.renameInput) void commitRename(field.dataset.renameInput);
 });
-switchPanel?.addEventListener("dragstart", (event) => {
+hostList?.addEventListener("dragstart", (event) => {
   const card = (event.target as HTMLElement).closest<HTMLElement>("[data-route-card]");
   if (!card?.dataset.routeCard || !event.dataTransfer) return;
   draggedRouteId = card.dataset.routeCard;
@@ -731,15 +503,15 @@ switchPanel?.addEventListener("dragstart", (event) => {
   event.dataTransfer.setData("text/plain", draggedRouteId);
   card.classList.add("is-dragging");
 });
-switchPanel?.addEventListener("dragover", (event) => {
+hostList?.addEventListener("dragover", (event) => {
   const card = (event.target as HTMLElement).closest<HTMLElement>("[data-route-card]");
   if (!draggedRouteId || !card) return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-  switchPanel.querySelectorAll(".is-drop-target").forEach((item) => item.classList.remove("is-drop-target"));
+  hostList.querySelectorAll(".is-drop-target").forEach((item) => item.classList.remove("is-drop-target"));
   if (card.dataset.routeCard !== draggedRouteId) card.classList.add("is-drop-target");
 });
-switchPanel?.addEventListener("drop", (event) => {
+hostList?.addEventListener("drop", (event) => {
   const card = (event.target as HTMLElement).closest<HTMLElement>("[data-route-card]");
   if (!draggedRouteId || !card?.dataset.routeCard) return;
   event.preventDefault();
@@ -747,16 +519,25 @@ switchPanel?.addEventListener("drop", (event) => {
   const next = movedRoute(order, draggedRouteId, order.indexOf(card.dataset.routeCard));
   if (next.join() !== order.join()) void saveRouteOrder(next);
 });
-switchPanel?.addEventListener("dragend", () => {
+hostList?.addEventListener("dragend", () => {
   draggedRouteId = null;
-  switchPanel.querySelectorAll(".is-dragging, .is-drop-target").forEach((item) => item.classList.remove("is-dragging", "is-drop-target"));
+  hostList.querySelectorAll(".is-dragging, .is-drop-target").forEach((item) => item.classList.remove("is-dragging", "is-drop-target"));
 });
-document.querySelector("#switch-all-bar")?.addEventListener("click", (event) => {
+const switchAllClick = (event: Event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-all-id]");
   if (button?.dataset.switchAllId) void switchAllToHost(button.dataset.switchAllId);
-});
+};
+document.querySelector("#switch-all-bar")?.addEventListener("click", switchAllClick);
+const switchPanel = document.querySelector<HTMLElement>("#switch-panel");
+switchPanel?.addEventListener("click", switchAllClick);
 switchPanel?.addEventListener("click", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-id]");
+  const target = event.target as HTMLElement;
+  if (target.closest("[data-open-displays]")) {
+    showPage("settings");
+    showSettingsTab("displays");
+    return;
+  }
+  const button = target.closest<HTMLButtonElement>("[data-switch-id]");
   if (!button?.dataset.switchId) return;
   const card = button.closest<HTMLElement>("[data-monitor-key]");
   if (card?.dataset.monitorKey) void switchHost(card.dataset.monitorKey, button.dataset.switchId);
@@ -765,9 +546,44 @@ switchPanel?.addEventListener("click", (event) => {
 function showPage(page: string): void {
   document.querySelectorAll(".page").forEach((item) => item.classList.remove("is-active"));
   document.querySelector(`#${page}-page`)?.classList.add("is-active");
-  document.querySelectorAll(".nav-button").forEach((item) => item.classList.toggle("is-active", (item as HTMLElement).dataset.page === page));
-  setText("#page-title", pageTitles[page] ?? pageTitles.dashboard);
-  renderSwitchAllBar();
+  document.querySelectorAll("[data-page]").forEach((item) => item.classList.toggle("is-active", (item as HTMLElement).dataset.page === page));
+  refreshIcons();
+}
+
+function showSettingsTab(tab: SettingsTab): void {
+  document.querySelectorAll<HTMLElement>("[data-settings-panel]").forEach((panel) => panel.classList.toggle("is-active", panel.dataset.settingsPanel === tab));
+  document.querySelectorAll<HTMLElement>("[data-settings-tab]").forEach((button) => {
+    const isActive = button.dataset.settingsTab === tab;
+    button.classList.toggle("is-active", isActive);
+    if (isActive) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
+  });
+  document.querySelector(".workspace")?.scrollTo({ top: 0 });
+}
+
+type SwitchView = "stage" | "matrix";
+const switchViewStorageKey = "muxsu.switchView";
+
+/** The layout the user picked, if any. Without one, the switch center picks
+ *  the matrix once a stage per display would no longer fit side by side. */
+function storedSwitchView(): SwitchView | null {
+  try {
+    const stored = localStorage.getItem(switchViewStorageKey);
+    return stored === "stage" || stored === "matrix" ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function currentSwitchView(): SwitchView {
+  const stored = storedSwitchView();
+  if (stored) return stored;
+  const hostCount = settings.peers.length + 1;
+  return dashboard.shared.length >= MATRIX_MIN_DISPLAYS || hostCount >= MATRIX_MIN_HOSTS ? "matrix" : "stage";
+}
+
+function setSwitchView(view: SwitchView): void {
+  try { localStorage.setItem(switchViewStorageKey, view); } catch { /* The choice just won't outlive this window. */ }
+  renderSwitchPanel();
   refreshIcons();
 }
 
@@ -868,12 +684,16 @@ const PEER_INPUTS_CHANGED_EVENT = "peer-inputs-changed";
 const MONITOR_IDENTITIES_CHANGED_EVENT = "monitor-identities-changed";
 /** Longest input note the backend accepts, in characters. */
 const MAX_INPUT_LABEL_CHARS = 24;
-/** Shared displays whose input note list is expanded, by monitor key. */
-let openInputLabelGroups = new Set<string>();
 /** Longest custom host name the backend accepts, in characters. */
 const MAX_HOST_NAME_CHARS = 32;
 /** Custom host names by route id; hosts using their default name are absent. */
 let hostNames: Record<string, string> = {};
+/** Custom icons and colours by route id; hosts at their default are absent. */
+let hostAppearances: Record<string, CustomLook> = {};
+/** The host whose icon and colour picker is open. */
+let editingLook: string | null = null;
+/** Emitted by the backend when this or a paired host changes a host's icon or colour. */
+const HOST_APPEARANCES_CHANGED_EVENT = "host-appearances-changed";
 /** The host card whose name is being edited, and the unsaved text. */
 let renaming: { routeId: string; draft: string } | null = null;
 let isRefreshing = false;
@@ -886,11 +706,12 @@ async function refresh(): Promise<void> {
   document.querySelector("#refresh-button svg")?.classList.add("is-spinning");
   try {
     dashboard = await invoke<DashboardState>("get_dashboard_state");
-    [settings, inputOptionsByMonitor, routeOrder, hostNames] = await Promise.all([
+    [settings, inputOptionsByMonitor, routeOrder, hostNames, hostAppearances] = await Promise.all([
       invoke<AppSettings>("get_settings"),
       loadInputOptionsByMonitor(dashboard.shared.map((shared) => shared.monitorKey)),
       invoke<string[]>("get_host_order"),
       invoke<Record<string, string>>("get_host_names"),
+      invoke<Record<string, CustomLook>>("get_host_appearances"),
     ]);
     try { discoveredPeers = await invoke<DiscoveredPeer[]>("discover_peers"); } catch { discoveredPeers = []; }
     isPreview = false;
@@ -984,7 +805,7 @@ async function reloadPeerInputs(): Promise<void> {
   try {
     const latest = await invoke<AppSettings>("get_settings");
     settings = { ...settings, peers: latest.peers };
-    renderPairedRoutes();
+    renderHostList();
     renderInputNames();
     refreshIcons();
   } catch (error) {
@@ -992,9 +813,18 @@ async function reloadPeerInputs(): Promise<void> {
   }
 }
 
-function renderMonitorHealth(): void {
-  const usable = dashboard.shared.some((shared) => shared.displayState !== "unavailable");
-  setText("#monitor-health", dashboard.shared.length === 0 ? t("dashboard.notSelected") : usable ? t("dashboard.locked") : t("dashboard.notReady"));
+/** The line under the title: how many displays and hosts, and whether a
+ *  sleeping host can be woken. Also the counts beside the settings tabs. */
+function renderSummary(): void {
+  const hostCount = settings.peers.length + 1;
+  const parts = [t("dashboard.summary", { displays: dashboard.shared.length, hosts: hostCount })];
+  if (settings.peers.length) {
+    const wake = settings.peers.some((peer) => peer.macAddress) ? t("dashboard.wakeNormal") : t("dashboard.noMac");
+    parts.push(`${t("dashboard.wakeLabel")}${locale === "en" ? " " : ""}${wake}`);
+  }
+  setText("#dashboard-summary", dashboard.shared.length ? parts.join(" · ") : t("dashboard.notSelected"));
+  setText("#count-displays", dashboard.shared.length ? String(dashboard.shared.length) : "");
+  setText("#count-hosts", settings.peers.length ? String(settings.peers.length) : "");
 }
 
 /**
@@ -1023,9 +853,7 @@ async function rescanDisplays(): Promise<void> {
     dashboard = await invoke<DashboardState>("get_dashboard_state");
     const latest = await invoke<AppSettings>("get_settings");
     settings = { ...settings, sharedMonitors: latest.sharedMonitors };
-    renderMonitorHealth();
-    keepActiveMonitorSelected();
-    renderMonitorStrip();
+    renderSummary();
     renderSwitchPanel();
     refreshIcons();
   } catch (error) {
@@ -1033,78 +861,6 @@ async function rescanDisplays(): Promise<void> {
   } finally {
     isRefreshing = false;
   }
-}
-
-/** Falls back to the first shared display when the selected one disappeared. */
-function keepActiveMonitorSelected(): void {
-  if (!activeMonitorKey || !dashboard.shared.some((shared) => shared.monitorKey === activeMonitorKey)) {
-    activeMonitorKey = dashboard.shared[0]?.monitorKey ?? null;
-  }
-}
-
-function getFlatMonitorSvg(isUltrawide: boolean): string {
-  if (isUltrawide) {
-    return `<svg class="flat-monitor-svg" viewBox="0 0 380 190" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id="screen21" x1="190" y1="18" x2="190" y2="144" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stop-color="#142c22"/>
-          <stop offset="100%" stop-color="#0b1713"/>
-        </linearGradient>
-        <linearGradient id="glare21" x1="360" y1="20" x2="160" y2="140" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stop-color="#ffffff" stop-opacity="0.16"/>
-          <stop offset="45%" stop-color="#ffffff" stop-opacity="0.03"/>
-          <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
-        </linearGradient>
-        <linearGradient id="standNeck" x1="182" y1="144" x2="198" y2="144" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stop-color="#2a3a32"/>
-          <stop offset="50%" stop-color="#42574c"/>
-          <stop offset="100%" stop-color="#1e2a24"/>
-        </linearGradient>
-        <linearGradient id="standBase" x1="190" y1="172" x2="190" y2="180" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stop-color="#3c5045"/>
-          <stop offset="100%" stop-color="#1a2520"/>
-        </linearGradient>
-      </defs>
-      <rect x="183" y="142" width="14" height="32" rx="2" fill="url(#standNeck)"/>
-      <rect x="177" y="132" width="26" height="18" rx="3" fill="#1b2520"/>
-      <rect x="125" y="172" width="130" height="7" rx="3.5" fill="url(#standBase)"/>
-      <rect x="126" y="172" width="128" height="1.5" rx="0.75" fill="#587363" opacity="0.6"/>
-      <rect x="16" y="16" width="348" height="130" rx="6" fill="#15211b" stroke="#2c3f34" stroke-width="2"/>
-      <rect x="20" y="20" width="340" height="122" rx="3" fill="url(#screen21)"/>
-      <polygon points="20,20 220,20 120,142 20,142" fill="url(#glare21)"/>
-      <circle cx="190" cy="142" r="1.5" fill="#4ade80" opacity="0.8"/>
-    </svg>`;
-  }
-  return `<svg class="flat-monitor-svg" viewBox="0 0 380 190" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <linearGradient id="screen16" x1="190" y1="14" x2="190" y2="152" gradientUnits="userSpaceOnUse">
-        <stop offset="0%" stop-color="#142c22"/>
-        <stop offset="100%" stop-color="#0b1713"/>
-      </linearGradient>
-      <linearGradient id="glare16" x1="320" y1="16" x2="160" y2="150" gradientUnits="userSpaceOnUse">
-        <stop offset="0%" stop-color="#ffffff" stop-opacity="0.16"/>
-        <stop offset="45%" stop-color="#ffffff" stop-opacity="0.03"/>
-        <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
-      </linearGradient>
-      <linearGradient id="standNeck" x1="182" y1="144" x2="198" y2="144" gradientUnits="userSpaceOnUse">
-        <stop offset="0%" stop-color="#2a3a32"/>
-        <stop offset="50%" stop-color="#42574c"/>
-        <stop offset="100%" stop-color="#1e2a24"/>
-      </linearGradient>
-      <linearGradient id="standBase" x1="190" y1="172" x2="190" y2="180" gradientUnits="userSpaceOnUse">
-        <stop offset="0%" stop-color="#3c5045"/>
-        <stop offset="100%" stop-color="#1a2520"/>
-      </linearGradient>
-    </defs>
-    <rect x="183" y="148" width="14" height="26" rx="2" fill="url(#standNeck)"/>
-    <rect x="177" y="138" width="26" height="18" rx="3" fill="#1b2520"/>
-    <rect x="135" y="172" width="110" height="7" rx="3.5" fill="url(#standBase)"/>
-    <rect x="136" y="172" width="108" height="1.5" rx="0.75" fill="#587363" opacity="0.6"/>
-    <rect x="65" y="12" width="250" height="144" rx="6" fill="#15211b" stroke="#2c3f34" stroke-width="2"/>
-    <rect x="69" y="16" width="242" height="136" rx="3" fill="url(#screen16)"/>
-    <polygon points="69,16 220,16 140,152 69,152" fill="url(#glare16)"/>
-    <circle cx="190" cy="152.5" r="1.5" fill="#4ade80" opacity="0.8"/>
-  </svg>`;
 }
 
 function selectedMonitorFor(shared: SharedMonitorStatus): SelectedMonitor | undefined {
@@ -1131,86 +887,208 @@ function resolutionFor(shared: SharedMonitorStatus): { resolution: MonitorResolu
   };
 }
 
-function ratioText(resolution: MonitorResolution | null, source: ResolutionSource | null, isUltrawide: boolean): string {
+/** Aspect ratio and resolution, as the switch center labels a display. */
+function specText(resolution: MonitorResolution | null, isUltrawide: boolean): string {
   const ratio = isUltrawide ? "21:9" : "16:9";
-  return resolution ? `${ratio} · ${resolution.width}×${resolution.height} · ${resolutionSourceName(source)}` : ratio;
+  return resolution ? `${ratio} · ${resolution.width}×${resolution.height}` : ratio;
 }
 
-function renderMonitorStrip(): void {
-  const container = document.querySelector("#monitor-strip");
-  if (!container) return;
-  if (!dashboard.shared.length) {
-    container.innerHTML = "";
-    return;
-  }
-  container.innerHTML = dashboard.shared.map((shared) => {
-    const { resolution, source } = resolutionFor(shared);
-    const isUltrawide = Boolean(resolution && isUltrawideResolution(resolution));
-    const isActive = shared.monitorKey === activeMonitorKey;
-    return `<button type="button" class="monitor-strip-card ${isActive ? "is-active" : ""}" data-monitor-key="${escapeHtml(shared.monitorKey)}">
-      <span class="monitor-strip-name">${escapeHtml(shared.name)}</span>
-      <span class="monitor-strip-meta">${escapeHtml(ratioText(resolution, source, isUltrawide))}</span>
-      ${displayStateBadge(shared)}
-    </button>`;
-  }).join("");
+interface SwitchRoute {
+  id: string; name: string; platform: Platform; local: boolean;
+  /** Lucide icon and colour name it wears everywhere. */
+  icon: string; color: string;
+  customIcon: string | null; customColor: string | null;
 }
 
-function displayStateBadge(shared: SharedMonitorStatus): string {
-  if (shared.displayState === "ready") return `<span class="status-badge">${t("dashboard.ddcReady")}</span>`;
-  if (shared.displayState === "onOtherHost") return `<span class="status-badge is-elsewhere">${t("dashboard.onOtherHost")}</span>`;
-  return `<span class="status-badge subtle">${t("dashboard.notReady")}</span>`;
+function routePlatform(routeId: string): Platform {
+  return routeId === "local" ? dashboard.localHost : settings.peers.find((peer) => peer.id === routeId)?.platform ?? "windows";
+}
+
+/** Every host in the saved order, each with the icon and colour it wears
+ *  everywhere: its own if the user chose one, else a default by platform and
+ *  by its place in the host order, which paired hosts share. */
+function switchRoutes(): SwitchRoute[] {
+  return currentRouteIds().map((id, index) => {
+    const platform = routePlatform(id);
+    const look = hostLook(hostAppearances[id], platform, index);
+    return {
+      id, name: routeDisplayName(id), platform, local: id === "local",
+      icon: look.lucide, color: look.color, customIcon: look.customIcon, customColor: look.customColor,
+    };
+  });
+}
+
+function routeColor(routeId: string): string {
+  return hostLook(hostAppearances[routeId], routePlatform(routeId), currentRouteIds().indexOf(routeId)).color;
+}
+
+function platformIcon(platform: Platform): string {
+  return platform === "mac" ? "laptop" : "computer";
+}
+
+function activeRouteFor(shared: SharedMonitorStatus): string {
+  return selectedMonitorFor(shared)?.activeRoute ?? "local";
+}
+
+/** Whether a switch to this host could run at all: it needs the port the host
+ *  is on, and either this computer's DDC/CI or the network Agent. */
+function canSwitch(shared: SharedMonitorStatus, routeId: string): boolean {
+  return routeInputFor(shared, routeId) != null && (shared.ddcAvailable || dashboard.agentConfigured);
+}
+
+function displayBadge(shared: SharedMonitorStatus): string {
+  if (shared.displayState === "ready") return `<span class="badge is-ok">${t("dashboard.ddcReady")}</span>`;
+  if (shared.displayState === "onOtherHost") return `<span class="badge is-muted">${t("dashboard.onOtherHost")}</span>`;
+  return `<span class="badge is-muted">${t("dashboard.notReady")}</span>`;
 }
 
 function renderSwitchPanel(): void {
   renderSwitchAllBar();
-  const container = document.querySelector("#switch-panel");
+  const container = document.querySelector<HTMLElement>("#switch-panel");
   if (!container) return;
-  const shared = dashboard.shared.find((item) => item.monitorKey === activeMonitorKey);
-  if (!shared) {
-    const isUltrawide = Boolean(dashboard.monitors[0]?.maxResolution && isUltrawideResolution(dashboard.monitors[0].maxResolution));
-    container.innerHTML = `
-      <div class="showcase-monitor-card">
-        <div class="showcase-header">
-          <span class="showcase-title">${t("dashboard.sharedDisplay")}</span>
-          <div class="showcase-badges"><span class="status-badge subtle">${ratioText(dashboard.monitors[0]?.maxResolution ?? null, dashboard.monitors[0]?.resolutionSource ?? null, isUltrawide)}</span></div>
-        </div>
-        <div class="flat-monitor-wrap">${getFlatMonitorSvg(isUltrawide)}</div>
-        <div class="showcase-info">
-          <strong class="showcase-monitor-name">${t("dashboard.notSelected")}</strong>
-          <p class="showcase-monitor-desc">${isPreview ? t("preview.monitorStatus") : t("dashboard.identityHint")}</p>
-        </div>
-      </div>`;
+  const toggle = document.querySelector<HTMLElement>("#view-toggle");
+  if (!dashboard.shared.length) {
+    if (toggle) toggle.hidden = true;
+    container.innerHTML = emptySwitchPanelHtml();
     return;
   }
+  const view = currentSwitchView();
+  if (toggle) {
+    toggle.hidden = false;
+    toggle.querySelectorAll<HTMLButtonElement>("[data-switch-view]").forEach((button) => {
+      const isActive = button.dataset.switchView === view;
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-pressed", String(isActive));
+    });
+  }
+  const routes = switchRoutes();
+  if (view === "matrix") {
+    container.innerHTML = matrixHtml(routes);
+    // A custom property set through the CSSOM, since the CSP refuses style attributes.
+    container.querySelector<HTMLElement>(".matrix")?.style.setProperty("--hosts", String(routes.length));
+    return;
+  }
+  container.innerHTML = `<div class="stage ${dashboard.shared.length === 1 ? "is-single" : ""}">
+    ${dashboard.shared.map((shared) => stagePanelHtml(shared, routes)).join("")}
+  </div>`;
+}
+
+function displayDrawingHtml(isUltrawide: boolean, label: string): string {
+  return `<div class="display-frame">
+    <span class="display-glow"></span>
+    <div class="display-screen ${isUltrawide ? "is-ultrawide" : ""}"><div class="display-inner"><div class="display-label">${label}</div></div></div>
+    <div class="display-neck"></div><div class="display-base"></div>
+  </div>`;
+}
+
+function emptySwitchPanelHtml(): string {
+  const idle = displayDrawingHtml(false, `<strong>${t("dashboard.notSelected")}</strong>`).replace("display-screen ", "display-screen is-idle ");
+  return `<article class="monitor-panel glass is-empty">
+    <header class="panel-head"><h2>${t("dashboard.sharedDisplay")}</h2></header>
+    <div class="display-visual">${idle}</div>
+    <div class="empty-copy">
+      <p>${isPreview ? t("preview.monitorStatus") : t("dashboard.noSharedBody")}</p>
+      <button type="button" class="button primary" data-open-displays><i data-lucide="monitor"></i>${t("action.chooseDisplays")}</button>
+    </div>
+  </article>`;
+}
+
+function stagePanelHtml(shared: SharedMonitorStatus, routes: SwitchRoute[]): string {
   const { resolution, source } = resolutionFor(shared);
   const isUltrawide = Boolean(resolution && isUltrawideResolution(resolution));
-  container.innerHTML = `
-    <div class="showcase-monitor-card" data-monitor-key="${escapeHtml(shared.monitorKey)}">
-      <div class="showcase-header">
-        <span class="showcase-title">${escapeHtml(shared.name)}</span>
-        <div class="showcase-badges">
-          <span class="status-badge subtle">${ratioText(resolution, source, isUltrawide)}</span>
-          ${displayStateBadge(shared)}
-        </div>
-      </div>
-      <div class="flat-monitor-wrap">${getFlatMonitorSvg(isUltrawide)}</div>
-      <div class="showcase-info">
-        <strong class="showcase-monitor-name">${escapeHtml(shared.name)}</strong>
-        <p class="showcase-monitor-desc">${escapeHtml(shared.statusText)}</p>
-      </div>
-      <div class="host-route-grid" data-host-route-grid="${escapeHtml(shared.monitorKey)}"></div>
+  const activeId = activeRouteFor(shared);
+  const active = routes.find((route) => route.id === activeId);
+  const activeInput = routeInputFor(shared, activeId);
+  const label = `<span>${t("dashboard.nowShowing")}</span>
+    <strong>${escapeHtml(active?.name ?? routeDisplayName(activeId))}</strong>
+    ${activeInput != null ? `<span class="display-port">${escapeHtml(inputName(activeInput, shared.monitorKey))}</span>` : ""}`;
+  return `<article class="monitor-panel glass" data-monitor-key="${escapeHtml(shared.monitorKey)}">
+    <header class="panel-head">
+      <h2>${escapeHtml(shared.name)}</h2>
+      <span class="spec" title="${escapeHtml(resolutionSourceName(source))}">${escapeHtml(specText(resolution, isUltrawide))}</span>
+      ${displayBadge(shared)}
+    </header>
+    ${shared.statusText ? `<p class="panel-status">${escapeHtml(shared.statusText)}</p>` : ""}
+    <div class="display-visual" ${active ? `data-color="${active.color}"` : ""}>${displayDrawingHtml(isUltrawide, label)}</div>
+    <div class="source-keys glass-flat ${routes.length >= MATRIX_MIN_HOSTS ? "is-stacked" : ""}">
+      ${routes.map((route) => sourceKeyHtml(shared, route, route.id === activeId)).join("")}
+    </div>
+  </article>`;
+}
+
+/** One host's key under a display: lit when that host is on screen. */
+function sourceKeyHtml(shared: SharedMonitorStatus, route: SwitchRoute, isActive: boolean): string {
+  const input = routeInputFor(shared, route.id);
+  const port = input == null ? t("dashboard.inputUnset") : inputName(input, shared.monitorKey);
+  const copy = `<span class="host-chip"><i data-lucide="${route.icon}"></i></span>
+    <span class="source-copy"><b>${escapeHtml(route.name)}</b><small>${escapeHtml(port)}</small></span>`;
+  if (isActive) {
+    return `<div class="source-key tint is-active" data-color="${route.color}" aria-current="true">${copy}<span class="source-action">${t("dashboard.currentlyDisplayed")}</span></div>`;
+  }
+  const label = escapeHtml(`${t("action.switchHost")}: ${route.name}`);
+  return `<button type="button" class="source-key" data-color="${route.color}" data-switch-id="${escapeHtml(route.id)}" aria-label="${label}" title="${label}" ${canSwitch(shared, route.id) ? "" : "disabled"}>
+    ${copy}<span class="source-action">${t("action.switchShort")}</span>
+  </button>`;
+}
+
+/** Displays down the side, hosts across the top; a cell switches one display. */
+function matrixHtml(routes: SwitchRoute[]): string {
+  const heads = routes.map((route) => {
+    const name = escapeHtml(route.name);
+    const isAllShowing = dashboard.shared.every((shared) => activeRouteFor(shared) === route.id);
+    const allButton = isAllShowing
+      ? `<span class="switch-all-host tint is-showing">${t("dashboard.allDisplayed")}</span>`
+      : `<button type="button" class="switch-all-host glass" data-switch-all-id="${escapeHtml(route.id)}" aria-label="${escapeHtml(t("action.switchAllToHost", { name: route.name }))}" ${switchAllTargets(route.id).length ? "" : "disabled"}>${t("switcher.switchAll")}</button>`;
+    return `<div class="matrix-host" data-color="${route.color}">
+      <span class="host-chip"><i data-lucide="${route.icon}"></i></span>
+      <b title="${name}">${name}</b>
+      <small>${escapeHtml(route.local ? t("dashboard.localBadge") : platformName(route.platform))}</small>
+      ${allButton}
     </div>`;
-  renderHostRoutes(shared);
+  }).join("");
+  const rows = dashboard.shared.map((shared) => {
+    const { resolution } = resolutionFor(shared);
+    const isUltrawide = Boolean(resolution && isUltrawideResolution(resolution));
+    const activeId = activeRouteFor(shared);
+    const activeColor = routes.find((route) => route.id === activeId)?.color;
+    const name = escapeHtml(shared.name);
+    return `<div class="matrix-display">
+        <span class="display-thumb ${isUltrawide ? "is-ultrawide" : ""}" ${activeColor ? `data-color="${activeColor}"` : ""}><i></i></span>
+        <div><b title="${name}">${name}</b><small>${escapeHtml(specText(resolution, isUltrawide))}</small></div>
+      </div>
+      ${routes.map((route) => matrixCellHtml(shared, route, route.id === activeId)).join("")}`;
+  }).join("");
+  return `<section class="matrix-panel glass">
+    <div class="matrix">
+      <div class="matrix-corner"><span class="caption">${t("dashboard.matrixCorner")}</span></div>
+      ${heads}${rows}
+    </div>
+    <div class="matrix-legend">
+      <span><i class="legend-active"></i>${t("dashboard.legendActive")}</span>
+      <span><i class="legend-ready"></i>${t("dashboard.legendReady")}</span>
+      <span><i class="legend-unset"></i>${t("dashboard.legendUnset")}</span>
+    </div>
+  </section>`;
+}
+
+function matrixCellHtml(shared: SharedMonitorStatus, route: SwitchRoute, isActive: boolean): string {
+  const input = routeInputFor(shared, route.id);
+  const port = input == null ? "" : escapeHtml(inputName(input, shared.monitorKey));
+  if (isActive) {
+    return `<div class="matrix-cell tint is-active" data-color="${route.color}" aria-current="true">${port}<small>${t("dashboard.currentlyDisplayed")}</small></div>`;
+  }
+  if (input == null) return `<div class="matrix-cell is-unset">${t("dashboard.inputUnset")}</div>`;
+  const label = escapeHtml(`${shared.name} → ${route.name}`);
+  return `<button type="button" class="matrix-cell" data-color="${route.color}" data-monitor-key="${escapeHtml(shared.monitorKey)}" data-switch-id="${escapeHtml(route.id)}" aria-label="${label}" title="${label}" ${canSwitch(shared, route.id) ? "" : "disabled"}>
+    ${port}<small>${t("action.switchShort")}</small>
+  </button>`;
 }
 
 function renderState(): void {
-  renderMonitorHealth();
-  setText("#peer-health", t("dashboard.hostCount", { count: settings.peers.length }));
-  setText("#wake-health", settings.peers.some((peer) => peer.macAddress) ? t("dashboard.wakeNormal") : (settings.peers.length ? t("dashboard.noMac") : t("dashboard.noHosts")));
+  renderSummary();
   const pill = document.querySelector("#agent-pill");
   pill?.classList.toggle("is-ready", dashboard.agentConfigured);
   if (pill) pill.querySelector("span:last-child")!.textContent = isPreview ? t("dashboard.preview") : dashboard.agentConfigured ? t("dashboard.agentReady") : t("dashboard.agentMissing");
-  setInput("#local-host-name", routeDisplayName("local"));
   setInput("#shared-key", settings.sharedKey);
   setInput("#wait-seconds", String(settings.waitSeconds));
   const autostart = document.querySelector<HTMLInputElement>("#autostart");
@@ -1220,10 +1098,12 @@ function renderState(): void {
   const hostSwitcherEnabled = document.querySelector<HTMLInputElement>("#host-switcher-enabled");
   if (hostSwitcherEnabled) hostSwitcherEnabled.checked = settings.hostSwitcherEnabled;
   renderShortcutSetting();
-  keepActiveMonitorSelected();
-  renderMonitorStrip(); renderSwitchPanel();
+  renderSwitchPanel();
   diagnostics.render();
-  renderMonitors(); renderMonitorMerge(); renderPeerList(); renderPairedRoutes(); renderLocalInputSummary(); renderInputLabels(); refreshIcons();
+  renderMonitors(); renderMonitorMerge(); renderPeerList(); renderHostList(); renderLocalInputSummary(); renderInputLabels(); refreshIcons();
+  // The tray menu lists the same displays and hosts. Nothing here can do
+  // anything about a menu that failed to rebuild; the backend logs it.
+  if (!isPreview) void invoke("refresh_tray").catch(() => undefined);
 }
 
 function shortcutDisplay(value: string): string {
@@ -1342,29 +1222,35 @@ function renderMonitors(): void {
   const elsewhere = uncontrollable.filter(isOnOtherHost);
   const unreachable = uncontrollable.filter((monitor) => !isOnOtherHost(monitor));
   if (!dashboard.monitors.length && !uncontrollable.length) {
-    container.innerHTML = `<p class="peer-empty">${t("settings.noMonitors")}</p>`; return;
+    container.innerHTML = `<p class="empty-note">${t("settings.noMonitors")}</p>`; return;
   }
   // A shared display this computer cannot see at all is listed from the saved
   // selection, because it is exactly the one the user may need to remove and
   // nothing enumerates a row for it.
   const absent = dashboard.shared.filter((shared) =>
     ![...dashboard.monitors, ...uncontrollable].some((monitor) => sameDisplay(monitor.fingerprint, shared.fingerprint)));
-  container.innerHTML = dashboard.monitors.map((monitor) => selectableMonitorCard(monitor, t("settings.ddcControllable")))
-    .concat(elsewhere.map((monitor) => selectableMonitorCard(monitor, t("dashboard.onOtherHost"))))
-    .join("") + absent.map((shared) => `
-    <article class="monitor-card-item is-selected">
-      <div class="monitor-item-left">
-        <div class="monitor-item-icon"><i data-lucide="monitor-off"></i></div>
-        <div class="monitor-identity">
-          <strong>${escapeHtml(shared.name)}</strong>
-          <span>${escapeHtml(shared.fingerprint.manufacturer_id)} / ${escapeHtml(shared.fingerprint.product_code)} / ${escapeHtml(shared.fingerprint.serial_number ?? t("settings.noSerial"))} (${escapeHtml(t("settings.notDetected"))})</span>
-        </div>
+  container.innerHTML = [
+    ...dashboard.monitors.map((monitor) => selectableMonitorRow(monitor, t("settings.ddcControllable"))),
+    ...elsewhere.map((monitor) => selectableMonitorRow(monitor, t("dashboard.onOtherHost"))),
+    ...absent.map((shared) => `<div class="row has-icon">
+      <span class="app-icon is-accent"><i data-lucide="monitor-off"></i></span>
+      <div>
+        <div class="row-title">${escapeHtml(shared.name)}</div>
+        <div class="row-sub mono">${escapeHtml(shared.fingerprint.manufacturer_id)} / ${escapeHtml(shared.fingerprint.product_code)} / ${escapeHtml(shared.fingerprint.serial_number ?? t("settings.noSerial"))} · ${escapeHtml(t("settings.notDetected"))}</div>
       </div>
-      <button type="button" class="monitor-select-btn is-selected ${busyDisplays.has(shared.monitorKey) ? "is-busy" : ""}" data-monitor-id="${escapeHtml(shared.monitorKey)}" data-busy-key="${escapeHtml(shared.monitorKey)}" data-monitor-selected="true"${busyDisplays.has(shared.monitorKey) ? " disabled" : ""}>
-        ${t("action.removeShared")}
-      </button>
-    </article>
-  `).join("") + unreachable.map((monitor) => selectableMonitorCard(monitor, t("settings.ddcUnreachable"))).join("");
+      ${shareToggleHtml(shared.monitorKey, shared.monitorKey, true, shared.name)}
+    </div>`),
+    ...unreachable.map((monitor) => selectableMonitorRow(monitor, t("settings.ddcUnreachable"), true)),
+  ].join("");
+}
+
+/** Sharing a display runs a command, so the switch is a button that only
+ *  flips once the command answers, not a checkbox that flips first. */
+function shareToggleHtml(monitorId: string, busyKey: string, isSelected: boolean, name: string): string {
+  const isBusy = busyDisplays.has(busyKey);
+  const label = escapeHtml(`${isSelected ? t("action.removeShared") : t("action.selectShared")}: ${name}`);
+  return `<button type="button" class="toggle-button ${isBusy ? "is-busy" : ""}" role="switch" aria-checked="${isSelected}" aria-label="${label}" title="${label}"
+    data-monitor-id="${escapeHtml(monitorId)}" data-busy-key="${escapeHtml(busyKey)}" data-monitor-selected="${isSelected}"${isBusy ? " disabled" : ""}></button>`;
 }
 
 /** Offers to merge a display that is present but belongs to no shared display
@@ -1392,67 +1278,50 @@ function renderMonitorMerge(): void {
   const describeShared = (shared: SharedMonitorStatus) =>
     `${shared.name} (${shared.fingerprint.manufacturer_id}/${shared.fingerprint.product_code})`;
   container.innerHTML = `
-    <div class="pairing-heading"><strong>${t("settings.mergeTitle")}</strong></div>
-    <p class="monitor-merge-note">${t("settings.mergeIntro")}</p>
-    ${claims.map((claim) => `
-      <article class="monitor-card-item is-selected">
-        <div class="monitor-item-left">
-          <div class="monitor-item-icon"><i data-lucide="link"></i></div>
-          <div class="monitor-identity">
-            <strong>${escapeHtml(claim.aliasLabel)} → ${escapeHtml(claim.primaryLabel)}</strong>
-            <span>${escapeHtml(t("settings.mergedInto", { name: claim.primaryLabel }))}</span>
-          </div>
+    <h3 class="group-title">${t("settings.mergeTitle")}</h3>
+    <p class="section-hint">${t("settings.mergeIntro")}</p>
+    <div class="list">
+      ${claims.map((claim) => `<div class="row has-icon">
+        <span class="app-icon is-accent"><i data-lucide="link"></i></span>
+        <div>
+          <div class="row-title">${escapeHtml(claim.aliasLabel)} → ${escapeHtml(claim.primaryLabel)}</div>
+          <div class="row-sub">${escapeHtml(t("settings.mergedInto", { name: claim.primaryLabel }))}</div>
         </div>
-        <button type="button" class="monitor-select-btn" data-unmerge-alias="${escapeHtml(claim.aliasKey)}">
-          ${t("settings.mergeUndo")}
-        </button>
-      </article>
-    `).join("")}
-    ${(canMerge ? strangers : []).map((monitor) => `
-      <article class="monitor-card-item">
-        <div class="monitor-item-left">
-          <div class="monitor-item-icon"><i data-lucide="monitor-dot"></i></div>
-          <div class="monitor-identity">
-            <strong>${escapeHtml(describeMonitor(monitor))}</strong>
-            <span>${escapeHtml(t("settings.mergeUnidentified"))}</span>
-          </div>
+        <button type="button" class="button small" data-unmerge-alias="${escapeHtml(claim.aliasKey)}">${t("settings.mergeUndo")}</button>
+      </div>`).join("")}
+      ${(canMerge ? strangers : []).map((monitor) => `<div class="row has-icon">
+        <span class="app-icon"><i data-lucide="monitor-dot"></i></span>
+        <div>
+          <div class="row-title">${escapeHtml(describeMonitor(monitor))}</div>
+          <div class="row-sub">${escapeHtml(t("settings.mergeUnidentified"))}</div>
         </div>
-        <label class="monitor-merge-choice">
-          <span>${t("settings.mergeSelect")}</span>
-          <select data-merge-target="${escapeHtml(monitor.id)}">
+        <div class="row-actions">
+          <select class="field-select plain-font" data-merge-target="${escapeHtml(monitor.id)}" aria-label="${escapeHtml(t("settings.mergeSelect"))}">
             ${targets.map((target) => `<option value="${escapeHtml(target.monitorKey)}">${escapeHtml(describeShared(target))}</option>`).join("")}
           </select>
-        </label>
-        <button type="button" class="monitor-select-btn" data-merge-alias="${escapeHtml(monitor.id)}">
-          ${t("settings.mergeAction")}
-        </button>
-      </article>
-    `).join("")}
-  `;
+          <button type="button" class="button small" data-merge-alias="${escapeHtml(monitor.id)}">${t("settings.mergeAction")}</button>
+        </div>
+      </div>`).join("")}
+    </div>`;
 }
 
-function selectableMonitorCard(monitor: MonitorDescriptor, statusLabel: string): string {
+function selectableMonitorRow(monitor: MonitorDescriptor, statusLabel: string, isDimmed = false): string {
   const shared = dashboard.shared.find((item) => sameDisplay(item.fingerprint, monitor.fingerprint));
   const isSelected = Boolean(shared);
-  const isBusy = busyDisplays.has(monitor.id);
   const fp = monitor.fingerprint;
   const res = monitor.maxResolution;
   const resText = res
-    ? `(${res.width}×${res.height} ${isUltrawideResolution(res) ? "21:9" : "16:9"} · ${resolutionSourceName(monitor.resolutionSource ?? null)})`
+    ? ` · ${res.width}×${res.height} ${isUltrawideResolution(res) ? "21:9" : "16:9"} (${resolutionSourceName(monitor.resolutionSource ?? null)})`
     : "";
-  return `<article class="monitor-card-item ${isSelected ? "is-selected" : ""}">
-    <div class="monitor-item-left">
-      <div class="monitor-item-icon"><i data-lucide="monitor"></i></div>
-      <div class="monitor-identity">
-        <strong>${escapeHtml(monitor.name)}</strong>
-        <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? t("settings.noSerial"))} ${resText} (${escapeHtml(statusLabel)})</span>
-        ${renderConnection(monitor.connection ?? null)}
-      </div>
+  return `<div class="row has-icon ${isDimmed && !isSelected ? "is-dimmed" : ""}">
+    <span class="app-icon ${isSelected ? "is-accent" : ""}"><i data-lucide="monitor"></i></span>
+    <div>
+      <div class="row-title">${escapeHtml(monitor.name)}</div>
+      <div class="row-sub mono">${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? t("settings.noSerial"))}${escapeHtml(resText)} · ${escapeHtml(statusLabel)}</div>
+      ${renderConnection(monitor.connection ?? null)}
     </div>
-    <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""} ${isBusy ? "is-busy" : ""}" data-monitor-id="${escapeHtml(shared?.monitorKey ?? monitor.id)}" data-busy-key="${escapeHtml(monitor.id)}" data-monitor-selected="${isSelected}"${isBusy ? " disabled" : ""}>
-      ${isSelected ? t("action.removeShared") : t("action.selectShared")}
-    </button>
-  </article>`;
+    ${shareToggleHtml(shared?.monitorKey ?? monitor.id, monitor.id, isSelected, monitor.name)}
+  </div>`;
 }
 
 const hostOutputKeys = {
@@ -1485,34 +1354,34 @@ function renderLocalInputSummary(): void {
   const container = document.querySelector("#local-input-summary");
   if (!container) return;
   if (!dashboard.shared.length) {
-    container.innerHTML = `<p class="peer-empty">${t("settings.noMonitors")}</p>`;
+    container.innerHTML = `<p class="empty-note">${t("settings.noMonitors")}</p>`;
     return;
   }
   container.innerHTML = dashboard.shared.map((shared) => {
     const value = selectedMonitorFor(shared)?.localInput ?? null;
-    const conflict = shared.connectionInputConflict ? `<small class="local-input-conflict">${t("settings.inputConflict")}</small>` : "";
-    return `<div class="local-input-row">
-      <span>${escapeHtml(shared.name)}</span>
-      <select class="local-input-field" data-local-input="${escapeHtml(shared.monitorKey)}" aria-label="${escapeHtml(t("settings.localInputAria", { monitor: shared.name }))}"${displayInputsKnown(shared.monitorKey) ? "" : " disabled"}>
+    const conflict = shared.connectionInputConflict ? `<p class="row-warning">${t("settings.inputConflict")}</p>` : "";
+    return `<div class="row">
+      <div><div class="row-title">${escapeHtml(shared.name)}</div>${conflict}</div>
+      <select class="field-select" data-local-input="${escapeHtml(shared.monitorKey)}" aria-label="${escapeHtml(t("settings.localInputAria", { monitor: shared.name }))}"${displayInputsKnown(shared.monitorKey) ? "" : " disabled"}>
         ${renderInputOptions("local", shared.monitorKey, value)}
       </select>
-      ${conflict}
     </div>`;
   }).join("");
 }
 
-/** Hosts whose saved input for `shared` is `value`, by display name. */
-function inputUsers(shared: SharedMonitorStatus, value: number): string[] {
-  const localUser = selectedMonitorFor(shared)?.localInput === value ? [routeDisplayName("local")] : [];
+/** Hosts whose saved input for `shared` is `value`, by route id. */
+function inputUserRoutes(shared: SharedMonitorStatus, value: number): string[] {
+  const localUser = selectedMonitorFor(shared)?.localInput === value ? ["local"] : [];
   const peerUsers = settings.peers
     .filter((peer) => peer.inputs.some((assignment) => assignment.input === value && sameDisplay(assignment.monitor, shared.fingerprint)))
-    .map((peer) => routeDisplayName(peer.id));
+    .map((peer) => peer.id);
   return [...localUser, ...peerUsers];
 }
 
 /**
- * One note field per input of each shared display. Left alone while a field
- * has focus, so a sync from a paired host never replaces what is being typed.
+ * One tile per input of each shared display: who uses it, and a note field.
+ * Left alone while a field has focus, so a sync from a paired host never
+ * replaces what is being typed.
  */
 function renderInputLabels(): void {
   const container = document.querySelector<HTMLElement>("#input-labels");
@@ -1523,33 +1392,38 @@ function renderInputLabels(): void {
   }
   inputNamesReloadPending = false;
   if (!dashboard.shared.length) {
-    container.innerHTML = `<p class="peer-empty">${t("settings.noMonitors")}</p>`;
+    container.innerHTML = `<p class="empty-note">${t("settings.noMonitors")}</p>`;
     return;
   }
   const listFormat = new Intl.ListFormat(locale, { type: "conjunction" });
   container.innerHTML = dashboard.shared.map((shared) => {
-    const rows = (inputOptionsByMonitor[shared.monitorKey] ?? []).map((option) => {
+    const options = inputOptionsByMonitor[shared.monitorKey] ?? [];
+    const tiles = options.map((option) => {
       const baseName = option.baseName ?? option.name;
-      const users = inputUsers(shared, option.value);
-      return `<label class="input-label-row">
-        <span class="input-label-base">
-          <strong>${escapeHtml(baseName)}</strong>
-          ${users.length ? `<small>${escapeHtml(t("settings.inputUsedBy", { hosts: listFormat.format(users) }))}</small>` : ""}
-        </span>
+      const users = inputUserRoutes(shared, option.value);
+      const names = users.map(routeDisplayName);
+      return `<label class="port-tile ${users.length ? "is-used" : ""}" ${users.length ? `data-color="${routeColor(users[0])}"` : ""}
+        ${names.length ? `title="${escapeHtml(t("settings.inputUsedBy", { hosts: listFormat.format(names) }))}"` : ""}>
+        <strong>${escapeHtml(baseName)}</strong>
+        <span class="port-users">${users.map((routeId) => `<span class="port-user" data-color="${routeColor(routeId)}">${escapeHtml(routeDisplayName(routeId))}</span>`).join("")}</span>
         <input class="input-label-field" data-label-monitor="${escapeHtml(shared.monitorKey)}" data-label-input="${option.value}" value="${escapeHtml(option.label ?? "")}" placeholder="${escapeHtml(t("settings.inputLabelPlaceholder"))}" maxlength="${MAX_INPUT_LABEL_CHARS}" aria-label="${escapeHtml(t("settings.inputLabelAria", { monitor: shared.name, input: baseName }))}" />
       </label>`;
     }).join("");
-    return `<details class="input-label-group" data-label-group="${escapeHtml(shared.monitorKey)}" ${openInputLabelGroups.has(shared.monitorKey) ? "open" : ""}>
-      <summary>${escapeHtml(shared.name)}</summary>
-      <div class="input-label-rows">${rows}</div>
-    </details>`;
+    const discovery = selectedMonitorFor(shared)?.supportedInputs?.length
+      ? t("settings.capabilitiesDetected", { count: (inputOptionsByMonitor[shared.monitorKey] ?? standardInputs).length })
+      : t("settings.capabilitiesFallback");
+    return `<div class="port-group">
+      <div class="port-group-title"><strong>${escapeHtml(shared.name)}</strong></div>
+      ${tiles ? `<div class="port-grid">${tiles}</div>` : ""}
+      <p class="input-discovery-note">${escapeHtml(discovery)}</p>
+    </div>`;
   }).join("");
 }
 
 /** Redraws every place that shows input names. */
 function renderInputNames(): void {
   renderLocalInputSummary();
-  renderPairedRoutes();
+  renderHostList();
   renderInputLabels();
   renderSwitchPanel();
   refreshIcons();
@@ -1593,13 +1467,14 @@ function renderPeerList(): void {
   const list = document.querySelector("#peer-list");
   if (!list) return;
   const available = discoveredPeers.filter((peer) => !settings.peers.some((item) => item.id === peer.id));
-  list.innerHTML = available.length ? available.map((peer) => `<article class="peer-row">
-    <div class="peer-identity">
-      <strong>${escapeHtml(hostNames[peer.id] ?? peer.name)}</strong>
-      <span>${platformName(peer.platform)} · ${t("settings.networkAuto")}</span>
+  list.innerHTML = available.length ? available.map((peer) => `<div class="row has-icon">
+    <span class="app-icon is-accent"><i data-lucide="${platformIcon(peer.platform)}"></i></span>
+    <div>
+      <div class="row-title">${escapeHtml(hostNames[peer.id] ?? peer.name)}</div>
+      <div class="row-sub">${platformName(peer.platform)} · ${t("settings.networkAuto")}</div>
     </div>
-    <button type="button" class="peer-add-btn" data-add-peer="${escapeHtml(peer.id)}"><i data-lucide="plus"></i>${t("action.add")}</button>
-  </article>`).join("") : `<p class="peer-empty">${t("settings.noAvailableHosts")}</p>`;
+    <button type="button" class="button small primary" data-add-peer="${escapeHtml(peer.id)}"><i data-lucide="plus"></i>${t("action.add")}</button>
+  </div>`).join("") : `<p class="empty-note">${t("settings.noAvailableHosts")}</p>`;
 }
 
 function peerInputValue(peerId: string, monitorKey: string): number | null {
@@ -1609,40 +1484,88 @@ function peerInputValue(peerId: string, monitorKey: string): number | null {
   return peer.inputs.find((assignment) => sameDisplay(assignment.monitor, shared.fingerprint))?.input ?? null;
 }
 
-function renderPairedRoutes(): void {
-  const container = document.querySelector("#paired-routes");
-  if (!container) return;
-  if (!dashboard.shared.length) {
-    container.innerHTML = `<p class="peer-empty">${t("settings.noMonitors")}</p>`;
-    return;
+/** The name a host falls back to when it has no custom one. */
+function defaultRouteName(routeId: string): string {
+  if (routeId === "local") {
+    return dashboard.localHostName
+      || (dashboard.localHost === "windows" ? t("dashboard.localWindows") : t("dashboard.localMac"));
   }
-  const discoveryNote = dashboard.shared.map((shared) => {
-    const monitorOptions = inputOptionsByMonitor[shared.monitorKey] ?? standardInputs;
-    const selectedMonitor = selectedMonitorFor(shared);
-    return `<p class="input-discovery-note">${escapeHtml(shared.name)}: ${selectedMonitor?.supportedInputs?.length ? t("settings.capabilitiesDetected", { count: monitorOptions.length }) : t("settings.capabilitiesFallback")}</p>`;
+  return settings.peers.find((peer) => peer.id === routeId)?.name ?? routeId;
+}
+
+/** Every host, this one included, in the order the switch center shows them:
+ *  named, reordered and diagnosed here. */
+function renderHostList(): void {
+  const container = document.querySelector("#host-list");
+  if (!container) return;
+  const routes = switchRoutes();
+  container.innerHTML = routes.map((route, index) => hostRowHtml(route, index, routes.length)).join("");
+}
+
+function hostRowHtml(route: SwitchRoute, index: number, total: number): string {
+  const peer = settings.peers.find((item) => item.id === route.id);
+  const id = escapeHtml(route.id);
+  const name = route.name;
+  const isRenaming = renaming?.routeId === route.id;
+  const title = isRenaming
+    ? `<input class="field-input host-name-input" data-rename-input="${id}" value="${escapeHtml(renaming?.draft ?? name)}" placeholder="${escapeHtml(defaultRouteName(route.id))}" maxlength="${MAX_HOST_NAME_CHARS}" aria-label="${escapeHtml(t("dashboard.hostNameLabel"))}" />`
+    : `<span class="host-title">${escapeHtml(name)}</span>${route.local ? `<span class="badge">${t("dashboard.localBadge")}</span>` : ""}`;
+  const sub = peer ? `${platformName(peer.platform)} · ${escapeHtml(peer.address)}` : platformName(route.platform);
+  const peerActions = peer ? `
+    <button class="button small" type="button" data-probe-id="${id}">${t("action.testConnection")}</button>
+    <button class="button small" type="button" data-wake-id="${id}" ${peer.macAddress.trim() ? "" : "disabled"}>${t("action.sendWake")}</button>
+    <button class="icon-button" type="button" data-remove-peer="${id}" aria-label="${escapeHtml(`${t("action.remove")}: ${name}`)}" title="${t("action.remove")}"><i data-lucide="trash-2"></i></button>` : "";
+  const inputs = dashboard.shared.map((shared) => {
+    // Each host reports its own port; it is set on that computer, not here.
+    const value = routeInputFor(shared, route.id);
+    const shown = value == null
+      ? (peer ? t("settings.peerInputUnreported") : t("dashboard.inputUnset"))
+      : inputName(value, shared.monitorKey);
+    return `<div class="sub-row"><span>${escapeHtml(shared.name)}</span><output ${peer ? `title="${escapeHtml(t("settings.peerInputOwnHost"))}"` : ""}>${escapeHtml(shown)}</output></div>`;
   }).join("");
-  container.innerHTML = discoveryNote + (settings.peers.length ? `<p class="field-title">${t("settings.addedHosts")}</p>` + settings.peers.map((peer) => `<article class="paired-route-card">
-    <div class="peer-identity">
-      <strong>${escapeHtml(hostNames[peer.id] ?? peer.name)}</strong>
-      <span>${platformName(peer.platform)} · ${escapeHtml(peer.address)}</span>
-      <div class="peer-diagnostic-actions" aria-label="${escapeHtml(t("settings.diagnosticAria", { name: peer.name }))}">
-        <button class="text-button" type="button" data-probe-id="${escapeHtml(peer.id)}">${t("action.testConnection")}</button>
-        <span class="tool-sep">·</span>
-        <button class="text-button" type="button" data-wake-id="${escapeHtml(peer.id)}" ${peer.macAddress.trim() ? "" : "disabled"}>${t("action.sendWake")}</button>
+  return `<div class="row has-icon host-row" draggable="${isRenaming ? "false" : "true"}" data-route-card="${id}" title="${escapeHtml(t("dashboard.dragToReorder"))}">
+      <button type="button" class="app-icon look-button ${editingLook === route.id ? "is-open" : ""}" data-color="${route.color}" data-edit-look="${id}"
+        aria-expanded="${editingLook === route.id}" aria-label="${escapeHtml(t("hostLook.edit", { name }))}" title="${escapeHtml(t("hostLook.edit", { name }))}"><i data-lucide="${route.icon}"></i></button>
+      <div>
+        <div class="row-title">${title}</div>
+        <div class="row-sub">${sub}</div>
+      </div>
+      <div class="row-actions" aria-label="${escapeHtml(t("settings.diagnosticAria", { name }))}">
+        ${peerActions}
+        <button type="button" class="icon-button" data-rename-route="${id}" aria-label="${escapeHtml(t("action.renameHost", { name }))}" title="${escapeHtml(t("action.renameHost", { name }))}"><i data-lucide="pencil"></i></button>
+        <span class="order-buttons">
+          <button type="button" class="icon-button" data-move-route="${id}" data-move-offset="-1" aria-label="${escapeHtml(t("action.moveHostEarlier", { name }))}" title="${escapeHtml(t("action.moveHostEarlier", { name }))}" ${index === 0 ? "disabled" : ""}><i data-lucide="chevron-up"></i></button>
+          <button type="button" class="icon-button" data-move-route="${id}" data-move-offset="1" aria-label="${escapeHtml(t("action.moveHostLater", { name }))}" title="${escapeHtml(t("action.moveHostLater", { name }))}" ${index === total - 1 ? "disabled" : ""}><i data-lucide="chevron-down"></i></button>
+        </span>
       </div>
     </div>
-    <div class="paired-route-right">
-      ${dashboard.shared.map((shared) => {
-        // Each host reports its own port; it is set on that computer, not here.
-        const current = peerInputValue(peer.id, shared.monitorKey);
-        return `<div class="paired-input-wrap">
-        <span>${escapeHtml(shared.name)} ${t("settings.inputValue")}</span>
-        <output class="paired-input-field paired-input-value" title="${escapeHtml(t("settings.peerInputOwnHost"))}">${current == null ? t("settings.peerInputUnreported") : escapeHtml(inputName(current, shared.monitorKey))}</output>
-      </div>`;
-      }).join("")}
-      <button class="delete-button" type="button" data-remove-peer="${escapeHtml(peer.id)}" title="${t("action.remove")}"><i data-lucide="trash-2"></i></button>
+    ${editingLook === route.id ? lookEditorHtml(route) : ""}
+    ${inputs ? `<div class="sub-rows">${inputs}</div>` : ""}`;
+}
+
+/** Icon and colour choices for one host. Every choice saves at once and
+ *  reaches paired hosts, like a rename. */
+function lookEditorHtml(route: SwitchRoute): string {
+  const id = escapeHtml(route.id);
+  const icons = HOST_ICONS.map((icon) => {
+    const isChosen = route.icon === icon.lucide;
+    return `<button type="button" class="look-icon ${isChosen ? "is-chosen" : ""}" data-color="${route.color}" data-look-route="${id}" data-look-icon="${icon.key}"
+      aria-pressed="${isChosen}" aria-label="${escapeHtml(t(icon.label))}" title="${escapeHtml(t(icon.label))}"><i data-lucide="${icon.lucide}"></i></button>`;
+  }).join("");
+  const colors = HOST_COLORS.map((color) => {
+    const isChosen = route.color === color.key;
+    return `<button type="button" class="look-swatch ${isChosen ? "is-chosen" : ""}" data-color="${color.key}" data-look-route="${id}" data-look-color="${color.key}"
+      aria-pressed="${isChosen}" aria-label="${escapeHtml(t(color.label))}" title="${escapeHtml(t(color.label))}"></button>`;
+  }).join("");
+  const isDefault = route.customIcon == null && route.customColor == null;
+  return `<div class="look-editor" role="group" aria-label="${escapeHtml(t("hostLook.edit", { name: route.name }))}">
+    <div class="look-section"><span class="caption">${t("hostLook.icon")}</span><div class="look-icons">${icons}</div></div>
+    <div class="look-section"><span class="caption">${t("hostLook.color")}</span><div class="look-swatches">${colors}</div></div>
+    <div class="look-actions">
+      <button type="button" class="button small" data-look-route="${id}" data-look-reset ${isDefault ? "disabled" : ""}><i data-lucide="rotate-ccw"></i>${t("hostLook.reset")}</button>
+      <button type="button" class="button small primary" data-close-look>${t("hostLook.done")}</button>
     </div>
-  </article>`).join("") : `<p class="peer-empty">${t("settings.noAddedHosts")}</p>`);
+  </div>`;
 }
 
 /** Whether a display has told some host which inputs it has. Until one of them
@@ -1698,10 +1621,17 @@ function movedRoute(order: string[], routeId: string, targetIndex: number): stri
   return [...without.slice(0, clamped), routeId, ...without.slice(clamped)];
 }
 
+/** Redraws everything that shows host names, order or colour. */
+function renderHostViews(): void {
+  renderSwitchPanel();
+  renderHostList();
+  renderInputLabels();
+}
+
 async function saveRouteOrder(next: string[]): Promise<void> {
   const previous = routeOrder;
   routeOrder = next;
-  renderSwitchPanel();
+  renderHostViews();
   refreshIcons();
   try {
     routeOrder = await invoke<string[]>("set_host_order", { routeIds: next });
@@ -1709,14 +1639,14 @@ async function saveRouteOrder(next: string[]): Promise<void> {
     routeOrder = previous;
     showToast(t("toast.hostOrderFailed"), String(error), true);
   }
-  renderSwitchPanel();
+  renderHostViews();
   refreshIcons();
 }
 
 async function reloadHostOrder(): Promise<void> {
   try {
     routeOrder = await invoke<string[]>("get_host_order");
-    renderSwitchPanel();
+    renderHostViews();
     refreshIcons();
   } catch (error) {
     showToast(t("toast.hostOrderFailed"), String(error), true);
@@ -1739,22 +1669,55 @@ let draggedRouteId: string | null = null;
 async function reloadHostNames(): Promise<void> {
   try {
     hostNames = await invoke<Record<string, string>>("get_host_names");
-    renderSwitchPanel();
-    // The settings page names this computer too, and a paired host can be the
-    // one that renamed it.
-    if (document.activeElement?.id !== "local-host-name") {
-      setInput("#local-host-name", routeDisplayName("local"));
-    }
+    renderHostViews();
     refreshIcons();
   } catch (error) {
     showToast(t("toast.hostNameFailed"), String(error), true);
   }
 }
 
+async function reloadHostAppearances(): Promise<void> {
+  try {
+    hostAppearances = await invoke<Record<string, CustomLook>>("get_host_appearances");
+    renderHostViews();
+    refreshIcons();
+  } catch (error) {
+    showToast(t("hostLook.failed"), String(error), true);
+  }
+}
+
+/** Saves one part of a host's look, keeping the other part as it was chosen
+ *  (an unchosen part stays at its default rather than freezing the default). */
+async function setHostLook(routeId: string, change: { icon?: string; color?: string } | "reset"): Promise<void> {
+  const current = hostAppearances[routeId];
+  const icon = change === "reset" ? "" : change.icon ?? current?.icon ?? "";
+  const color = change === "reset" ? "" : change.color ?? current?.color ?? "";
+  if (isPreview) {
+    const rest = Object.fromEntries(Object.entries(hostAppearances).filter(([key]) => key !== routeId));
+    hostAppearances = icon || color ? { ...rest, [routeId]: { icon: icon || null, color: color || null } } : rest;
+  } else {
+    try {
+      hostAppearances = await invoke<Record<string, CustomLook>>("set_host_appearance", { routeId, icon, color });
+    } catch (error) {
+      showToast(t("hostLook.failed"), String(error), true);
+      return;
+    }
+  }
+  renderHostViews();
+  refreshIcons();
+}
+
+function toggleLookEditor(routeId: string | null): void {
+  editingLook = editingLook === routeId ? null : routeId;
+  renderHostList();
+  refreshIcons();
+  if (routeId) document.querySelector<HTMLButtonElement>(`[data-edit-look="${cssEscape(routeId)}"]`)?.focus();
+}
+
 function startRenaming(routeId: string): void {
   const shownTitle = document.querySelector<HTMLElement>(`[data-route-card="${cssEscape(routeId)}"] .host-title`);
   renaming = { routeId, draft: shownTitle?.textContent ?? hostNames[routeId] ?? "" };
-  renderSwitchPanel();
+  renderHostViews();
   refreshIcons();
   const field = document.querySelector<HTMLInputElement>(`[data-rename-input="${cssEscape(routeId)}"]`);
   field?.focus();
@@ -1764,7 +1727,7 @@ function startRenaming(routeId: string): void {
 function stopRenaming(routeId: string): void {
   if (renaming?.routeId !== routeId) return;
   renaming = null;
-  renderSwitchPanel();
+  renderHostViews();
   refreshIcons();
   document.querySelector<HTMLButtonElement>(`[data-rename-route="${cssEscape(routeId)}"]`)?.focus();
 }
@@ -1780,139 +1743,60 @@ async function commitRename(routeId: string): Promise<void> {
   try {
     // Typing the default name back is the same as clearing the custom one.
     hostNames = await invoke<Record<string, string>>("set_host_name", { routeId, name: name === defaultName ? "" : name });
-    renderSwitchPanel();
+    renderHostViews();
     refreshIcons();
   } catch (error) {
     showToast(t("toast.hostNameFailed"), String(error), true);
   }
 }
 
-/**
- * Two overlapping displays, drawn on Lucide's 24px grid and stroke so it sits
- * with the other icons. Lucide has no multi-display icon.
- */
-const ALL_DISPLAYS_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-  <path d="M7 7V5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3"/>
-  <rect width="15" height="10" x="2" y="7" rx="2"/>
-  <path d="M9.5 17v4"/>
-  <path d="M6 21h7"/>
-</svg>`;
-
 /** A host's name as its card shows it: the custom name, else the default. */
 function routeDisplayName(routeId: string): string {
-  const custom = hostNames[routeId];
-  if (custom) return custom;
-  if (routeId === "local") {
-    return dashboard.localHostName
-      || (dashboard.localHost === "windows" ? t("dashboard.localWindows") : t("dashboard.localMac"));
-  }
-  return settings.peers.find((peer) => peer.id === routeId)?.name ?? routeId;
+  return hostNames[routeId] || defaultRouteName(routeId);
 }
 
 /**
  * One button per host that switches every shared display at once. Sits beside
- * the dashboard title because it acts on all displays, not the selected one.
+ * the dashboard title because it acts on all displays, not on one of them. The
+ * matrix has the same buttons in its column heads, so it hides this bar.
  */
 function renderSwitchAllBar(): void {
   const container = document.querySelector<HTMLElement>("#switch-all-bar");
   if (!container) return;
-  const hasMultipleDisplays = dashboard.shared.length > 1;
-  container.hidden = !hasMultipleDisplays || !document.querySelector("#dashboard-page")?.classList.contains("is-active");
-  if (!hasMultipleDisplays) {
+  const isShown = dashboard.shared.length > 1 && currentSwitchView() === "stage";
+  container.hidden = !isShown;
+  if (!isShown) {
     container.innerHTML = "";
     return;
   }
-  const buttons = currentRouteIds().map((routeId) => {
-    const name = routeDisplayName(routeId);
-    const platform = routeId === "local" ? dashboard.localHost : settings.peers.find((peer) => peer.id === routeId)?.platform;
-    const icon = platform === "mac" ? "laptop" : "computer";
-    const isAllShowing = dashboard.shared.every((shared) => (selectedMonitorFor(shared)?.activeRoute ?? "local") === routeId);
+  const buttons = switchRoutes().map((route) => {
+    const name = escapeHtml(route.name);
+    const isAllShowing = dashboard.shared.every((shared) => activeRouteFor(shared) === route.id);
     if (isAllShowing) {
-      return `<div class="switch-all-host is-showing" title="${escapeHtml(`${name} · ${t("dashboard.allDisplayed")}`)}">
-        <i data-lucide="${icon}"></i><span class="switch-all-name">${escapeHtml(name)}</span>
-        <span class="switch-all-state"><span class="active-route-dot" aria-hidden="true"></span><span class="switch-all-state-text">${t("dashboard.allDisplayed")}</span></span>
-      </div>`;
+      return `<span class="switch-all-host tint is-showing" data-color="${route.color}" title="${escapeHtml(`${route.name} · ${t("dashboard.allDisplayed")}`)}"><span class="swatch"></span>${name}</span>`;
     }
-    const label = escapeHtml(t("action.switchAllToHost", { name }));
-    return `<button type="button" class="switch-all-host" data-switch-all-id="${escapeHtml(routeId)}" aria-label="${label}" title="${label}" ${switchAllTargets(routeId).length === 0 ? "disabled" : ""}>
-      <i data-lucide="${icon}"></i><span class="switch-all-name">${escapeHtml(name)}</span>
+    const label = escapeHtml(t("action.switchAllToHost", { name: route.name }));
+    return `<button type="button" class="switch-all-host glass" data-color="${route.color}" data-switch-all-id="${escapeHtml(route.id)}" aria-label="${label}" title="${label}" ${switchAllTargets(route.id).length === 0 ? "disabled" : ""}>
+      <span class="swatch"></span>${name}
     </button>`;
   }).join("");
-  container.innerHTML = `
-    <span class="switch-all-label" title="${escapeHtml(t("dashboard.switchAllLabel"))}">${ALL_DISPLAYS_ICON}<span>${t("dashboard.switchAllLabel")}</span></span>
-    <div class="switch-all-hosts">${buttons}</div>`;
-}
-
-function renderHostRoutes(shared: SharedMonitorStatus): void {
-  const container = document.querySelector(`[data-host-route-grid="${cssEscape(shared.monitorKey)}"]`);
-  if (!container) return;
-  const selectedMonitor = selectedMonitorFor(shared);
-  const activeRouteId = selectedMonitor?.activeRoute ?? "local";
-  const routes = [
-    { id: "local", name: routeDisplayName("local"), platform: dashboard.localHost, input: selectedMonitor?.localInput ?? null, local: true },
-    ...settings.peers.map((peer) => ({
-      id: peer.id, name: peer.name, platform: peer.platform,
-      input: peer.inputs.find((assignment) => sameDisplay(assignment.monitor, shared.fingerprint))?.input ?? null,
-      local: false,
-    })),
-  ].sort((left, right) => routeRank(left.id) - routeRank(right.id));
-  container.innerHTML = routes.map((route, index) => {
-    const isActive = route.id === activeRouteId;
-    const displayName = routeDisplayName(route.id);
-    const isRenaming = renaming?.routeId === route.id;
-    const title = isRenaming
-      ? `<input class="host-title-input" data-rename-input="${escapeHtml(route.id)}" value="${escapeHtml(renaming?.draft ?? displayName)}" placeholder="${escapeHtml(route.name)}" maxlength="${MAX_HOST_NAME_CHARS}" aria-label="${escapeHtml(t("dashboard.hostNameLabel"))}" />`
-      : `<h2 class="host-title">${escapeHtml(displayName)}</h2>`;
-    const badgeText = route.local
-      ? (route.platform === "mac" ? t("dashboard.localMacOs") : t("dashboard.localWindowsBadge"))
-      : (route.platform === "mac" ? t("dashboard.connectedMacOs") : t("dashboard.connectedWindows"));
-    const inputDesc = route.input == null
-      ? t("dashboard.inputUnset")
-      : (route.local ? t("dashboard.currentInput", { input: escapeHtml(inputName(route.input, shared.monitorKey)) }) : t("dashboard.assignedInput", { input: escapeHtml(inputName(route.input, shared.monitorKey)) }));
-    const iconName = route.platform === "mac" ? "laptop" : "computer";
-
-    return `
-      <article class="host-route-card ${route.local ? "is-local" : ""}" draggable="${isRenaming ? "false" : "true"}" data-route-card="${escapeHtml(route.id)}">
-        <div class="host-card-tools ${isRenaming ? "is-hidden" : ""}" title="${escapeHtml(t("dashboard.dragToReorder"))}">
-          <button type="button" class="host-tool-button" data-rename-route="${escapeHtml(route.id)}" aria-label="${escapeHtml(t("action.renameHost", { name: displayName }))}" title="${escapeHtml(t("action.renameHost", { name: displayName }))}"><i data-lucide="pencil"></i></button>
-          <button type="button" class="host-tool-button" data-move-route="${escapeHtml(route.id)}" data-move-offset="-1" aria-label="${escapeHtml(t("action.moveHostEarlier", { name: displayName }))}" title="${escapeHtml(t("action.moveHostEarlier", { name: displayName }))}" ${index === 0 ? "disabled" : ""}><i data-lucide="chevron-left"></i></button>
-          <button type="button" class="host-tool-button" data-move-route="${escapeHtml(route.id)}" data-move-offset="1" aria-label="${escapeHtml(t("action.moveHostLater", { name: displayName }))}" title="${escapeHtml(t("action.moveHostLater", { name: displayName }))}" ${index === routes.length - 1 ? "disabled" : ""}><i data-lucide="chevron-right"></i></button>
-        </div>
-        <div class="host-card-header">
-          <div class="host-icon ${route.platform}">
-            <i data-lucide="${iconName}"></i>
-          </div>
-          <div class="host-copy">
-            <span class="host-label ${route.local ? "is-local" : ""}">${badgeText}</span>
-            ${title}
-            <p class="host-input-desc">${inputDesc}</p>
-          </div>
-        </div>
-        ${isActive ? `
-          <div class="active-route-state">
-            <span class="active-route-dot" aria-hidden="true"></span>
-            <span>${t("dashboard.currentlyDisplayed")}</span>
-          </div>
-        ` : `
-          <button class="switch-button primary" data-switch-id="${escapeHtml(route.id)}" ${route.input == null || (!shared.ddcAvailable && !dashboard.agentConfigured) ? "disabled" : ""}>
-            <i data-lucide="arrow-left-right"></i>
-            <span>${t("action.switchHost")}</span>
-          </button>
-        `}
-      </article>
-    `;
-  }).join("");
+  container.innerHTML = `<span class="caption">${t("switcher.switchAll")}</span>${buttons}`;
 }
 
 async function scanPeers(): Promise<void> {
   const button = document.querySelector<HTMLButtonElement>("#scan-button");
-  if (button) { button.disabled = true; button.textContent = t("action.searching"); }
+  const label = button?.querySelector("span");
+  if (button) button.disabled = true;
+  if (label) label.textContent = t("action.searching");
   try {
     discoveredPeers = isPreview ? [] : await invoke<DiscoveredPeer[]>("discover_peers");
     renderPeerList(); refreshIcons();
     if (!discoveredPeers.length) showToast(t("toast.noPeersTitle"), t("toast.noPeersBody"), true);
   } catch (error) { showToast(t("toast.scanFailed"), String(error), true); }
-  finally { if (button) { button.disabled = false; button.textContent = t("action.searchAgain"); } }
+  finally {
+    if (button) button.disabled = false;
+    if (label) label.textContent = t("action.searchAgain");
+  }
 }
 
 /** Displays with a command in flight, by the id their row is keyed on.
@@ -1981,8 +1865,6 @@ async function mergeSharedMonitor(aliasId: string, primaryId: string): Promise<v
   } catch (error) { showToast(t("toast.monitorSelectFailed"), String(error), true); }
 }
 
-/** Renames this computer. An empty name, or the discovered one, clears the
- *  custom name rather than storing a copy of the default. */
 /** Saves which input this computer occupies on a shared display. Announced to
  *  paired hosts like a detected one, so a correction here corrects where every
  *  other computer switches to. */
@@ -1995,22 +1877,6 @@ async function commitLocalInput(monitorKey: string, value: string): Promise<void
   } catch (error) {
     showToast(t("toast.inputLabelFailed"), String(error), true);
     renderLocalInputSummary();
-  }
-}
-
-async function renameLocalHost(value: string): Promise<void> {
-  const name = value.trim();
-  const fallback = dashboard.localHostName ?? "";
-  try {
-    hostNames = await invoke<Record<string, string>>("set_host_name", {
-      routeId: "local",
-      name: name === fallback ? "" : name,
-    });
-    renderState();
-    setInput("#local-host-name", routeDisplayName("local"));
-  } catch (error) {
-    showToast(t("toast.monitorSelectFailed"), String(error), true);
-    setInput("#local-host-name", routeDisplayName("local"));
   }
 }
 
@@ -2247,6 +2113,7 @@ function showOnboarding(step: number): void {
   onboardingStep = Math.max(0, Math.min(step, onboardingSteps.length - 1));
   const current = onboardingSteps[onboardingStep];
   showPage(current.page);
+  if (current.tab) showSettingsTab(current.tab);
   setText("#onboarding-counter", t("onboarding.progress", { current: onboardingStep + 1, total: onboardingSteps.length }));
   setText("#onboarding-step-label", current.label);
   setText("#onboarding-title", current.title);
@@ -2367,7 +2234,7 @@ async function completeOnboarding(openSettings: boolean): Promise<void> {
     diagnostics.askIfUnasked();
     if (openSettings) {
       showPage("settings");
-      document.querySelector(".workspace")?.scrollTo({ top: 0, behavior: "smooth" });
+      showSettingsTab("displays");
       window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>("[data-monitor-id]:not(:disabled)")?.focus());
     }
   } catch (error) {
@@ -2549,6 +2416,7 @@ async function bootstrap(): Promise<void> {
       await listen(ACTIVE_ROUTE_CHANGED_EVENT, () => void reloadActiveRoutes());
       await listen(HOST_ORDER_CHANGED_EVENT, () => void reloadHostOrder());
       await listen(HOST_NAMES_CHANGED_EVENT, () => void reloadHostNames());
+      await listen(HOST_APPEARANCES_CHANGED_EVENT, () => void reloadHostAppearances());
       await listen(INPUT_LABELS_CHANGED_EVENT, () => void reloadInputOptions());
       await listen(PEER_INPUTS_CHANGED_EVENT, () => void reloadPeerInputs());
       // A merge changes which displays exist and what they are called, which

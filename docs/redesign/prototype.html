@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>MuxSU 重新設計 · 設計稿 v3（液態玻璃）</title>
+<style>
+/* ───────────────────────── Tokens ───────────────────────── */
+[data-theme="light"] {
+  --wall:
+    radial-gradient(38% 55% at 12% 18%, #8fb4ff 0%, transparent 70%),
+    radial-gradient(40% 50% at 88% 12%, #d6a8ff 0%, transparent 70%),
+    radial-gradient(45% 55% at 78% 92%, #8fe6d8 0%, transparent 70%),
+    radial-gradient(35% 45% at 18% 95%, #ffd0a8 0%, transparent 70%),
+    #eef1f7;
+  --glass: rgba(255, 255, 255, 0.45);
+  --glass-strong: rgba(255, 255, 255, 0.68);
+  --glass-weak: rgba(255, 255, 255, 0.24);
+  --rim-hi: rgba(255, 255, 255, 0.95);
+  --rim-lo: rgba(255, 255, 255, 0.25);
+  --edge: rgba(255, 255, 255, 0.55);
+  --text: #0d0f16;
+  --text-2: rgba(20, 24, 36, 0.62);
+  --text-3: rgba(20, 24, 36, 0.42);
+  --sep: rgba(15, 20, 40, 0.08);
+  --shadow: 0 12px 40px rgba(30, 40, 80, 0.14), 0 2px 6px rgba(30, 40, 80, 0.06);
+  --accent: #007aff;
+  --ok: #34c759;
+  --danger: #ff3b30;
+  --host-1: #5e5ce6;
+  --host-2: #0fa3b1;
+  --host-3: #ff2d55;
+  --host-4: #007aff;
+  --host-5: #ff9500;
+}
+[data-theme="dark"] {
+  --wall:
+    radial-gradient(40% 55% at 10% 15%, #2a3f9a 0%, transparent 70%),
+    radial-gradient(40% 50% at 90% 10%, #6a2c9a 0%, transparent 70%),
+    radial-gradient(45% 55% at 80% 95%, #0d6b73 0%, transparent 70%),
+    radial-gradient(35% 45% at 15% 95%, #7a3a1c 0%, transparent 70%),
+    #0a0c14;
+  --glass: rgba(38, 40, 54, 0.42);
+  --glass-strong: rgba(58, 60, 78, 0.55);
+  --glass-weak: rgba(255, 255, 255, 0.06);
+  --rim-hi: rgba(255, 255, 255, 0.38);
+  --rim-lo: rgba(255, 255, 255, 0.05);
+  --edge: rgba(255, 255, 255, 0.14);
+  --text: #f4f5fa;
+  --text-2: rgba(235, 238, 248, 0.64);
+  --text-3: rgba(235, 238, 248, 0.4);
+  --sep: rgba(255, 255, 255, 0.08);
+  --shadow: 0 16px 48px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --accent: #0a84ff;
+  --ok: #30d158;
+  --danger: #ff453a;
+  --host-1: #7d7aff;
+  --host-2: #40c8e0;
+  --host-3: #ff375f;
+  --host-4: #0a84ff;
+  --host-5: #ff9f0a;
+}
+
+/* ───────────────────────── Board ───────────────────────── */
+* { box-sizing: border-box; margin: 0; }
+body {
+  --sys: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+  background: #1c1c1e;
+  color: #eee;
+  font: 14px/1.45 var(--sys);
+  -webkit-font-smoothing: antialiased;
+  padding: 40px 0 80px;
+}
+.board-title { width: 1080px; margin: 0 auto 8px; font-size: 26px; font-weight: 700; letter-spacing: -.02em; }
+.board-note { width: 1080px; margin: 0 auto 36px; color: #999; }
+.frame-label { width: 1080px; margin: 48px auto 12px; font: 600 12px var(--sys); letter-spacing: .06em; color: #999; }
+
+/* ───────────────────────── Glass primitive ───────────────────────── */
+.g {
+  position: relative;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  backdrop-filter: blur(28px) saturate(180%);
+  box-shadow: var(--shadow), inset 0 1px 0 var(--edge);
+}
+.g::before { /* specular rim */
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none;
+  background: linear-gradient(150deg, var(--rim-hi) 0%, var(--rim-lo) 35%, var(--rim-lo) 65%, var(--rim-hi) 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+.g.strong { background: var(--glass-strong); }
+.g.flat { box-shadow: inset 0 1px 0 var(--edge); background: var(--glass-weak); }
+
+/* ───────────────────────── Window ───────────────────────── */
+.app {
+  position: relative;
+  width: 1080px; height: 720px; margin: 0 auto;
+  border-radius: 22px;
+  overflow: hidden;
+  background: var(--wall);
+  color: var(--text);
+  box-shadow: 0 30px 90px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08);
+  display: grid; grid-template-rows: auto 1fr;
+}
+.ico { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.caption { font-size: 11.5px; font-weight: 600; color: var(--text-3); letter-spacing: .02em; }
+.mono { font-family: var(--mono); }
+
+/* Floating toolbar */
+.toolbar { display: flex; align-items: center; gap: 12px; padding: 14px 16px 6px 86px; }
+.traffic { position: absolute; left: 20px; top: 26px; display: flex; gap: 8px; z-index: 2; }
+.traffic i { width: 12px; height: 12px; border-radius: 50%; }
+.traffic i:nth-child(1) { background: #ff5f57; } .traffic i:nth-child(2) { background: #febc2e; } .traffic i:nth-child(3) { background: #28c840; }
+.brand { font-weight: 700; font-size: 15px; letter-spacing: -.01em; }
+.seg { margin: 0 auto; display: flex; padding: 4px; border-radius: 999px; }
+.seg button { position: relative; border: 0; background: none; color: var(--text-2); font: 600 13px var(--sys); padding: 7px 22px; border-radius: 999px; }
+.seg button.on { color: var(--text); background: var(--glass-strong); box-shadow: 0 2px 10px rgba(0,0,0,.1), inset 0 1px 0 var(--rim-hi); }
+.pill { display: flex; align-items: center; gap: 8px; padding: 7px 14px 7px 12px; border-radius: 999px; font-size: 12.5px; font-weight: 500; color: var(--text-2); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.circle { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: var(--text-2); border: 0; }
+
+/* ───────────────────────── Switch center ───────────────────────── */
+.stage { padding: 14px 22px 22px; display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+.head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding: 0 6px; }
+.head h1 { font-size: 28px; font-weight: 700; letter-spacing: -.025em; }
+.head p { color: var(--text-2); font-size: 13px; margin-top: 2px; }
+.all-to { display: flex; align-items: center; gap: 8px; }
+.cap {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 7px 14px 7px 10px; border-radius: 999px; border: 0;
+  font: 600 12.5px var(--sys); color: var(--text); white-space: nowrap;
+}
+.cap .sw { width: 10px; height: 10px; border-radius: 50%; background: var(--c); box-shadow: 0 0 6px var(--c); }
+.cap.plain { padding: 7px 14px; }
+.cap.tint { background: color-mix(in srgb, var(--accent) 88%, white); color: #fff; }
+.seg.small button { padding: 5px 14px; font-size: 12px; }
+
+.monitors { display: grid; grid-template-columns: 1.25fr 1fr; gap: 16px; flex: 1; min-height: 0; }
+.panel { border-radius: 26px; padding: 18px 18px 16px; display: flex; flex-direction: column; }
+.panel-head { display: flex; justify-content: space-between; align-items: baseline; padding: 0 4px; gap: 10px; }
+.panel-head h2 { font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+.spec { font: 500 11.5px var(--mono); color: var(--text-3); white-space: nowrap; }
+.spec .ok { color: var(--ok); }
+
+.screen-wrap { flex: 1; display: grid; place-items: center; padding: 10px 0 6px; }
+.display { position: relative; }
+.display .glow { position: absolute; left: 10%; right: 10%; bottom: -8px; height: 40px; background: var(--c); filter: blur(28px); opacity: .55; }
+.screen {
+  position: relative;
+  aspect-ratio: var(--ar, 21 / 9);
+  border-radius: 12px;
+  padding: 4px;
+  background: linear-gradient(180deg, #2a2c34, #111216);
+  box-shadow: 0 1px 0 rgba(255,255,255,.2) inset, 0 12px 30px rgba(0,0,0,.25);
+}
+.screen .inner {
+  width: 100%; height: 100%; border-radius: 9px; overflow: hidden; position: relative;
+  display: grid; place-items: center; color: #fff;
+  background:
+    radial-gradient(90% 120% at 15% 0%, color-mix(in srgb, var(--c) 40%, white) 0%, transparent 55%),
+    radial-gradient(80% 100% at 100% 100%, color-mix(in srgb, var(--c) 60%, black) 0%, transparent 60%),
+    var(--c);
+}
+.screen .inner::after { /* glass sheen */
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(115deg, rgba(255,255,255,.28) 0%, rgba(255,255,255,0) 38%);
+}
+.screen-label { position: relative; z-index: 1; text-align: center; }
+.screen-label span { font-size: 11px; font-weight: 600; opacity: .8; letter-spacing: .04em; }
+.screen-label strong { display: block; font-size: 21px; font-weight: 700; letter-spacing: -.02em; margin-top: 1px; }
+.screen-port { display: inline-block; margin-top: 8px; font: 600 11.5px var(--mono); padding: 3px 10px; border-radius: 999px; background: rgba(255,255,255,.22); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); box-shadow: inset 0 1px 0 rgba(255,255,255,.45); }
+.neck { width: 34px; height: 16px; margin: 0 auto; background: linear-gradient(180deg, #9aa0ad, #c9ced8); clip-path: polygon(30% 0, 70% 0, 80% 100%, 20% 100%); }
+[data-theme="dark"] .neck { background: linear-gradient(180deg, #3a3d48, #5a5e6a); }
+.base { width: 96px; height: 5px; margin: 0 auto; border-radius: 3px; background: linear-gradient(180deg, #d5d9e2, #a7adb9); }
+[data-theme="dark"] .base { background: linear-gradient(180deg, #5a5e6a, #3a3d48); }
+
+/* Source keys */
+.keys { display: grid; grid-template-columns: repeat(var(--n, 2), minmax(0, 1fr)); gap: 8px; margin-top: 14px; padding: 5px; border-radius: 22px; }
+.key {
+  position: relative;
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px;
+  padding: 10px 14px 10px 10px; border-radius: 17px; border: 0;
+  background: transparent; color: var(--text); font: inherit; text-align: left;
+}
+.key .chip { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; background: color-mix(in srgb, var(--c) 18%, transparent); color: var(--c); }
+.key .chip .ico { width: 16px; height: 16px; }
+.key b { display: block; font-size: 13.5px; font-weight: 600; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.key small { display: block; font: 500 11px var(--mono); color: var(--text-3); white-space: nowrap; }
+.key .act { font-size: 11.5px; font-weight: 600; color: var(--text-3); white-space: nowrap; }
+.key.on {
+  color: #fff;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--c) 78%, white), var(--c));
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--c) 45%, transparent), inset 0 1px 0 rgba(255,255,255,.55), inset 0 -1px 0 rgba(0,0,0,.12);
+}
+.key.on .chip { background: rgba(255,255,255,.24); color: #fff; }
+.key.on small, .key.on .act { color: rgba(255,255,255,.82); }
+.key.hover { background: var(--glass-strong); box-shadow: 0 4px 14px rgba(0,0,0,.08), inset 0 1px 0 var(--rim-hi); }
+.key.hover .act { color: var(--c); }
+.key.sleep { opacity: .55; }
+.keys.stack .key { grid-template-columns: 1fr; justify-items: center; text-align: center; gap: 6px; padding: 12px 8px; }
+
+/* Matrix */
+.matrix-wrap { border-radius: 26px; padding: 14px; flex: 1; display: flex; flex-direction: column; gap: 12px; }
+.matrix { display: grid; grid-template-columns: 220px repeat(var(--hosts), minmax(0, 1fr)); gap: 8px; }
+.mx-corner { display: flex; align-items: flex-end; padding: 0 8px 10px; }
+.mx-host { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 10px 10px; }
+.mx-host .chip { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; background: color-mix(in srgb, var(--c) 18%, transparent); color: var(--c); margin-bottom: 6px; }
+.mx-host .chip .ico { width: 15px; height: 15px; }
+.mx-host b { font-size: 13.5px; font-weight: 650; }
+.mx-host small { font-size: 11.5px; color: var(--text-3); }
+.mx-host .cap { margin-top: 8px; padding: 5px 11px; font-size: 11.5px; }
+.mx-host.sleep { opacity: .6; }
+.mx-mon { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 16px; background: var(--glass-weak); }
+.thumb { flex: none; width: 50px; }
+.thumb i { display: block; width: 100%; aspect-ratio: var(--ar, 16/9); border-radius: 5px; border: 2.5px solid #1a1b20; background: linear-gradient(135deg, color-mix(in srgb, var(--c) 50%, white), var(--c)); }
+.mx-mon b { display: block; font-size: 14px; font-weight: 650; }
+.mx-mon small { font: 500 11px var(--mono); color: var(--text-3); }
+.cell {
+  border-radius: 16px; min-height: 62px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  background: var(--glass-weak);
+  font: 600 13px var(--mono); color: var(--text-2);
+}
+.cell small { font: 600 11px var(--sys); color: var(--text-3); }
+.cell.on { color: #fff; background: linear-gradient(180deg, color-mix(in srgb, var(--c) 78%, white), var(--c)); box-shadow: 0 8px 20px color-mix(in srgb, var(--c) 40%, transparent), inset 0 1px 0 rgba(255,255,255,.5); }
+.cell.on small { color: rgba(255,255,255,.85); }
+.cell.hover { background: var(--glass-strong); color: var(--c); box-shadow: 0 4px 14px rgba(0,0,0,.08), inset 0 0 0 1.5px var(--c); }
+.cell.hover small { color: var(--c); }
+.cell.none { background: transparent; box-shadow: inset 0 0 0 1.5px var(--sep); color: var(--text-3); font: 500 12px var(--sys); }
+.cell.sleep { opacity: .5; }
+.legend { display: flex; gap: 18px; font-size: 12px; color: var(--text-3); margin-top: auto; padding: 0 8px; }
+.legend span { display: flex; align-items: center; gap: 6px; }
+.legend i { width: 12px; height: 12px; border-radius: 4px; }
+
+/* ───────────────────────── Settings ───────────────────────── */
+.settings { display: grid; grid-template-columns: 220px 1fr; gap: 14px; padding: 8px 14px 14px; min-height: 0; }
+.sidebar { border-radius: 24px; padding: 14px 10px; display: flex; flex-direction: column; gap: 2px; }
+.sidebar .caption { padding: 4px 12px 8px; }
+.sidebar a { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 12px; color: var(--text); font-size: 13.5px; font-weight: 500; }
+.sidebar a .ico { color: var(--accent); }
+.sidebar a.on { background: color-mix(in srgb, var(--accent) 90%, white); color: #fff; box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 35%, transparent), inset 0 1px 0 rgba(255,255,255,.4); }
+.sidebar a.on .ico { color: #fff; }
+.sidebar a .count { margin-left: auto; font-size: 12px; opacity: .6; }
+.sidebar .spacer { flex: 1; }
+.sidebar a.danger, .sidebar a.danger .ico { color: var(--danger); }
+.content { padding: 10px 12px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; }
+.content h1 { font-size: 24px; font-weight: 700; letter-spacing: -.025em; padding: 0 6px; }
+.content > p { color: var(--text-2); font-size: 13px; margin-top: -10px; padding: 0 6px; }
+.list { border-radius: 20px; overflow: hidden; }
+.row { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: center; padding: 12px 16px; }
+.row + .row::before, .list > * + .row::before { content: ""; position: absolute; top: 0; left: 62px; right: 0; height: 1px; background: var(--sep); }
+.row.with-ico { grid-template-columns: auto 1fr auto; }
+.row h3 { font-size: 14px; font-weight: 600; }
+.row .sub { font-size: 12px; color: var(--text-2); margin-top: 1px; }
+.row .hint { font-size: 13px; color: var(--text-2); }
+.appicon { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; color: #fff; background: linear-gradient(180deg, color-mix(in srgb, var(--c, #8e8e93) 75%, white), var(--c, #8e8e93)); box-shadow: inset 0 1px 0 rgba(255,255,255,.4); }
+.appicon .ico { width: 17px; height: 17px; }
+.switch { width: 44px; height: 26px; border-radius: 999px; background: rgba(120,120,128,.24); position: relative; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0,0,0,.2); }
+.switch.on { background: var(--ok); }
+.switch.on::after { left: 20px; }
+.popup { display: inline-flex; align-items: center; gap: 8px; padding: 5px 8px 5px 12px; border-radius: 10px; background: var(--glass-strong); box-shadow: inset 0 1px 0 var(--rim-hi), 0 1px 3px rgba(0,0,0,.08); font: 600 12.5px var(--mono); }
+.popup .auto { font: 600 10.5px var(--sys); color: var(--ok); }
+.popup .ico { width: 13px; height: 13px; color: var(--text-3); }
+.port-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; padding: 2px 16px 14px 62px; }
+.port { border-radius: 12px; padding: 7px 10px; font: 600 12px var(--mono); color: var(--text-2); box-shadow: inset 0 0 0 1px var(--sep); }
+.port small, .port input { display: block; font: 500 11px var(--sys); color: var(--text-3); margin-top: 1px; }
+.port input { all: unset; display: block; font: 500 11px var(--sys); color: var(--text-3); margin-top: 1px; width: 100%; }
+.port.used { color: var(--c); background: color-mix(in srgb, var(--c) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 40%, transparent); }
+.port.used small { color: var(--c); opacity: .85; }
+.note { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 16px; font-size: 12.5px; color: var(--text-2); }
+.note .ico { flex: none; color: var(--accent); margin-top: 1px; }
+.note b { color: var(--text); }
+.btns { display: flex; gap: 6px; }
+.badge { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--glass-strong); color: var(--text-2); margin-left: 6px; vertical-align: 1px; }
+.searching { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: 20px; font-size: 12.5px; color: var(--text-2); }
+.searching b { color: var(--text); font-size: 13.5px; font-weight: 600; }
+.spinner { width: 20px; height: 20px; border-radius: 50%; border: 2.5px solid var(--sep); border-top-color: var(--accent); }
+
+/* ───────────────────────── Host switcher HUD ───────────────────────── */
+.stagebox { width: 1080px; margin: 0 auto; border-radius: 22px; padding: 48px 32px; display: flex; gap: 28px; justify-content: center; align-items: flex-start; background: var(--wall); }
+.hud { width: 440px; border-radius: 28px; padding: 14px; display: flex; flex-direction: column; gap: 10px; color: var(--text); }
+.hud-head { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px 0; }
+.hud-head h2 { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
+.targets { display: flex; gap: 4px; padding: 3px; border-radius: 999px; background: var(--glass-weak); align-self: flex-start; }
+.targets span { font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 999px; color: var(--text-2); }
+.targets span.on { background: var(--glass-strong); color: var(--text); box-shadow: 0 2px 8px rgba(0,0,0,.1), inset 0 1px 0 var(--rim-hi); }
+.hud-list { display: flex; flex-direction: column; gap: 4px; }
+.hud-row { display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: 12px; padding: 9px 12px 9px 10px; border-radius: 16px; }
+.hud-row .chip { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; background: color-mix(in srgb, var(--c) 18%, transparent); color: var(--c); }
+.hud-row .chip .ico { width: 16px; height: 16px; }
+.hud-row b { font-size: 14px; font-weight: 600; }
+.hud-row small { font: 500 11.5px var(--mono); color: var(--text-3); margin-left: 6px; }
+.hud-row .state { font-size: 12px; font-weight: 600; color: var(--text-3); }
+.hud-row.on .state { color: var(--ok); }
+.hud-row.focus { color: #fff; background: linear-gradient(180deg, color-mix(in srgb, var(--c) 78%, white), var(--c)); box-shadow: 0 8px 20px color-mix(in srgb, var(--c) 40%, transparent), inset 0 1px 0 rgba(255,255,255,.5); }
+.hud-row.focus .chip { background: rgba(255,255,255,.24); color: #fff; }
+.hud-row.focus small, .hud-row.focus .state { color: rgba(255,255,255,.85); }
+.hud-row.focus kbd { background: rgba(255,255,255,.25); color: #fff; box-shadow: none; }
+.hud-row.sleep { opacity: .55; }
+kbd { font: 600 11px var(--sys); min-width: 20px; height: 20px; padding: 0 5px; display: inline-grid; place-items: center; border-radius: 6px; background: var(--glass-strong); color: var(--text-2); box-shadow: inset 0 1px 0 var(--rim-hi), 0 1px 2px rgba(0,0,0,.12); }
+.hud-foot { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-3); padding: 2px 8px 2px; }
+.hud-foot kbd { min-width: 18px; height: 18px; font-size: 10.5px; }
+
+.split { width: 1080px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr; border-radius: 22px; overflow: hidden; }
+.half { background: var(--wall); padding: 48px 20px; display: grid; place-items: center; }
+.half .hud { width: 100% !important; max-width: 470px; }
+
+/* Tray menu (macOS Tahoe style) */
+.menu { width: 240px; border-radius: 16px; padding: 6px; font-size: 13px; color: var(--text); }
+.menu div { padding: 4px 10px; border-radius: 8px; display: flex; align-items: center; gap: 8px; }
+.menu .hd { color: var(--text-3); font-size: 12px; font-weight: 600; padding-top: 6px; }
+.menu .sel { background: var(--accent); color: #fff; }
+.menu hr { border: 0; border-top: 1px solid var(--sep); margin: 5px 10px; }
+.menu .k { margin-left: auto; opacity: .55; }
+.menu .sw { width: 9px; height: 9px; border-radius: 50%; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+  <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></symbol>
+  <symbol id="i-tower" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M10 7h4M10 10h4"/><circle cx="12" cy="16" r="1"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="m7 10 5-5 5 5M7 14l5 5 5-5"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+  <symbol id="i-hosts" viewBox="0 0 24 24"><rect x="3" y="4" width="8" height="12" rx="1.5"/><rect x="13" y="4" width="8" height="12" rx="1.5"/><path d="M5 20h14"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="11" rx="2"/><path d="M7 11h1M11 11h1M15 11h1M8 14h8"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.5V14M12 17h.01"/></symbol>
+</svg>
+
+<h1 class="board-title">MuxSU · 設計稿 v3（液態玻璃）</h1>
+<p class="board-note">半透明分層玻璃、邊緣高光、大圓角與浮動控制列；系統字體。視窗背景在正式版會透出桌面（macOS vibrancy／Windows Mica），這裡以彩色漸層模擬。</p>
+
+<!-- ═════════════════ A ═════════════════ -->
+<p class="frame-label">A · 切換中心 · 2 台螢幕 × 2 台主機 · 淺色</p>
+<div class="app" data-theme="light">
+  <div class="traffic"><i></i><i></i><i></i></div>
+  <header class="toolbar">
+    <span class="brand">MuxSU</span>
+    <nav class="seg g"><button class="on">切換</button><button>設定</button></nav>
+    <span class="pill g"><span class="dot"></span>Agent 就緒</span>
+    <button class="circle g"><svg class="ico"><use href="#i-refresh"/></svg></button>
+  </header>
+  <main class="stage">
+    <div class="head">
+      <div><h1>切換中心</h1><p>2 台共用螢幕 · 2 台主機在線</p></div>
+      <div class="all-to"><span class="caption">全部切到</span>
+        <button class="cap g" style="--c: var(--host-1)"><span class="sw"></span>這台 Windows PC</button>
+        <button class="cap g" style="--c: var(--host-2)"><span class="sw"></span>工作用 Mac mini</button>
+      </div>
+    </div>
+    <div class="monitors">
+      <section class="panel g">
+        <div class="panel-head"><h2>DEMO Ultrawide 34</h2><span class="spec">21:9 · 3440×1440 · <span class="ok">DDC ●</span></span></div>
+        <div class="screen-wrap"><div class="display" style="--c: var(--host-1)"><span class="glow"></span>
+          <div class="screen" style="--ar: 21/9; width: 410px"><div class="inner"><div class="screen-label"><span>正在顯示</span><strong>這台 Windows PC</strong><span class="screen-port">HDMI 1</span></div></div></div>
+          <div class="neck"></div><div class="base"></div>
+        </div></div>
+        <div class="keys g flat">
+          <button class="key on" style="--c: var(--host-1)"><span class="chip"><svg class="ico"><use href="#i-tower"/></svg></span><span><b>這台 Windows PC</b><small>HDMI 1</small></span><span class="act">顯示中</span></button>
+          <button class="key hover" style="--c: var(--host-2)"><span class="chip"><svg class="ico"><use href="#i-laptop"/></svg></span><span><b>工作用 Mac mini</b><small>DP</small></span><span class="act">切換</span></button>
+        </div>
+      </section>
+      <section class="panel g">
+        <div class="panel-head"><h2>DEMO Studio 27</h2><span class="spec">16:9 · 3840×2160 · <span class="ok">DDC ●</span></span></div>
+        <div class="screen-wrap"><div class="display" style="--c: var(--host-2)"><span class="glow"></span>
+          <div class="screen" style="--ar: 16/9; height: 170px"><div class="inner"><div class="screen-label"><span>正在顯示</span><strong>工作用 Mac mini</strong><span class="screen-port">HDMI 1</span></div></div></div>
+          <div class="neck"></div><div class="base"></div>
+        </div></div>
+        <div class="keys g flat">
+          <button class="key" style="--c: var(--host-1)"><span class="chip"><svg class="ico"><use href="#i-tower"/></svg></span><span><b>Windows PC</b><small>DP</small></span></button>
+          <button class="key on" style="--c: var(--host-2)"><span class="chip"><svg class="ico"><use href="#i-laptop"/></svg></span><span><b>Mac mini</b><small>HDMI 1</small></span><span class="act">顯示中</span></button>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- ═════════════════ B ═════════════════ -->
+<p class="frame-label">B · 切換中心 · 1 台螢幕 × 3 台主機（1 台睡眠）· 深色</p>
+<div class="app" data-theme="dark">
+  <div class="traffic"><i></i><i></i><i></i></div>
+  <header class="toolbar">
+    <span class="brand">MuxSU</span>
+    <nav class="seg g"><button class="on">切換</button><button>設定</button></nav>
+    <span class="pill g"><span class="dot"></span>Agent 就緒</span>
+    <button class="circle g"><svg class="ico"><use href="#i-refresh"/></svg></button>
+  </header>
+  <main class="stage">
+    <div class="head"><div><h1>切換中心</h1><p>1 台共用螢幕 · 3 台主機（1 台睡眠中）</p></div></div>
+    <div class="monitors" style="grid-template-columns: 1fr">
+      <section class="panel g">
+        <div class="panel-head"><h2>DEMO Ultrawide 34</h2><span class="spec">21:9 · 3440×1440 · <span class="ok">DDC ●</span></span></div>
+        <div class="screen-wrap"><div class="display" style="--c: var(--host-2)"><span class="glow"></span>
+          <div class="screen" style="--ar: 21/9; width: 480px"><div class="inner"><div class="screen-label"><span>正在顯示</span><strong>工作用 Mac mini</strong><span class="screen-port">DP</span></div></div></div>
+          <div class="neck"></div><div class="base"></div>
+        </div></div>
+        <div class="keys g flat" style="--n: 3">
+          <button class="key" style="--c: var(--host-1)"><span class="chip"><svg class="ico"><use href="#i-tower"/></svg></span><span><b>這台 Windows PC</b><small>HDMI 1</small></span></button>
+          <button class="key on" style="--c: var(--host-2)"><span class="chip"><svg class="ico"><use href="#i-laptop"/></svg></span><span><b>工作用 Mac mini</b><small>DP</small></span><span class="act">顯示中</span></button>
+          <button class="key sleep" style="--c: var(--host-3)"><span class="chip"><svg class="ico"><use href="#i-laptop"/></svg></span><span><b>MacBook Air</b><small>Type-C · 睡眠中</small></span><span class="act">喚醒並切換</span></button>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- ═════════════════ C ═════════════════ -->
+<p class="frame-label">C · 切換中心 · 矩陣檢視（3 台螢幕 × 4 台主機）· 淺色</p>
+<div class="app" data-theme="light">
+  <div class="traffic"><i></i><i></i><i></i></div>
+  <header class="toolbar">
+    <span class="brand">MuxSU</span>
+    <nav class="seg g"><button class="on">切換</button><button>設定</button></nav>
+    <span class="pill g"><span class="dot"></span>Agent 就緒</span>
+    <button class="circle g"><svg class="ico"><use href="#i-refresh"/></svg></button>
+  </header>
+  <main class="stage">
+    <div class="head">
+      <div><h1>切換中心</h1><p>3 台共用螢幕 · 4 台主機（1 台睡眠中）· 點格子切換單一螢幕，點「全部切到」切換整欄</p></div>
+      <nav class="seg small g"><button>螢幕</button><button class="on">矩陣</button></nav>
+    </div>
+    <div class="matrix-wrap g">
+      <div class="matrix" style="--hosts: 4">
+        <div class="mx-corner"><span class="caption">螢幕 ╲ 主機</span></div>
+        <div class="mx-host" style="--c: var(--host-1)"><span class="chip"><svg class="ico"><use href="#i-tower"/></svg></span><b>這台 Windows PC</b><small>Windows · 本機</small><button class="cap g">全部切到</button></div>
+        <div class="mx-host" style="--c: var(--host-2)"><span class="chip"><svg class="ico"><use href="#i-laptop"/></svg></span><b>工作用 Mac mini</b><small>macOS</small><button class="cap g">全部切到</button></div>
+        <div class="mx-host" style="--c: var(--host-4)"><span class="chip"><svg class="ico"><use href="#i-tower"/></svg></span><b>Linux NUC</b><small>Linux</small><button class="cap g">全部切到</button></div>
+        <div class="mx-host sleep" style="--c: var(--host-3)"><span class="chip"><svg class="ico"><use href="#i-laptop"/></svg></span><b>MacBook Air</b><small>macOS · 睡眠中</small><button class="cap g">喚醒並全部切到</button></div>
+
+        <div class="mx-mon"><span class="thumb" style="--c: var(--host-1); --ar: 21/9"><i></i></span><div><b>Ultrawide 34</b><small>3440×1440</small></div></div>
+        <div class="cell on" style="--c: var(--host-1)">HDMI 1<small>顯示中</small></div>
+        <div class="cell hover" style="--c: var(--host-2)">DP<small>切換</small></div>
+        <div class="cell">HDMI 2</div>
+        <div class="cell sleep">Type-C<small>喚醒並切換</small></div>
+
+        <div class="mx-mon"><span class="thumb" style="--c: var(--host-2)"><i></i></span><div><b>Studio 27</b><small>3840×2160</small></div></div>
+        <div class="cell">DP</div>
+        <div class="cell on" style="--c: var(--host-2)">HDMI 1<small>顯示中</small></div>
+        <div class="cell none">未連接</div>
+        <div class="cell sleep">Type-C</div>
+
+        <div class="mx-mon"><span class="thumb" style="--c: var(--host-4); --ar: 16/10"><i></i></span><div><b>Dell U2421E</b><small>1920×1200</small></div></div>
+        <div class="cell">DP</div>
+        <div class="cell">HDMI 1</div>
+        <div class="cell on" style="--c: var(--host-4)">HDMI 2<small>顯示中</small></div>
+        <div class="cell none">未設定 Port</div>
+      </div>
+      <div class="legend">
+        <span><i style="background: var(--host-4)"></i>正在顯示</span>
+        <span><i style="background: var(--glass-strong)"></i>可切換</span>
+        <span><i style="box-shadow: inset 0 0 0 1.5px var(--sep)"></i>未連接／未設定</span>
+        <span style="margin-left:auto">3 台以上螢幕或 4 台以上主機時預設為矩陣</span>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ═════════════════ D ═════════════════ -->
+<p class="frame-label">D · 切換中心 · 1 台螢幕 × 5 台主機（按鍵改直式）· 深色</p>
+<div class="app" data-theme="dark">
+  <div class="traffic"><i></i><i></i><i></i></div>
+  <header class="toolbar">
+    <span class="brand">MuxSU</span>
+    <nav class="seg g"><button class="on">切換</button><button>設定</button></nav>
+    <span class="pill g"><span class="dot"></span>Agent 就緒</span>
+    <button class="circle g"><svg class="ico"><use href="#i-refresh"/></svg></button>
+  </header>
+  <main class="stage">
+    <div class="head"><div><h1>切換中心</h1><p>1 台共用螢幕 · 5 台主機</p></div><nav class="seg small g"><button class="on">螢幕</button><button>矩陣</button></nav></div>
+    <div class="monitors" style="grid-template-columns: 1fr">
+      <section class="panel g">
+        <div class="panel-head"><h2>DEMO Ultrawide 34</h2><span class="spec">21:9 · 3440×1440 · <span class="ok">DDC ●</span></span></div>
+        <div class="screen-wrap"><div class="display" style="--c: var(--host-4)"><span class="glow"></span>
+          <div class="screen" style="--ar: 21/9; width: 430px"><div class="inner"><div class="screen-label"><span>正在顯示</span><strong>Linux NUC</strong><span class="screen-port">HDMI 2</span></div></div></div>
+          <div class="neck"></div><div class="base"></div>
+        </div></div>
+        <div class="keys stack g flat" style="--n: 5">
+          <button class="key" style="--c: var(--host-1)"><span class="chip"><svg class="ico"><use href="#i-tower"/></svg></span><span><b>Windows PC</b><small>HDMI 1</small></span></button>
+          <button class="key" style="--c: var(--host-2)"><span class="chip"><svg class="ico"><use href="#i-laptop"/></svg></span><span><b>Mac mini</b><small>DP</small></span></button>
+          <button class="key on" style="--c: var(--host-4)"><span class="chip"><svg class="ico"><use href="#i-tower"/></svg></span><span><b>Linux NUC</b><small>HDMI 2 · 顯示中</small></span></button>
+          <button class="key" style="--c: var(--host-3)"><span class="chip"><svg class="ico"><use href="#i-laptop"/></svg></span><span><b>MacBook Air</b><small>Type-C</small></span></button>
+          <button class="key" style="--c: var(--host-5)"><span class="chip"><svg class="ico"><use href="#i-laptop"/></svg></span><span><b>ThinkPad</b><small>DVI</small></span></button>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- ═════════════════ E ═════════════════ -->
+<p class="frame-label">E · 設定 › 螢幕 · 淺色</p>
+<div class="app" data-theme="light">
+  <div class="traffic"><i></i><i></i><i></i></div>
+  <header class="toolbar">
+    <span class="brand">MuxSU</span>
+    <nav class="seg g"><button>切換</button><button class="on">設定</button></nav>
+    <span class="pill g"><span class="dot"></span>Agent 就緒</span>
+    <button class="circle g"><svg class="ico"><use href="#i-refresh"/></svg></button>
+  </header>
+  <div class="settings">
+    <aside class="sidebar g">
+      <span class="caption">設定</span>
+      <a class="on"><svg class="ico"><use href="#i-monitor"/></svg>螢幕<span class="count">2</span></a>
+      <a><svg class="ico"><use href="#i-hosts"/></svg>主機與配對<span class="count">1</span></a>
+      <a><svg class="ico"><use href="#i-key"/></svg>快捷鍵與啟動</a>
+      <a><svg class="ico"><use href="#i-sliders"/></svg>外觀與語言</a>
+      <span class="spacer"></span>
+      <a><svg class="ico"><use href="#i-help"/></svg>說明與診斷</a>
+      <a class="danger"><svg class="ico"><use href="#i-alert"/></svg>重置</a>
+    </aside>
+    <section class="content">
+      <h1>螢幕</h1>
+      <p>開啟要在主機之間切換的螢幕。其他螢幕維持原樣。</p>
+      <div class="list g">
+        <div class="row with-ico">
+          <span class="appicon" style="--c: var(--accent)"><svg class="ico"><use href="#i-monitor"/></svg></span>
+          <div><h3>DEMO Ultrawide 34</h3><div class="sub">DMO 3410 · 3440×1440 · HDMI 連接 · DDC/CI 可控制</div></div>
+          <span class="switch on"></span>
+        </div>
+        <div class="row" style="padding-left: 62px; padding-top: 0">
+          <div class="hint">本機使用的輸入</div>
+          <span class="popup">HDMI 1 <span class="auto">自動</span><svg class="ico"><use href="#i-chev"/></svg></span>
+        </div>
+        <div class="port-grid">
+          <div class="port used" style="--c: var(--host-1)">HDMI 1<small>這台 PC</small></div>
+          <div class="port">HDMI 2<input placeholder="加備註…"></div>
+          <div class="port used" style="--c: var(--host-2)">DP<small>Mac mini</small></div>
+          <div class="port">Type-C<input value="USB-C 擴充座"></div>
+          <div class="port">DVI<input placeholder="加備註…"></div>
+          <div class="port">VGA<input placeholder="加備註…"></div>
+        </div>
+        <div class="row with-ico">
+          <span class="appicon" style="--c: var(--accent)"><svg class="ico"><use href="#i-monitor"/></svg></span>
+          <div><h3>DEMO Studio 27</h3><div class="sub">DMO 2720 · 3840×2160 · DisplayPort 連接 · DDC/CI 可控制</div></div>
+          <span class="switch on"></span>
+        </div>
+        <div class="row with-ico" style="opacity:.55">
+          <span class="appicon"><svg class="ico"><use href="#i-monitor"/></svg></span>
+          <div><h3>Built-in Retina</h3><div class="sub">內建螢幕 · 不支援 DDC/CI</div></div>
+          <span class="switch"></span>
+        </div>
+      </div>
+      <div class="note g"><svg class="ico"><use href="#i-info"/></svg><div><b>自動偵測的限制：</b>螢幕只回報「正在顯示哪個輸入」，不回報各主機插在哪。若這台電腦目前不在畫面上，請手動選擇。</div></div>
+    </section>
+  </div>
+</div>
+
+<!-- ═════════════════ F ═════════════════ -->
+<p class="frame-label">F · 設定 › 主機與配對 · 深色</p>
+<div class="app" data-theme="dark">
+  <div class="traffic"><i></i><i></i><i></i></div>
+  <header class="toolbar">
+    <span class="brand">MuxSU</span>
+    <nav class="seg g"><button>切換</button><button class="on">設定</button></nav>
+    <span class="pill g"><span class="dot"></span>Agent 就緒</span>
+    <button class="circle g"><svg class="ico"><use href="#i-refresh"/></svg></button>
+  </header>
+  <div class="settings">
+    <aside class="sidebar g">
+      <span class="caption">設定</span>
+      <a><svg class="ico"><use href="#i-monitor"/></svg>螢幕<span class="count">2</span></a>
+      <a class="on"><svg class="ico"><use href="#i-hosts"/></svg>主機與配對<span class="count">1</span></a>
+      <a><svg class="ico"><use href="#i-key"/></svg>快捷鍵與啟動</a>
+      <a><svg class="ico"><use href="#i-sliders"/></svg>外觀與語言</a>
+      <span class="spacer"></span>
+      <a><svg class="ico"><use href="#i-help"/></svg>說明與診斷</a>
+      <a class="danger"><svg class="ico"><use href="#i-alert"/></svg>重置</a>
+    </aside>
+    <section class="content">
+      <h1>主機與配對</h1>
+      <p>同網路、配對密碼相同的 MuxSU 會自動出現。</p>
+      <div class="list g">
+        <div class="row with-ico">
+          <span class="appicon" style="--c: var(--host-1)"><svg class="ico"><use href="#i-tower"/></svg></span>
+          <div><h3>這台 Windows PC<span class="badge">本機</span></h3><div class="sub">Windows 11 · 192.168.1.12</div></div>
+          <button class="cap g plain">重新命名</button>
+        </div>
+      </div>
+      <div class="list g">
+        <div class="row with-ico">
+          <span class="appicon" style="--c: var(--host-2)"><svg class="ico"><use href="#i-laptop"/></svg></span>
+          <div><h3>工作用 Mac mini</h3><div class="sub">macOS · 192.168.1.20 · 3 秒前回應</div></div>
+          <div class="btns"><button class="cap g plain">測試連線</button><button class="cap g plain">喚醒</button><button class="cap g plain" style="color: var(--danger)">移除</button></div>
+        </div>
+        <div class="row" style="padding-left: 62px"><div class="hint" style="color: var(--text)">DEMO Ultrawide 34</div><span class="popup">DP<svg class="ico"><use href="#i-chev"/></svg></span></div>
+        <div class="row" style="padding-left: 62px"><div class="hint" style="color: var(--text)">DEMO Studio 27</div><span class="popup">HDMI 1<svg class="ico"><use href="#i-chev"/></svg></span></div>
+      </div>
+      <div class="searching g"><span class="spinner"></span><div><b>搜尋同網路的其他主機…</b><div>在另一台電腦開啟 MuxSU 並輸入相同的配對密碼。</div></div><button class="cap tint" style="margin-left:auto; border:0">配對密碼</button></div>
+    </section>
+  </div>
+</div>
+
+<!-- ═════════════════ G ═════════════════ -->
+<p class="frame-label">G · 主機切換器 HUD（快捷鍵叫出）· 淺色／深色</p>
+<div class="split">
+ <div class="half" data-theme="light">
+  <div class="hud g" data-theme="light">
+    <div class="hud-head"><h2>切換共用螢幕</h2><span class="caption">全部 2 台螢幕</span></div>
+    <div class="hud-list">
+      <div class="hud-row on" style="--c: var(--host-1)"><kbd>1</kbd><span class="chip"><svg class="ico"><use href="#i-tower"/></svg></span><div><b>這台 Windows PC</b><small>HDMI 1</small></div><span class="state">● 顯示中</span></div>
+      <div class="hud-row focus" style="--c: var(--host-2)"><kbd>2</kbd><span class="chip"><svg class="ico"><use href="#i-laptop"/></svg></span><div><b>工作用 Mac mini</b><small>DP</small></div><span class="state">↩ 切換</span></div>
+    </div>
+    <div class="hud-foot"><span><kbd>1</kbd> <kbd>2</kbd> 直接選 · <kbd>↑</kbd> <kbd>↓</kbd> 移動</span><span><kbd>esc</kbd> 關閉</span></div>
+  </div>
+ </div>
+ <div class="half" data-theme="dark">
+  <div class="hud g" data-theme="dark" style="width: 400px">
+    <div class="hud-head"><h2>切換共用螢幕</h2><span class="caption">全部 2 台螢幕</span></div>
+    <div class="hud-list">
+      <div class="hud-row focus" style="--c: var(--host-1)"><kbd>1</kbd><span class="chip"><svg class="ico"><use href="#i-tower"/></svg></span><div><b>這台 Windows PC</b><small>HDMI 1</small></div><span class="state">↩ 切換</span></div>
+      <div class="hud-row on" style="--c: var(--host-2)"><kbd>2</kbd><span class="chip"><svg class="ico"><use href="#i-laptop"/></svg></span><div><b>工作用 Mac mini</b><small>DP</small></div><span class="state">● 顯示中</span></div>
+    </div>
+    <div class="hud-foot"><span><kbd>1</kbd> <kbd>2</kbd> 直接選</span><span><kbd>esc</kbd> 關閉</span></div>
+  </div>
+ </div>
+</div>
+
+<!-- ═════════════════ H ═════════════════ -->
+<p class="frame-label">H · 主機切換器 · 4 台主機、3 台螢幕（Tab 換目標）＋ 系統匣選單 · 深色</p>
+<div class="stagebox" data-theme="dark">
+  <div class="hud g" data-theme="dark" style="width: 480px">
+    <div class="hud-head"><h2>切換共用螢幕</h2><span class="caption"><kbd>tab</kbd> 換目標</span></div>
+    <div class="targets"><span class="on">全部 3 台</span><span>Ultrawide 34</span><span>Studio 27</span><span>Dell U2421E</span></div>
+    <div class="hud-list">
+      <div class="hud-row" style="--c: var(--host-1)"><kbd>1</kbd><span class="chip"><svg class="ico"><use href="#i-tower"/></svg></span><div><b>這台 Windows PC</b><small>Windows</small></div><span class="state">1 台顯示中</span></div>
+      <div class="hud-row focus" style="--c: var(--host-2)"><kbd>2</kbd><span class="chip"><svg class="ico"><use href="#i-laptop"/></svg></span><div><b>工作用 Mac mini</b><small>macOS</small></div><span class="state">↩ 全部切到</span></div>
+      <div class="hud-row" style="--c: var(--host-4)"><kbd>3</kbd><span class="chip"><svg class="ico"><use href="#i-tower"/></svg></span><div><b>Linux NUC</b><small>Linux</small></div><span class="state">1 台顯示中</span></div>
+      <div class="hud-row sleep" style="--c: var(--host-3)"><kbd>4</kbd><span class="chip"><svg class="ico"><use href="#i-laptop"/></svg></span><div><b>MacBook Air</b><small>睡眠中</small></div><span class="state">喚醒並切換</span></div>
+    </div>
+    <div class="hud-foot"><span><kbd>1</kbd>–<kbd>4</kbd> 選主機 · <kbd>tab</kbd> 換螢幕</span><span><kbd>esc</kbd> 關閉</span></div>
+  </div>
+  <div class="menu g" data-theme="dark">
+    <div class="hd">全部螢幕切到</div>
+    <div><span class="sw" style="background: var(--host-1)"></span>這台 Windows PC</div>
+    <div class="sel"><span class="sw" style="background: #fff"></span>工作用 Mac mini</div>
+    <div><span class="sw" style="background: var(--host-4)"></span>Linux NUC</div>
+    <div><span class="sw" style="background: var(--host-3)"></span>MacBook Air（喚醒）</div>
+    <hr>
+    <div>Ultrawide 34 <span class="k">›</span></div>
+    <div>Studio 27 <span class="k">›</span></div>
+    <div>Dell U2421E <span class="k">›</span></div>
+    <hr>
+    <div>開啟 MuxSU</div>
+    <div>結束 MuxSU</div>
+  </div>
+</div>
+
+</body>
+</html>

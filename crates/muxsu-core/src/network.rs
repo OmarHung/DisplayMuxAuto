@@ -31,7 +31,7 @@ pub const DEFAULT_AGENT_PORT: u16 = 47_653;
 pub const MUXSU_SERVICE_TYPE: &str = "_muxsu._tcp.local.";
 /// Bumped whenever authentication or request interpretation changes in a way
 /// that cannot safely interoperate with an older agent.
-pub const AGENT_PROTOCOL_VERSION: u32 = 4;
+pub const AGENT_PROTOCOL_VERSION: u32 = 5;
 const PAIRING_KEY_ITERATIONS: u32 = 600_000;
 const PAIRING_KEY_SALT: &[u8] = b"MuxSU pairing key v1";
 const PAIRING_KEY_BYTES: usize = 32;
@@ -554,6 +554,11 @@ pub enum AgentAction {
     HostAliasesChanged {
         aliases: Vec<HostAlias>,
     },
+    /// Notice of every custom host icon and colour a paired host knows.
+    /// Receivers merge entry by entry, keeping the newer `updated_at_ms`.
+    HostAppearancesChanged {
+        appearances: Vec<HostAppearance>,
+    },
     /// Notice of every input note a paired host knows. Receivers
     /// merge entry by entry, keeping the newer `updated_at_ms`.
     InputLabelsChanged {
@@ -612,6 +617,19 @@ pub enum AgentAction {
 pub struct HostAlias {
     pub host_id: String,
     pub name: String,
+    pub updated_at_ms: u64,
+}
+
+/// A user-chosen icon and colour for a host, keyed by `LocalHostIdentity::id`.
+/// Both are names from a fixed set the app knows how to draw; an empty value
+/// means the host's default, so a reset reaches paired hosts like a clear
+/// `HostAlias` does.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostAppearance {
+    pub host_id: String,
+    pub icon: String,
+    pub color: String,
     pub updated_at_ms: u64,
 }
 
@@ -726,6 +744,9 @@ pub struct AgentResponse {
     /// The responder's custom host names, for the same catch-up.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub host_aliases: Vec<HostAlias>,
+    /// The responder's custom host icons and colours, for the same catch-up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_appearances: Vec<HostAppearance>,
     /// The responder's input notes, for the same catch-up.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_labels: Vec<InputLabel>,
@@ -1489,6 +1510,27 @@ mod tests {
         };
         let serialized = serde_json::to_value(&action).unwrap();
         assert!(serialized.get("monitor").is_some());
+    }
+
+    #[test]
+    fn host_appearances_changed_notice_round_trips_with_every_entry() {
+        let action = AgentAction::HostAppearancesChanged {
+            appearances: vec![HostAppearance {
+                host_id: "2cf05de0c029-windows".to_owned(),
+                icon: "gamepad".to_owned(),
+                color: "orange".to_owned(),
+                updated_at_ms: 1_757_000_000_000,
+            }],
+        };
+
+        let serialized = serde_json::to_string(&action).unwrap();
+
+        assert!(serialized.contains(r#""type":"host_appearances_changed""#));
+        assert!(serialized.contains(r#""icon":"gamepad""#));
+        assert_eq!(
+            serde_json::from_str::<AgentAction>(&serialized).unwrap(),
+            action
+        );
     }
 
     #[test]

@@ -393,6 +393,12 @@
           "markdownDescription": "Enables the get_dashboard_state command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_host_appearances command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-host-appearances",
+          "markdownDescription": "Enables the get_host_appearances command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_host_names command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-host-names",
@@ -447,6 +453,12 @@
           "markdownDescription": "Enables the probe_peer command without any pre-configured scope."
         },
         {
+          "description": "Enables the refresh_tray command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-refresh-tray",
+          "markdownDescription": "Enables the refresh_tray command without any pre-configured scope."
+        },
+        {
           "description": "Enables the remove_peer command without any pre-configured scope.",
           "type": "string",
           "const": "allow-remove-peer",
@@ -493,6 +505,12 @@
           "type": "string",
           "const": "allow-set-diagnostics-consent",
           "markdownDescription": "Enables the set_diagnostics_consent command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_host_appearance command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-host-appearance",
+          "markdownDescription": "Enables the set_host_appearance command without any pre-configured scope."
         },
         {
           "description": "Enables the set_host_name command without any pre-configured scope.",
@@ -591,6 +609,12 @@
           "markdownDescription": "Denies the get_dashboard_state command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_host_appearances command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-host-appearances",
+          "markdownDescription": "Denies the get_host_appearances command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_host_names command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-host-names",
@@ -645,6 +669,12 @@
           "markdownDescription": "Denies the probe_peer command without any pre-configured scope."
         },
         {
+          "description": "Denies the refresh_tray command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-refresh-tray",
+          "markdownDescription": "Denies the refresh_tray command without any pre-configured scope."
+        },
+        {
           "description": "Denies the remove_peer command without any pre-configured scope.",
           "type": "string",
           "const": "deny-remove-peer",
@@ -691,6 +721,12 @@
           "type": "string",
           "const": "deny-set-diagnostics-consent",
           "markdownDescription": "Denies the set_diagnostics_consent command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_host_appearance command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-host-appearance",
+          "markdownDescription": "Denies the set_host_appearance command without any pre-configured scope."
         },
         {
           "description": "Denies the set_host_name command without any pre-configured scope.",

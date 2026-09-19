@@ -1,0 +1,110 @@
+/* The window frame: floating toolbar, scrolling workspace, page switching. */
+
+.app-shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+}
+
+.toolbar {
+  position: relative;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px 8px 22px;
+}
+
+.brand {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.seg {
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 999px;
+}
+
+.seg-button {
+  min-width: 76px;
+  padding: 7px 20px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  transition: color var(--fast), background var(--fast), box-shadow var(--fast);
+}
+.seg-button:hover { color: var(--text); }
+.seg-button.is-active {
+  color: var(--text);
+  background: var(--glass-strong);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1), inset 0 1px 0 var(--rim-hi);
+}
+
+.toolbar-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  padding: 7px 14px 7px 12px;
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.agent-pill span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-pill.is-ready .status-dot { background: var(--ok-glow); box-shadow: 0 0 8px var(--ok-glow); }
+
+.workspace {
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.page { display: none; }
+.page.is-active { display: block; animation: page-in 260ms var(--ease); }
+
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  padding: 10px 6px 16px;
+}
+.page-head h1 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+.page-head p {
+  margin-top: 3px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.page-head-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+#dashboard-page { padding: 4px 22px 24px; }
