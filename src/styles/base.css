@@ -173,6 +173,8 @@ code, kbd, .mono { font-family: var(--font-mono); }
   background-position: right 10px center;
 }
 .field-select:disabled { opacity: 0.55; }
+.field-select option, .field-select optgroup { background-color: var(--menu); color: var(--text); }
+.field-select option:disabled { color: var(--text-3); }
 .field-select.plain-font { font-family: var(--font-ui); font-weight: 500; }
 
 /* Switch: a checkbox followed by its slider. */

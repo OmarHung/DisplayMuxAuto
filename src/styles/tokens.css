@@ -28,6 +28,9 @@
   --text-3: rgba(20, 24, 36, 0.44);
   --sep: rgba(15, 20, 40, 0.09);
   --field: rgba(255, 255, 255, 0.62);
+  /* Opaque, for the option list a <select> opens: WebView2 on Windows draws
+     it as a separate popup, so there is no glass behind it to blend with. */
+  --menu: #ffffff;
   --scrim: rgba(20, 26, 44, 0.28);
 
   --shadow: 0 12px 40px rgba(30, 40, 80, 0.14), 0 2px 6px rgba(30, 40, 80, 0.06);
@@ -81,6 +84,7 @@
   --text-3: rgba(235, 238, 248, 0.42);
   --sep: rgba(255, 255, 255, 0.09);
   --field: rgba(255, 255, 255, 0.08);
+  --menu: #2b2d3a;
   --scrim: rgba(0, 0, 0, 0.45);
 
   --shadow: 0 16px 48px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
