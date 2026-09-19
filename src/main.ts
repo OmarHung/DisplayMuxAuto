@@ -976,10 +976,12 @@ function renderSwitchPanel(): void {
   </div>`;
 }
 
-function displayDrawingHtml(isUltrawide: boolean, label: string): string {
+/** A drawn monitor. `model` goes on the bottom bezel, where a real one wears its badge. */
+function displayDrawingHtml(isUltrawide: boolean, label: string, model?: string): string {
+  const badge = model ? `<span class="display-model">${escapeHtml(model)}</span>` : "";
   return `<div class="display-frame">
     <span class="display-glow"></span>
-    <div class="display-screen ${isUltrawide ? "is-ultrawide" : ""}"><div class="display-inner"><div class="display-label">${label}</div></div></div>
+    <div class="display-screen ${isUltrawide ? "is-ultrawide" : ""} ${model ? "has-model" : ""}"><div class="display-inner"><div class="display-label">${label}</div></div>${badge}</div>
     <div class="display-neck"></div><div class="display-base"></div>
   </div>`;
 }
@@ -1012,7 +1014,7 @@ function stagePanelHtml(shared: SharedMonitorStatus, routes: SwitchRoute[]): str
       ${displayBadge(shared)}
     </header>
     ${shared.statusText ? `<p class="panel-status">${escapeHtml(shared.statusText)}</p>` : ""}
-    <div class="display-visual" ${active ? `data-color="${active.color}"` : ""}>${displayDrawingHtml(isUltrawide, label)}</div>
+    <div class="display-visual" ${active ? `data-color="${active.color}"` : ""}>${displayDrawingHtml(isUltrawide, label, shared.name)}</div>
     <div class="source-keys glass-flat ${routes.length >= MATRIX_MIN_HOSTS ? "is-stacked" : ""}">
       ${routes.map((route) => sourceKeyHtml(shared, route, route.id === activeId)).join("")}
     </div>

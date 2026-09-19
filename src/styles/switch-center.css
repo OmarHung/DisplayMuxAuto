@@ -120,6 +120,23 @@ button.switch-all-host:hover:not(:disabled) { transform: translateY(-1px); }
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 12px 30px rgba(0, 0, 0, 0.25);
 }
 .display-screen.is-ultrawide { aspect-ratio: 21 / 9; width: 100%; }
+/* A deeper bottom bezel carries the model name, like the badge on a real monitor. */
+.display-screen.has-model { padding-bottom: 16px; }
+.display-model {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 2px;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 12px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .display-inner {
   position: relative;
   display: grid;
