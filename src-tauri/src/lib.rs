@@ -5793,12 +5793,47 @@ fn update_error(error: impl std::fmt::Display) -> String {
     ).to_owned()
 }
 
-fn update_install_error(error: impl std::fmt::Display) -> String {
+/// Names the step that failed and keeps the updater's own detail (an HTTP
+/// status such as `403 Forbidden`), so a failed download is not mistaken for
+/// a bad signature.
+fn update_install_error(error: tauri_plugin_updater::Error) -> String {
+    use tauri_plugin_updater::Error;
+
     tracing::error!(error = %error, "signed application update installation failed");
-    ui_text(
-        "更新下載或簽章驗證失敗；目前版本未變更，請稍後再試一次",
-        "The update download or signature verification failed. The current version was not changed; try again later.",
-    ).to_owned()
+    let (template, detail) = match &error {
+        Error::Network(message) => (
+            ui_text(
+                "更新檔下載失敗（{detail}）；目前版本未變更。請稍後再試，或從 GitHub Releases 手動下載安裝檔",
+                "The update could not be downloaded ({detail}). The current version was not changed; try again later, or download the installer from GitHub Releases.",
+            ),
+            message
+                .strip_prefix("Download request failed with status: ")
+                .unwrap_or(message)
+                .to_owned(),
+        ),
+        Error::Reqwest(_) | Error::Io(_) => (
+            ui_text(
+                "更新檔下載失敗（{detail}）；目前版本未變更。請稍後再試，或從 GitHub Releases 手動下載安裝檔",
+                "The update could not be downloaded ({detail}). The current version was not changed; try again later, or download the installer from GitHub Releases.",
+            ),
+            error.to_string(),
+        ),
+        Error::Minisign(_) | Error::Base64(_) | Error::SignatureUtf8(_) => (
+            ui_text(
+                "更新檔簽章驗證失敗（{detail}），已拒絕安裝；目前版本未變更",
+                "The update's signature did not verify ({detail}), so it was not installed. The current version was not changed.",
+            ),
+            error.to_string(),
+        ),
+        _ => (
+            ui_text(
+                "更新安裝失敗（{detail}）；目前版本未變更，請稍後再試一次",
+                "The update could not be installed ({detail}). The current version was not changed; try again later.",
+            ),
+            error.to_string(),
+        ),
+    };
+    template.replace("{detail}", &detail)
 }
 fn has_valid_shared_key(shared_key: &str) -> bool {
     shared_key.chars().count() >= MIN_SHARED_KEY_LENGTH
@@ -6467,6 +6502,16 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    #[test]
+    fn update_install_error_keeps_the_download_status() {
+        let message = update_install_error(tauri_plugin_updater::Error::Network(
+            "Download request failed with status: 403 Forbidden".to_owned(),
+        ));
+
+        assert!(message.contains("(403 Forbidden)") || message.contains("（403 Forbidden）"));
+        assert!(!message.contains("Download request failed"));
+    }
 
     struct SelectionController {
         monitors: Vec<MonitorDescriptor>,
