@@ -41,17 +41,20 @@ You can share more than one monitor; each host stores its own input port for eac
 **What the two hosts work out between themselves**
 
 - Adding a host that is already set up fills in the port it occupies, when that can be established safely.
-- What one host learns is shared with the others: each host's port, the display's declared input list, input notes, host names and order, and display identity merges.
+- What one host learns is shared with the others: each host's port, the display's declared input list, input notes, host names, order, icons and colours, and display identity merges.
 - A notice that does not arrive is said again on the next scan, until it lands.
 
 **Switching**
 
 - Pick the target host in the switch centre. There is no switching mode to choose.
 - With several shared monitors, one action sends all of them to the same host.
-- A global shortcut can summon a small host picker even while the main window is hidden.
+- With many displays or hosts (3+ displays or 4+ hosts) the switch centre becomes a matrix — a row per display, a column per host. You can also change the view by hand.
+- A global shortcut can summon a small host picker even while the main window is hidden: number keys pick a host, Tab changes the target display.
+- The tray (the menu bar on macOS) switches too: every display to one host, or each display on its own.
 
 **Also**
 
+- Each host can wear an icon and a colour (12 icons, 10 colours), which the switch centre, the switcher and settings use to tell hosts apart.
 - When one display reports different identities in different display modes, you can declare that they are the same display.
 - Reset comes in two scopes: displays only, or back to a fresh installation.
 - The interface is available in English and Traditional Chinese, in light and dark appearance.
@@ -62,21 +65,25 @@ The computer names, addresses and display details shown below are anonymized sam
 
 ### Switch Center
 
-Which computer each shared monitor is currently handed to, and the input each one uses. With more than one shared monitor, a control at the top sends all of them to the same host at once.
+Which computer each shared monitor is currently handed to, and the input each one uses; the screen takes on the colour of the host it shows. With more than one shared monitor, a control at the top sends all of them to the same host at once.
 
 ![MuxSU switch center with two shared monitors, one on this PC and one on the Mac](assets/screenshots/switch-center.en.png)
 
-### Display and Host Settings (top)
+With more displays or hosts, the matrix view shows at a glance which host every display is on. Click any cell to switch it; "Switch all" above a column hands every display to that host.
 
-Choosing shared monitors, naming this computer, its port on each monitor, and input notes.
+![MuxSU switch center in matrix view, with three shared displays and four hosts](assets/screenshots/switch-center-matrix.en.png)
 
-![MuxSU display and host settings, upper half, with two shared monitors and their ports](assets/screenshots/monitor-and-host-settings.en.png)
+### Settings › Displays
 
-### Display and Host Settings (lower)
+Choosing shared monitors, this computer's port on each of them, and input notes.
 
-Added hosts and their inputs, the pairing password, the global shortcut, and reset at the bottom.
+![MuxSU Displays settings tab, with two shared monitors and their ports](assets/screenshots/settings-displays.en.png)
 
-![MuxSU display and host settings, lower half, with added hosts, pairing password, shortcut and reset](assets/screenshots/hosts-and-reset.en.png)
+### Settings › Hosts & Pairing
+
+Added hosts and their inputs, other hosts found on the network, and the pairing password. The pencil next to a host renames it and changes its icon and colour.
+
+![MuxSU Hosts & Pairing settings tab, choosing an icon and colour for the Mac mini](assets/screenshots/settings-hosts.en.png)
 
 ## Before You Begin
 
@@ -94,7 +101,7 @@ A monitor that shows a picture is not necessarily passing DDC/CI through the cab
 
 ### 1. Select the Shared Monitor
 
-Open the Display and Host settings page and refresh the monitor list:
+Open Settings › Displays and refresh the monitor list:
 
 - On first setup, if there is exactly one controllable external monitor, MuxSU selects it for you.
 - Otherwise choose by hand. You can select more than one shared monitor.
@@ -112,13 +119,13 @@ Ports appear as VGA, DVI, DP, HDMI or Type-C, so there are no technical codes to
 
 ### 3. Set a Pairing Password
 
-Enter exactly the same pairing password on every computer, at least 15 characters long.
+In Settings › Hosts & Pairing, enter exactly the same pairing password on every computer, at least 15 characters long.
 
 The password signs and verifies the requests hosts make of each other on the local network — asking for status, asking another host to perform a switch, and sending a wake. Hosts with different passwords cannot control each other.
 
 ### 4. Add Other Hosts
 
-Find the other computer under "Add other hosts on this network" and press Add.
+In Settings › Hosts & Pairing, find the other computer under "Other hosts on this network" and press Add.
 
 If that computer has already selected its shared monitor, MuxSU fills in the port it uses when all of the following hold:
 
@@ -133,7 +140,7 @@ Both hosts must use the same MuxSU Agent protocol version. When they differ, Mux
 
 ### 5. Save and Repeat on the Other Computers
 
-Most settings are saved as you change them: which monitors are shared, this computer's input port, input notes, host names and order, and display identity merges.
+Most settings are saved as you change them: which monitors are shared, this computer's input port, input notes, host names, order, icons and colours, and display identity merges.
 
 These five wait for the Save button, and a note with a cancel appears at the bottom of the form while one of them is waiting:
 
@@ -160,17 +167,21 @@ If the network Agent is temporarily unreachable, MuxSU still tries local DDC/CI.
 
 On Windows, closing or minimizing the window leaves the app running in the system tray. Only "Quit MuxSU" from the tray actually exits.
 
+The tray menu (the menu bar icon on macOS) switches too: "Switch every display to" lists each host, and each shared display has a submenu of its own, with a check next to the host it is showing.
+
 ### Global Host Switcher
 
-With "Global host switcher" enabled in settings, a shortcut (`Ctrl/Cmd + Alt + Space` by default) summons a small window for handing the shared monitor to another host, without returning to the main window first. You can record your own shortcut; the app checks it against common application shortcuts before accepting it.
+With "Global host switcher" enabled in Settings › Shortcut & Startup, a shortcut (`Ctrl/Cmd + Alt + Space` by default) summons a small window for handing the shared monitor to another host, without returning to the main window first. You can record your own shortcut; the app checks it against common application shortcuts before accepting it.
 
-![MuxSU host switcher window listing this computer and the added Mac](assets/screenshots/host-switcher.en.png)
+In the window, number keys pick a host directly, the arrow keys move and Enter switches. With several shared displays, Tab moves the target between all of them and each one on its own; Esc closes it.
+
+![MuxSU host switcher window listing four hosts, targeting all three displays](assets/screenshots/host-switcher.en.png)
 
 ## One Display, Different Identities
 
 Some displays report a different identity when they change display mode — from 4K to 1080p, say — so the list makes it look as though a different monitor arrived, and the sharing and port settings that belonged to it appear to vanish.
 
-When that happens, the settings page lists the identity that belongs to no shared display, and you can merge it into one already in the list: this is the same display. From then on the two identities count as one monitor, switching and port settings carry over, and the declaration is shared with paired hosts. A merge can be undone.
+When that happens, Settings › Displays lists the identity that belongs to no shared display, and you can merge it into one already in the list: this is the same display. From then on the two identities count as one monitor, switching and port settings carry over, and the declaration is shared with paired hosts. A merge can be undone.
 
 A merge only decides which identities count as the same display. It does not relax the safety check on switching: before any DDC/CI command goes out, the display's identity must still match exactly.
 
@@ -178,7 +189,7 @@ A merge only decides which identities count as the same display. It does not rel
 
 ## Reset
 
-Two scopes are offered at the bottom of the settings page, each needing a second press to confirm:
+Two scopes are offered under Settings › Reset (bottom left of the sidebar), each needing a second press to confirm:
 
 - **Reset display settings** — clears shared monitors, identity merges and input notes. Paired hosts and the pairing password are kept.
 - **Reset everything** — back to a fresh installation, including paired hosts and the pairing password. This computer's host identity is kept, so there is nothing to clear on the other computer.

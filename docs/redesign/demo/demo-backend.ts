@@ -4,7 +4,7 @@
  * the app's own entry points, so nothing here ships.
  *
  * Query parameters:
- *   scenario = 2x2 (default) | 1x3 | 3x4 | 1x5 | empty
+ *   scenario = 2x2 (default) | 1x3 | 3x4 | 1x5 | empty | merge
  *   lang     = zh-TW | en
  *   theme    = light | dark
  */
@@ -16,6 +16,8 @@ interface DemoPeer { id: string; name: string; platform: Platform; address: stri
 
 const params = new URLSearchParams(location.search);
 const scenario = params.get("scenario") ?? "2x2";
+/** Demo names follow the requested language, so an English screenshot shows no Chinese. */
+const isEnglish = params.get("lang") === "en";
 try {
   const lang = params.get("lang");
   if (lang === "zh-TW" || lang === "en") localStorage.setItem("muxsu.locale", lang);
@@ -34,8 +36,8 @@ const displays: DemoDisplay[] = [
   { key: "demo-u24", name: "Dell U2421E", fp: { manufacturer_id: "DEL", product_code: "A1F4", serial_number: "DEMO-003" }, width: 1920, height: 1200, inputs: [DP, HDMI1, HDMI2, TYPEC] },
 ];
 const allPeers: DemoPeer[] = [
-  { id: "peer-macmini", name: "工作用 Mac mini", platform: "mac", address: "192.168.1.20", mac: "AA:BB:CC:00:00:01" },
-  { id: "peer-nuc", name: "Linux NUC", platform: "windows", address: "192.168.1.31", mac: "AA:BB:CC:00:00:02" },
+  { id: "peer-macmini", name: isEnglish ? "Work Mac mini" : "工作用 Mac mini", platform: "mac", address: "192.168.1.20", mac: "AA:BB:CC:00:00:01" },
+  { id: "peer-nuc", name: isEnglish ? "Render PC" : "算圖主機", platform: "windows", address: "192.168.1.31", mac: "AA:BB:CC:00:00:02" },
   { id: "peer-air", name: "MacBook Air", platform: "mac", address: "192.168.1.42", mac: "" },
   { id: "peer-thinkpad", name: "ThinkPad", platform: "windows", address: "192.168.1.55", mac: "AA:BB:CC:00:00:04" },
 ];
@@ -52,14 +54,16 @@ const shape = {
   "3x4": { displays: 3, peers: 3, active: ["local", "peer-macmini", "peer-nuc"] },
   "1x5": { displays: 1, peers: 4, active: ["peer-nuc"] },
   "empty": { displays: 0, peers: 1, active: [] },
+  // Studio 27 reports a different identity in another display mode.
+  "merge": { displays: 2, peers: 1, active: ["local", "local"] },
 }[scenario] ?? { displays: 2, peers: 1, active: ["local", "peer-macmini"] };
 
 const shared = displays.slice(0, shape.displays);
 const peers = allPeers.slice(0, shape.peers);
 const routeIds = ["local", ...peers.map((peer) => peer.id)];
 const activeRoute: Record<string, string> = Object.fromEntries(shared.map((display, index) => [display.key, shape.active[index] ?? "local"]));
-const hostNames: Record<string, string> = { local: "這台 Windows PC" };
-const inputLabels: Record<string, Record<number, string>> = { "demo-uw34": { [TYPEC]: "USB-C 擴充座" } };
+const hostNames: Record<string, string> = { local: isEnglish ? "This Windows PC" : "這台 Windows PC" };
+const inputLabels: Record<string, Record<number, string>> = { "demo-uw34": { [TYPEC]: isEnglish ? "USB-C dock" : "USB-C 擴充座" } };
 /** Custom looks by route id, as `get_host_appearances` returns them. */
 const hostAppearances: Record<string, { icon: string | null; color: string | null }> =
   scenario === "3x4" ? { "peer-nuc": { icon: "server", color: "green" } } : {};
@@ -82,8 +86,16 @@ function monitorDescriptor(display: DemoDisplay) {
   };
 }
 
+/** Studio 27 as it reports itself at 1920×1080: same panel, another product code. */
+const studioAtLowRes: DemoDisplay = {
+  key: "demo-st27-1080", name: "DEMO Studio 27", fp: { manufacturer_id: "DMO", product_code: "7270", serial_number: null },
+  width: 1920, height: 1080, inputs: [],
+};
+
 function dashboardState() {
-  const present = scenario === "empty" ? displays.slice(0, 2) : displays.slice(0, Math.max(shape.displays, 2));
+  const present = scenario === "empty" ? displays.slice(0, 2)
+    : scenario === "merge" ? [displays[0], studioAtLowRes]
+    : displays.slice(0, Math.max(shape.displays, 2));
   return {
     platform: "windows", localHost: "windows", agentConfigured: true,
     monitors: present.map(monitorDescriptor),
@@ -94,8 +106,10 @@ function dashboardState() {
       statusText: "", connection: null, connectionInputConflict: false,
     })),
     selectionNotices: [],
-    monitorIdentityClaims: [],
-    resolvedMonitorIdentities: identities(),
+    monitorIdentityClaims: scenario === "merge"
+      ? [{ aliasKey: "DMO/3411/", aliasLabel: "DEMO Ultrawide 34 (DMO/3411)", primaryKey: "demo-uw34", primaryLabel: "DEMO Ultrawide 34" }]
+      : [],
+    resolvedMonitorIdentities: { ...identities(), [JSON.stringify(studioAtLowRes.fp)]: studioAtLowRes.key },
     localHostName: "DESKTOP-DEMO",
   };
 }
